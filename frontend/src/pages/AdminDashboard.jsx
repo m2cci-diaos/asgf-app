@@ -1,10 +1,12 @@
 // src/pages/AdminDashboard.jsx
-import React, { useEffect, useState, useCallback } from "react"
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { createPortal } from "react-dom"
 import {
   fetchPendingMembers,
   approveMember,
   rejectMember,
+  fetchAdhesionStats,
+  fetchAllMembers,
   fetchMentoratStats,
   fetchRelations,
   fetchRecrutementStats,
@@ -16,16 +18,16 @@ import {
   createRecommandation,
   createSuivi,
   createRendezVous,
-  fetchAllMembers,
   fetchMentors,
   fetchMentees,
-  fetchTresorerieStats,
   fetchCotisations,
   createCotisation,
   fetchPaiements,
   createPaiement,
+  updatePaiement,
   createRelance,
   createCarteMembre,
+  fetchCarteMembreByNumero,
   fetchDepenses,
   createDepense,
   fetchHistorique,
@@ -42,6 +44,7 @@ import {
   downloadPaiementsExport,
   downloadDepensesExport,
   downloadTresorerieReport,
+  fetchRelances,
   fetchSecretariatStats,
   fetchReunions,
   createReunion,
@@ -49,9 +52,45 @@ import {
   createAction,
   saveCompteRendu,
   createDocument,
+  fetchFormationStats,
+  fetchFormations,
+  createFormation,
+  updateFormation,
+  deleteFormation,
+  fetchSessions,
+  createSession,
+  updateSession,
+  deleteSession,
+  fetchInscriptions,
+  createInscription,
+  updateInscription,
+  deleteInscription,
+  confirmInscription,
+  rejectInscription,
+  fetchFormateurs,
+  createFormateur,
+  updateFormateur,
+  deleteFormateur,
+  fetchWebinaireStats,
+  fetchWebinaires,
+  createWebinaire,
+  updateWebinaire,
+  deleteWebinaire,
+  fetchWebinaireInscriptions,
+  createWebinaireInscription,
+  updateWebinaireInscription,
+  deleteWebinaireInscription,
+  fetchPresentateurs,
+  createPresentateur,
+  updatePresentateur,
+  deletePresentateur,
 } from "../services/api"
 import logoASGF from "../img/Logo_officiel_ASGF.png"
 import "./AdminDashboard.css"
+import TreasuryFilters from "../components/treasury/TreasuryFilters"
+import TreasuryActionsBar from "../components/treasury/TreasuryActionsBar"
+import TreasuryAnalytics from "../components/treasury/TreasuryAnalytics"
+import TreasuryTimeline from "../components/treasury/TreasuryTimeline"
 
 const MONTH_OPTIONS = [
   { value: 1, label: "Janvier" },
@@ -75,6 +114,119 @@ const TREASURY_FILTERS_DEFAULT = {
   typePaiement: "",
   statutPaiement: "",
   statutDepense: "",
+  memberQuery: "",
+}
+
+const MONTH_LABEL_SHORT = MONTH_OPTIONS.reduce((acc, option) => {
+  acc[option.value] = option.label.slice(0, 3)
+  return acc
+}, {})
+
+const normalizeText = (value = "") => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+
+const categorizeCountry = (country = "") => {
+  const normalized = normalizeText(country)
+  if (normalized.includes("senegal")) return "senegal"
+  if (normalized.includes("france")) return "france"
+  return "international"
+}
+
+const computeKpis = (cotisations, paiements, depenses) => {
+  const isPaidCotisation = (status) => normalizeText(status) === "paye"
+  const isValidated = (status) => normalizeText(status) === "valide"
+
+  const cotisationsPayees = cotisations.filter((cot) => isPaidCotisation(cot.statut_paiement))
+  const montantTotalEur = cotisationsPayees.reduce((sum, cot) => sum + (cot.montant_eur || cot.montant || 0), 0)
+  const montantSenegalEur = cotisationsPayees
+    .filter((cot) => categorizeCountry(cot.membre?.pays) === "senegal")
+    .reduce((sum, cot) => sum + (cot.montant_eur || cot.montant || 0), 0)
+  const montantInternationalEur = cotisationsPayees
+    .filter((cot) => categorizeCountry(cot.membre?.pays) !== "senegal")
+    .reduce((sum, cot) => sum + (cot.montant_eur || cot.montant || 0), 0)
+  const depensesValidees = depenses.filter((dep) => dep.statut === "valide")
+  const depensesValideesEur = depensesValidees.reduce((sum, dep) => sum + (dep.montant_eur || dep.montant || 0), 0)
+  const paiementsDons = paiements.filter(
+    (pai) => normalizeText(pai.statut) === "valide" && ["don", "subvention"].includes(normalizeText(pai.type_paiement))
+  )
+  const totalPaiementsDonsEur = paiementsDons.reduce((sum, pai) => sum + (pai.montant || 0), 0)
+
+  return {
+    total_cotisations: cotisations.length,
+    cotisations_payees: cotisationsPayees.length,
+    cotisations_en_attente: cotisations.length - cotisationsPayees.length,
+    montant_total_eur: montantTotalEur,
+    montant_senegal_eur: montantSenegalEur,
+    montant_international_eur: montantInternationalEur,
+    depenses_validees_eur: depensesValideesEur,
+    depenses_validees: depensesValidees.length,
+    total_paiements_dons_eur: totalPaiementsDonsEur,
+    paiements_dons_count: paiementsDons.length,
+  }
+}
+
+const buildAnalyticsData = (cotisations, paiements, depenses) => {
+  const isPaidCotisation = (status) => normalizeText(status) === "paye"
+  const isValidated = (status) => normalizeText(status) === "valide"
+  const map = new Map()
+
+  const upsert = (item, field, value) => {
+    if (!item.periode_annee || !item.periode_mois) return
+    const key = `${item.periode_annee}-${String(item.periode_mois).padStart(2, "0")}`
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        label: `${MONTH_LABEL_SHORT[item.periode_mois] || "M"} ${item.periode_annee}`,
+        cotisations: 0,
+        paiements: 0,
+        depenses: 0,
+      })
+    }
+    map.get(key)[field] += value
+  }
+
+  cotisations
+    .filter((cot) => isPaidCotisation(cot.statut_paiement))
+    .forEach((cot) => upsert(cot, "cotisations", cot.montant_eur || cot.montant || 0))
+
+  paiements
+    .filter((pai) => isValidated(pai.statut))
+    .forEach((pai) => upsert(pai, "paiements", pai.montant || 0))
+
+  depenses
+    .filter((dep) => isValidated(dep.statut))
+    .forEach((dep) => upsert(dep, "depenses", dep.montant_eur || dep.montant || 0))
+
+  const trends = Array.from(map.values()).sort((a, b) => (a.key > b.key ? 1 : -1))
+  const distributionCounters = { france: 0, senegal: 0, international: 0 }
+
+  cotisations
+    .filter((cot) => isPaidCotisation(cot.statut_paiement))
+    .forEach((cot) => {
+      const bucket = categorizeCountry(cot.membre?.pays)
+      distributionCounters[bucket] += cot.montant_eur || cot.montant || 0
+    })
+
+  const distribution = [
+    { name: "France", value: distributionCounters.france },
+    { name: "Sénégal", value: distributionCounters.senegal },
+    { name: "International", value: distributionCounters.international },
+  ]
+
+  return {
+    trends,
+    distribution,
+    timeline: trends,
+  }
+}
+
+const filterByMemberQuery = (items, query) => {
+  const normalizedQuery = normalizeText(query)
+  if (!normalizedQuery) return items
+  return items.filter((item) => {
+    const fullName = normalizeText(`${item.membre?.prenom || ""} ${item.membre?.nom || ""}`)
+    const numero = normalizeText(item.membre?.numero_membre || "")
+    return fullName.includes(normalizedQuery) || numero.includes(normalizedQuery)
+  })
 }
 
 function AdminDashboard({ admin, onLogout }) {
@@ -308,191 +460,6 @@ function AdminDashboard({ admin, onLogout }) {
               <p className="kpi-label">Rendez-vous</p>
               <p className="kpi-value">{mentoratStats?.total_rendezvous || 0}</p>
             </div>
-          </div>
-        </section>
-
-        <section className="table-section">
-          <div className="table-card">
-            <div className="card-header">
-          <div>
-                <h3 className="card-title">Paiements récents</h3>
-                <p className="card-subtitle">{paiements.length} paiement{paiements.length !== 1 ? 's' : ''}</p>
-              </div>
-            </div>
-            {loading ? (
-              <div className="loading-state">
-                <div className="spinner"></div>
-                <p>Chargement des données...</p>
-              </div>
-            ) : paiements.length === 0 ? (
-              <div className="empty-state">
-                <p>Aucun paiement enregistré</p>
-              </div>
-            ) : (
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Membre</th>
-                      <th>Type</th>
-                      <th>Montant</th>
-                      <th>Statut</th>
-                      <th>Date</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paiements.map((paiement) => (
-                      <tr key={paiement.id}>
-                        <td>{paiement.membre?.prenom} {paiement.membre?.nom}</td>
-                        <td>{paiement.type_paiement || '—'}</td>
-                        <td>{paiement.montant != null ? `${Number(paiement.montant).toFixed(2)} €` : '—'}</td>
-                        <td>
-                          <span className={`status-badge ${paiement.statut === 'valide' ? 'approved' : paiement.statut === 'annule' ? 'rejected' : 'pending'}`}>
-                            {paiement.statut || '—'}
-                </span>
-                        </td>
-                        <td>{paiement.date_paiement ? new Date(paiement.date_paiement).toLocaleDateString('fr-FR') : '—'}</td>
-                        <td>
-                          <div className="table-actions">
-                            {paiement.statut !== 'valide' && (
-                              <button type="button" className="btn-link" onClick={() => handlePaiementAction(paiement, 'validate')}>
-                                Valider
-                              </button>
-                            )}
-                            <button type="button" className="btn-link" onClick={() => handlePaiementAction(paiement, 'cancel')}>
-                              Annuler
-                            </button>
-                            <button type="button" className="btn-link danger" onClick={() => handlePaiementAction(paiement, 'delete')}>
-                              Supprimer
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="table-section">
-          <div className="table-card">
-            <div className="card-header">
-          <div>
-                <h3 className="card-title">Dépenses récentes</h3>
-                <p className="card-subtitle">{depenses.length} dépense{depenses.length !== 1 ? 's' : ''}</p>
-              </div>
-            </div>
-            {loading ? (
-              <div className="loading-state">
-                <div className="spinner"></div>
-                <p>Chargement des données...</p>
-              </div>
-            ) : depenses.length === 0 ? (
-              <div className="empty-state">
-                <p>Aucune dépense enregistrée</p>
-              </div>
-            ) : (
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Titre</th>
-                      <th>Catégorie</th>
-                      <th>Date</th>
-                      <th>Montant</th>
-                      <th>Statut</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {depenses.map((dep) => (
-                      <tr key={dep.id}>
-                        <td>{dep.titre}</td>
-                        <td>{dep.categorie || '—'}</td>
-                        <td>{dep.date_depense ? new Date(dep.date_depense).toLocaleDateString('fr-FR') : '—'}</td>
-                        <td>
-                          {dep.montant_eur ? `${dep.montant_eur.toFixed(2)} €` : `${dep.montant} ${dep.devise || '€'}`}
-                          {dep.devise && dep.devise.toUpperCase() !== 'EUR' && dep.montant_eur ? (
-                            <span style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8' }}>
-                              ({dep.montant} {dep.devise})
-                </span>
-                          ) : null}
-                        </td>
-                        <td>
-                          <span className={`status-badge ${dep.statut === 'valide' ? 'approved' : dep.statut === 'rejete' ? 'rejected' : 'pending'}`}>
-                            {dep.statut || 'planifie'}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="table-actions">
-                            {dep.statut !== 'valide' && (
-                              <button type="button" className="btn-link" onClick={() => handleDepenseAction(dep, 'validate')}>
-                                Valider
-                              </button>
-                            )}
-                            {dep.statut !== 'rejete' && (
-                              <button type="button" className="btn-link" onClick={() => handleDepenseAction(dep, 'reject')}>
-                                Rejeter
-                              </button>
-                            )}
-                            <button type="button" className="btn-link danger" onClick={() => handleDepenseAction(dep, 'delete')}>
-                              Supprimer
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="table-section">
-          <div className="table-card">
-            <div className="card-header">
-              <div>
-                <h3 className="card-title">Historique des opérations</h3>
-                <p className="card-subtitle">{historique.length} évènement{historique.length !== 1 ? 's' : ''}</p>
-              </div>
-            </div>
-            {loading ? (
-              <div className="loading-state">
-                <div className="spinner"></div>
-                <p>Chargement des données...</p>
-              </div>
-            ) : historique.length === 0 ? (
-              <div className="empty-state">
-                <p>Aucune opération enregistrée</p>
-              </div>
-            ) : (
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Action</th>
-                      <th>Description</th>
-                      <th>Montant</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {historique.map((entry) => (
-                      <tr key={entry.id}>
-                        <td>{entry.created_at ? new Date(entry.created_at).toLocaleString('fr-FR') : '—'}</td>
-                        <td>{entry.action}</td>
-                        <td>{entry.description || '—'}</td>
-                        <td>{entry.montant != null ? `${entry.montant}` : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
           </div>
         </section>
 
@@ -970,85 +937,6 @@ function AdminDashboard({ admin, onLogout }) {
 
     return (
       <div className="module-content">
-        <section className="module-toolbar">
-          <div className="toolbar-filters">
-            <div className="filter-item">
-              <label>Mois</label>
-              <select value={filters.periode_mois} onChange={(e) => handleFilterChange('periode_mois', e.target.value)}>
-                <option value="">Tous</option>
-                {MONTH_OPTIONS.map((month) => (
-                  <option key={month.value} value={month.value}>
-                    {month.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="filter-item">
-              <label>Année</label>
-              <input
-                type="number"
-                min="2020"
-                max="2100"
-                value={filters.periode_annee}
-                onChange={(e) => handleFilterChange('periode_annee', e.target.value)}
-                placeholder="2025"
-              />
-            </div>
-            <div className="filter-item">
-              <label>Statut cotisation</label>
-              <select value={filters.statutCotisation} onChange={(e) => handleFilterChange('statutCotisation', e.target.value)}>
-                <option value="">Tous</option>
-                <option value="en_attente">En attente</option>
-                <option value="paye">Payé</option>
-                <option value="annule">Annulé</option>
-              </select>
-            </div>
-            <div className="filter-item">
-              <label>Type paiement</label>
-              <select value={filters.typePaiement} onChange={(e) => handleFilterChange('typePaiement', e.target.value)}>
-                <option value="">Tous</option>
-                <option value="cotisation">Cotisation</option>
-                <option value="don">Don</option>
-                <option value="autre">Autre</option>
-              </select>
-            </div>
-            <div className="filter-item">
-              <label>Statut paiement</label>
-              <select value={filters.statutPaiement} onChange={(e) => handleFilterChange('statutPaiement', e.target.value)}>
-                <option value="">Tous</option>
-                <option value="valide">Validé</option>
-                <option value="en_attente">En attente</option>
-                <option value="annule">Annulé</option>
-              </select>
-            </div>
-            <div className="filter-item">
-              <label>Statut dépense</label>
-              <select value={filters.statutDepense} onChange={(e) => handleFilterChange('statutDepense', e.target.value)}>
-                <option value="">Toutes</option>
-                <option value="planifie">Planifiée</option>
-                <option value="valide">Validée</option>
-                <option value="rejete">Rejetée</option>
-              </select>
-            </div>
-            <button className="btn-secondary" type="button" onClick={handleResetFilters}>
-              Réinitialiser
-            </button>
-          </div>
-          <div className="toolbar-actions">
-            <button className="btn-secondary" type="button" disabled={exporting} onClick={() => handleExport('cotisations')}>
-              Export cotisations
-            </button>
-            <button className="btn-secondary" type="button" disabled={exporting} onClick={() => handleExport('paiements')}>
-              Export paiements
-            </button>
-            <button className="btn-secondary" type="button" disabled={exporting} onClick={() => handleExport('depenses')}>
-              Export dépenses
-            </button>
-            <button className="btn-primary" type="button" disabled={exporting} onClick={handleReportDownload}>
-              Rapport PDF
-            </button>
-          </div>
-        </section>
         <section className="kpi-grid">
           <div className="kpi-card">
             <div className="kpi-icon blue">
@@ -1406,15 +1294,378 @@ function AdminDashboard({ admin, onLogout }) {
     )
   }
 
+  // Composant pour le contenu Adhésion
+  const AdhesionContent = () => {
+    const [stats, setStats] = useState({})
+    const [members, setMembers] = useState([])
+    const [pendingMembers, setPendingMembers] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [filters, setFilters] = useState({ search: '', status: '', pays: '' })
+    const [currentPage, setCurrentPage] = useState(1)
+    const PAGE_SIZE = 20
+
+    const loadData = useCallback(async () => {
+      setLoading(true)
+      try {
+        const [statsData, pendingData, membersData] = await Promise.all([
+          fetchAdhesionStats(),
+          fetchPendingMembers(),
+          fetchAllMembers({ page: currentPage, limit: PAGE_SIZE, ...filters }),
+        ])
+        setStats(statsData || {})
+        setPendingMembers(Array.isArray(pendingData) ? pendingData : [])
+        setMembers(Array.isArray(membersData) ? membersData : membersData?.data || [])
+      } catch (err) {
+        console.error('Erreur chargement adhésion:', err)
+        setStats({})
+        setPendingMembers([])
+        setMembers([])
+      } finally {
+        setLoading(false)
+      }
+    }, [currentPage, filters])
+
+    useEffect(() => {
+      loadData()
+    }, [loadData])
+
+    const handleApprove = async (id) => {
+      try {
+        await approveMember(id)
+        await loadData()
+        alert('Membre approuvé avec succès !')
+      } catch (err) {
+        alert('Erreur : ' + err.message)
+      }
+    }
+
+    const handleReject = async (id) => {
+      if (!window.confirm('Etes-vous sur de vouloir rejeter cette adhesion ?')) {
+        return
+      }
+      try {
+        await rejectMember(id)
+        await loadData()
+        alert('Membre rejeté.')
+      } catch (err) {
+        alert('Erreur : ' + err.message)
+      }
+    }
+
+    // Préparer les données pour les graphiques
+    const monthlyData = useMemo(() => {
+      if (!stats.monthly_evolution) return []
+      return Object.entries(stats.monthly_evolution)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => {
+          const [year, month] = key.split('-')
+          const monthIndex = parseInt(month, 10) - 1
+          const monthLabel = (MONTH_OPTIONS[monthIndex]?.label) || month
+          return {
+            label: `${monthLabel} ${year}`,
+            total: value.total || 0,
+            approved: value.approved || 0,
+            pending: value.pending || 0,
+            rejected: value.rejected || 0,
+          }
+        })
+    }, [stats.monthly_evolution])
+
+    const countryData = useMemo(() => {
+      if (!stats.country_distribution) return []
+      return Object.entries(stats.country_distribution)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 10)
+        .map(([name, value]) => ({ name, value }))
+    }, [stats.country_distribution])
+
+    const levelData = useMemo(() => {
+      if (!stats.level_distribution) return []
+      return Object.entries(stats.level_distribution)
+        .sort(([, a], [, b]) => b - a)
+        .map(([name, value]) => ({ name, value }))
+    }, [stats.level_distribution])
+
+    return (
+      <div className="module-content">
+        {/* KPI Section */}
+        <section className="kpi-grid">
+          <div className="kpi-card">
+            <div className="kpi-icon blue">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Total membres</p>
+              <p className="kpi-value">{stats.total_members || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon green">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Membres actifs</p>
+              <p className="kpi-value">{stats.active_members || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon orange">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">En attente</p>
+              <p className="kpi-value">{stats.pending_members || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon teal">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Approuvés</p>
+              <p className="kpi-value">{stats.approved_members || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon purple">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Taux de croissance</p>
+              <p className="kpi-value">{stats.growth_rate > 0 ? '+' : ''}{stats.growth_rate?.toFixed(1) || '0.0'}%</p>
+              <p className="card-subtitle">Ce mois vs mois précédent</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon yellow">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Rejetés</p>
+              <p className="kpi-value">{stats.rejected_members || 0}</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Analytics Section */}
+        <section className="treasury-analytics">
+          <div className="analytics-card">
+            <h3>Évolution mensuelle des adhésions</h3>
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+              </div>
+            ) : monthlyData.length === 0 ? (
+              <div className="empty-state small">
+                <p>Aucune donnée disponible</p>
+              </div>
+            ) : (
+              <div style={{ height: '280px', display: 'flex', alignItems: 'flex-end', gap: '8px', padding: '20px' }}>
+                {(() => {
+                  const maxTotal = Math.max(...monthlyData.map(m => m.total || 0), 1)
+                  return monthlyData.slice(-12).map((item, idx) => (
+                    <div key={idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '200px', gap: '2px' }}>
+                        <div style={{ height: `${((item.approved || 0) / maxTotal) * 100}%`, background: '#4ade80', borderRadius: '4px 4px 0 0', minHeight: item.approved > 0 ? '2px' : '0' }} title={`Approuvés: ${item.approved}`}></div>
+                        <div style={{ height: `${((item.pending || 0) / maxTotal) * 100}%`, background: '#f97316', borderRadius: '0', minHeight: item.pending > 0 ? '2px' : '0' }} title={`En attente: ${item.pending}`}></div>
+                        <div style={{ height: `${((item.rejected || 0) / maxTotal) * 100}%`, background: '#ef4444', borderRadius: '0 0 4px 4px', minHeight: item.rejected > 0 ? '2px' : '0' }} title={`Rejetés: ${item.rejected}`}></div>
+                      </div>
+                      <span style={{ fontSize: '0.75rem', color: '#94a3b8', writingMode: 'vertical-rl', textOrientation: 'mixed' }}>{item.label}</span>
+                    </div>
+                  ))
+                })()}
+              </div>
+            )}
+          </div>
+
+          <div className="analytics-card">
+            <h3>Répartition par pays</h3>
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+              </div>
+            ) : countryData.length === 0 ? (
+              <div className="empty-state small">
+                <p>Aucune donnée disponible</p>
+              </div>
+            ) : (
+              <div style={{ padding: '20px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {countryData.slice(0, 8).map((item, idx) => {
+                    const total = countryData.reduce((sum, c) => sum + c.value, 0)
+                    const percentage = ((item.value / total) * 100).toFixed(1)
+                    return (
+                      <div key={idx}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                          <span style={{ fontSize: '0.875rem', color: '#e2e8f0' }}>{item.name}</span>
+                          <span style={{ fontSize: '0.875rem', color: '#94a3b8' }}>{item.value} ({percentage}%)</span>
+                        </div>
+                        <div style={{ height: '8px', background: 'rgba(148, 163, 184, 0.2)', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${percentage}%`, background: '#38bdf8', transition: 'width 0.3s' }}></div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Filters */}
+        <section className="module-toolbar">
+          <div className="toolbar-filters">
+            <div className="filter-item">
+              <label>Recherche</label>
+              <input
+                type="text"
+                value={filters.search}
+                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                placeholder="Nom, email, numéro..."
+              />
+            </div>
+            <div className="filter-item">
+              <label>Statut</label>
+              <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+                <option value="">Tous</option>
+                <option value="pending">En attente</option>
+                <option value="approved">Approuvé</option>
+                <option value="rejected">Rejeté</option>
+              </select>
+            </div>
+            <div className="filter-item">
+              <label>Pays</label>
+              <input
+                type="text"
+                value={filters.pays}
+                onChange={(e) => setFilters({ ...filters, pays: e.target.value })}
+                placeholder="Filtrer par pays..."
+              />
+            </div>
+            <button className="btn-secondary" onClick={() => setFilters({ search: '', status: '', pays: '' })}>
+              Réinitialiser
+            </button>
+          </div>
+        </section>
+
+        {/* Pending Members Table */}
+        <section className="table-section">
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Adhésions en attente de validation</h3>
+                <p className="card-subtitle">{pendingMembers.length} demande{pendingMembers.length !== 1 ? 's' : ''} en attente</p>
+              </div>
+            </div>
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Chargement...</p>
+              </div>
+            ) : pendingMembers.length === 0 ? (
+              <div className="empty-state">
+                <p>Aucune adhésion en attente</p>
+              </div>
+            ) : (
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Nom</th>
+                      <th>Email</th>
+                      <th>Pays</th>
+                      <th>Date</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingMembers.map((membre) => (
+                      <tr key={membre.id}>
+                        <td>
+                          <div className="table-cell-name">
+                            <div className="name-avatar">
+                              {(membre.prenom?.[0] || '?').toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="name-primary">
+                                {membre.prenom || ''} {membre.nom || ''}
+                              </div>
+                              {membre.domaine && (
+                                <div className="name-secondary">{membre.domaine}</div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td>{membre.email || '—'}</td>
+                        <td>
+                          <span className="country-badge">{membre.pays || '—'}</span>
+                        </td>
+                        <td>
+                          {membre.created_at 
+                            ? new Date(membre.created_at).toLocaleDateString('fr-FR')
+                            : '—'}
+                        </td>
+                        <td>
+                          <div className="table-actions">
+                            <button
+                              onClick={() => handleApprove(membre.id)}
+                              className="action-btn approve"
+                              title="Valider"
+                            >
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => handleReject(membre.id)}
+                              className="action-btn reject"
+                              title="Rejeter"
+                            >
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    )
+  }
+
   // Composant pour le contenu Trésorerie
   const TresorerieContent = () => {
-    const [tresorerieStats, setTresorerieStats] = useState(null)
-    const [cotisations, setCotisations] = useState([])
-    const [paiements, setPaiements] = useState([])
-    const [depenses, setDepenses] = useState([])
+    const [cotisationsData, setCotisationsData] = useState([])
+    const [paiementsData, setPaiementsData] = useState([])
+    const [depensesData, setDepensesData] = useState([])
     const [historique, setHistorique] = useState([])
+    const [relances, setRelances] = useState([])
     const [loading, setLoading] = useState(true)
     const [showModal, setShowModal] = useState(null) // 'cotisation', 'paiement', 'relance', 'carte'
+    const [editingPaiement, setEditingPaiement] = useState(null) // Paiement en cours d'édition
     const [members, setMembers] = useState([])
     const [formData, setFormData] = useState({})
     const [submitting, setSubmitting] = useState(false)
@@ -1422,6 +1673,9 @@ function AdminDashboard({ admin, onLogout }) {
     const [carteTarif, setCarteTarif] = useState({ amount: null, currency: '' })
     const [filters, setFilters] = useState(TREASURY_FILTERS_DEFAULT)
     const [exporting, setExporting] = useState(false)
+    const timelineRef = useRef(null)
+    const [selectedRelanceMembers, setSelectedRelanceMembers] = useState([])
+    const [relanceSearch, setRelanceSearch] = useState('')
 
     const determineTarifForCountry = (country = '') => {
       const normalized = country ? country.toLowerCase() : ''
@@ -1431,73 +1685,69 @@ function AdminDashboard({ admin, onLogout }) {
       return { amount: 10, currency: '€' }
     }
 
+    const PAGE_SIZE = 100
+
+    const buildCotisationParams = (page = 1) => ({
+      page,
+      limit: PAGE_SIZE,
+      ...(filters.periode_annee && { annee: filters.periode_annee }),
+      ...(filters.periode_mois && { periode_mois: filters.periode_mois }),
+      ...(filters.statutCotisation && { statut_paiement: filters.statutCotisation }),
+    })
+
+    const buildPaiementParams = (page = 1) => ({
+      page,
+      limit: PAGE_SIZE,
+      ...(filters.periode_mois && { periode_mois: filters.periode_mois }),
+      ...(filters.periode_annee && { periode_annee: filters.periode_annee }),
+      ...(filters.typePaiement && { type_paiement: filters.typePaiement }),
+      ...(filters.statutPaiement && { statut: filters.statutPaiement }),
+    })
+
+    const buildDepenseParams = (page = 1) => ({
+      page,
+      limit: PAGE_SIZE,
+      ...(filters.statutDepense && { statut: filters.statutDepense }),
+      ...(filters.periode_mois && { periode_mois: filters.periode_mois }),
+      ...(filters.periode_annee && { periode_annee: filters.periode_annee }),
+    })
+
+    const fetchAllPages = async (fetchFn, builder) => {
+      const aggregated = []
+      let page = 1
+      while (true) {
+        const chunk = await fetchFn(builder(page))
+        const items = Array.isArray(chunk) ? chunk : chunk?.data || []
+        if (!items.length) break
+        aggregated.push(...items)
+        if (items.length < PAGE_SIZE) break
+        page += 1
+        if (page > 10) break
+      }
+      return aggregated
+    }
+
     const loadData = useCallback(async () => {
       setLoading(true)
       try {
-        const cotisationParams = {
-          limit: 10,
-          ...(filters.periode_annee && { annee: filters.periode_annee }),
-          ...(filters.periode_mois && { periode_mois: filters.periode_mois }),
-          ...(filters.statutCotisation && { statut_paiement: filters.statutCotisation }),
-        }
-        const paiementParams = {
-          limit: 10,
-          ...(filters.periode_mois && { periode_mois: filters.periode_mois }),
-          ...(filters.periode_annee && { periode_annee: filters.periode_annee }),
-          ...(filters.typePaiement && { type_paiement: filters.typePaiement }),
-          ...(filters.statutPaiement && { statut: filters.statutPaiement }),
-        }
-        const depenseParams = {
-          limit: 10,
-          ...(filters.statutDepense && { statut: filters.statutDepense }),
-          ...(filters.periode_mois && { periode_mois: filters.periode_mois }),
-          ...(filters.periode_annee && { periode_annee: filters.periode_annee }),
-        }
-
-        const [statsData, cotisationsData, paiementsData, depensesData, historiqueData] = await Promise.all([
-          fetchTresorerieStats(),
-          fetchCotisations(cotisationParams),
-          fetchPaiements(paiementParams),
-          fetchDepenses(depenseParams),
+        const [cotisationsResult, paiementsResult, depensesResult, historiqueData, relancesData] = await Promise.all([
+          fetchAllPages(fetchCotisations, buildCotisationParams),
+          fetchAllPages(fetchPaiements, buildPaiementParams),
+          fetchAllPages(fetchDepenses, buildDepenseParams),
           fetchHistorique({ limit: 10 }),
+          fetchRelances({ limit: 50 }),
         ])
-
-        const monthFilter = filters.periode_mois ? parseInt(filters.periode_mois, 10) : null
-        const yearFilter = filters.periode_annee ? parseInt(filters.periode_annee, 10) : null
-
-        let cotisationsList = Array.isArray(cotisationsData) ? cotisationsData : []
-        if (monthFilter) {
-          cotisationsList = cotisationsList.filter((cot) => Number(cot.periode_mois) === monthFilter)
-        }
-
-        let paiementsList = Array.isArray(paiementsData) ? paiementsData : []
-        if (monthFilter) {
-          paiementsList = paiementsList.filter((paiement) => Number(paiement.periode_mois) === monthFilter)
-        }
-
-        let depensesList = Array.isArray(depensesData) ? depensesData : []
-        if (monthFilter || yearFilter) {
-          depensesList = depensesList.filter((dep) => {
-            if (!dep.date_depense) return false
-            const date = new Date(dep.date_depense)
-            const matchesMonth = monthFilter ? date.getMonth() + 1 === monthFilter : true
-            const matchesYear = yearFilter ? date.getFullYear() === yearFilter : true
-            return matchesMonth && matchesYear
-          })
-        }
-
-        setTresorerieStats(statsData || {})
-        setCotisations(cotisationsList)
-        setPaiements(paiementsList)
-        setDepenses(depensesList)
+        setCotisationsData(cotisationsResult)
+        setPaiementsData(paiementsResult)
+        setDepensesData(depensesResult)
         setHistorique(Array.isArray(historiqueData) ? historiqueData : [])
+        setRelances(Array.isArray(relancesData) ? relancesData : [])
       } catch (err) {
         console.error('Erreur chargement trésorerie:', err)
-        setCotisations([])
-        setPaiements([])
-        setDepenses([])
+        setCotisationsData([])
+        setPaiementsData([])
+        setDepensesData([])
         setHistorique([])
-        setTresorerieStats({})
       } finally {
         setLoading(false)
       }
@@ -1507,34 +1757,55 @@ function AdminDashboard({ admin, onLogout }) {
       loadData()
     }, [loadData])
 
-    useEffect(() => {
-      if (showModal) {
-        const loadSelectData = async () => {
-          try {
-            const membersData = await fetchAllMembers({ limit: 100 })
-            setMembers(Array.isArray(membersData) ? membersData : [])
-          } catch (err) {
-            console.error('Erreur chargement données sélecteurs:', err)
-          }
+    const loadMembers = useCallback(async () => {
+      try {
+        const aggregated = []
+        let page = 1
+        const limit = 100
+        while (true) {
+          const chunk = await fetchAllMembers({ page, limit })
+          const items = Array.isArray(chunk) ? chunk : chunk?.data || []
+          if (!items.length) break
+          aggregated.push(...items)
+          if (items.length < limit) break
+          page += 1
+          if (page > 20) break
         }
-        loadSelectData()
-      } else {
-        setFormData({})
-        setCotisationTarif({ amount: null, currency: '' })
-        setCarteTarif({ amount: null, currency: '' })
+        setMembers(aggregated)
+      } catch (err) {
+        console.error('Erreur chargement données sélecteurs:', err)
       }
-    }, [showModal])
+    }, [])
 
     useEffect(() => {
-      if (showModal === 'cotisation' || showModal === 'paiement') {
-        const now = new Date()
-        setFormData((prev) => ({
-          ...prev,
-          periode_mois: prev.periode_mois || now.getMonth() + 1,
-          periode_annee: prev.periode_annee || now.getFullYear(),
-        }))
+      if (showModal) {
+        loadMembers()
+      } else {
+        setFormData({})
+        setEditingPaiement(null)
+        setCotisationTarif({ amount: null, currency: '' })
+        setCarteTarif({ amount: null, currency: '' })
+        setSelectedRelanceMembers([])
+        setRelanceSearch('')
       }
-    }, [showModal])
+    }, [showModal, loadMembers])
+
+    useEffect(() => {
+      if (showModal === 'cotisation' || (showModal === 'paiement' && !editingPaiement)) {
+        const now = new Date()
+        setFormData((prev) => {
+          const periode_annee = prev.periode_annee || now.getFullYear()
+          return {
+            ...prev,
+            periode_mois: prev.periode_mois || now.getMonth() + 1,
+            periode_annee,
+            annee: periode_annee,
+            type_paiement: prev.type_paiement || 'don',
+            statut: prev.statut || 'valide',
+          }
+        })
+      }
+    }, [showModal, editingPaiement])
 
     const handleCotisationMemberChange = (memberId) => {
       const selected = members.find((m) => m.id === memberId)
@@ -1571,6 +1842,46 @@ function AdminDashboard({ admin, onLogout }) {
       setFilters({ ...TREASURY_FILTERS_DEFAULT })
     }
 
+    const memberQuery = filters.memberQuery.trim()
+    const filteredCotisations = useMemo(
+      () => filterByMemberQuery(cotisationsData, memberQuery),
+      [cotisationsData, memberQuery]
+    )
+    const filteredPaiements = useMemo(
+      () => filterByMemberQuery(paiementsData, memberQuery),
+      [paiementsData, memberQuery]
+    )
+    const filteredDepenses = useMemo(
+      () => filterByMemberQuery(depensesData, memberQuery),
+      [depensesData, memberQuery]
+    )
+    const filteredRelanceMembers = useMemo(() => {
+      const query = normalizeText(relanceSearch)
+      if (!query) return members
+      return members.filter((member) => {
+        const label = normalizeText(`${member.prenom || ''} ${member.nom || ''} ${member.numero_membre || ''}`)
+        return label.includes(query)
+      })
+    }, [members, relanceSearch])
+
+    const cotisations = useMemo(() => filteredCotisations.slice(0, 10), [filteredCotisations])
+    const paiements = useMemo(() => filteredPaiements.slice(0, 10), [filteredPaiements])
+    const depenses = useMemo(() => filteredDepenses.slice(0, 10), [filteredDepenses])
+
+    const analyticsData = useMemo(
+      () => buildAnalyticsData(filteredCotisations, filteredPaiements, filteredDepenses),
+      [filteredCotisations, filteredPaiements, filteredDepenses]
+    )
+    const kpis = useMemo(
+      () => computeKpis(filteredCotisations, filteredPaiements, filteredDepenses),
+      [filteredCotisations, filteredPaiements, filteredDepenses]
+    )
+    const senegalCotisations = useMemo(
+      () => filteredCotisations.filter((cot) => categorizeCountry(cot.membre?.pays) === 'senegal').length,
+      [filteredCotisations]
+    )
+    const internationalCotisations = filteredCotisations.length - senegalCotisations
+
     const downloadFileFromBlob = (blob, filename) => {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -1601,7 +1912,7 @@ function AdminDashboard({ admin, onLogout }) {
       statut: filters.statutDepense || undefined,
     })
 
-    const handleExport = async (type) => {
+    const handleExport = async (type = 'cotisations') => {
       try {
         setExporting(true)
         let file
@@ -1634,17 +1945,49 @@ function AdminDashboard({ admin, onLogout }) {
       }
     }
 
+    const updateCotisationState = (updated) => {
+      if (!updated) return
+      setCotisationsData((prev) =>
+        prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
+      )
+    }
+
+    const removeCotisationState = (id) => {
+      setCotisationsData((prev) => prev.filter((item) => item.id !== id))
+    }
+
+    const updatePaiementState = (updated) => {
+      if (!updated) return
+      setPaiementsData((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
+    }
+
+    const removePaiementState = (id) => {
+      setPaiementsData((prev) => prev.filter((item) => item.id !== id))
+    }
+
+    const updateDepenseState = (updated) => {
+      if (!updated) return
+      setDepensesData((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
+    }
+
+    const removeDepenseState = (id) => {
+      setDepensesData((prev) => prev.filter((item) => item.id !== id))
+    }
+
     const handleCotisationAction = async (cot, action) => {
       try {
         if (action === 'validate') {
-          await validateCotisation(cot.id, { date_paiement: new Date().toISOString().split('T')[0] })
+          const updated = await validateCotisation(cot.id, { date_paiement: new Date().toISOString().split('T')[0] })
+          updateCotisationState(updated)
         } else if (action === 'reset') {
-          await resetCotisation(cot.id)
+          const updated = await resetCotisation(cot.id)
+          updateCotisationState(updated)
         } else if (action === 'delete') {
           if (!window.confirm('Supprimer définitivement cette cotisation ?')) {
             return
           }
           await deleteCotisation(cot.id)
+          removeCotisationState(cot.id)
         }
         await loadData()
       } catch (err) {
@@ -1654,18 +1997,37 @@ function AdminDashboard({ admin, onLogout }) {
 
     const handlePaiementAction = async (paiement, action) => {
       try {
-        if (action === 'validate') {
-          await validatePaiement(paiement.id, { date_paiement: paiement.date_paiement || new Date().toISOString().split('T')[0] })
+        if (action === 'edit') {
+          // Pré-remplir le formulaire avec les données du paiement
+          setEditingPaiement(paiement)
+          setFormData({
+            type_paiement: paiement.type_paiement || 'don',
+            montant: paiement.montant || '',
+            mode_paiement: paiement.mode_paiement || '',
+            statut: paiement.statut || 'valide',
+            date_paiement: paiement.date_paiement ? paiement.date_paiement.split('T')[0] : '',
+            periode_mois: paiement.periode_mois || new Date().getMonth() + 1,
+            periode_annee: paiement.periode_annee || new Date().getFullYear(),
+            details: paiement.details || '',
+          })
+          setShowModal('paiement')
+        } else if (action === 'validate') {
+          const updated = await validatePaiement(paiement.id, { date_paiement: paiement.date_paiement || new Date().toISOString().split('T')[0] })
+          updatePaiementState(updated)
         } else if (action === 'cancel') {
-          const reason = window.prompt('Raison de l’annulation ?', '')
-          await cancelPaiement(paiement.id, { reason: reason || '' })
+          const reason = window.prompt('Raison de l\'annulation ?', '')
+          const updated = await cancelPaiement(paiement.id, { reason: reason || '' })
+          updatePaiementState(updated)
         } else if (action === 'delete') {
           if (!window.confirm('Supprimer définitivement ce paiement ?')) {
             return
           }
           await deletePaiement(paiement.id)
+          removePaiementState(paiement.id)
         }
-        await loadData()
+        if (action !== 'edit') {
+          await loadData()
+        }
       } catch (err) {
         alert('Action impossible : ' + err.message)
       }
@@ -1674,19 +2036,28 @@ function AdminDashboard({ admin, onLogout }) {
     const handleDepenseAction = async (depense, action) => {
       try {
         if (action === 'validate') {
-          await validateDepense(depense.id)
+          const updated = await validateDepense(depense.id)
+          updateDepenseState(updated)
         } else if (action === 'reject') {
           const reason = window.prompt('Motif du rejet ?', '')
-          await rejectDepense(depense.id, { reason: reason || '' })
+          const updated = await rejectDepense(depense.id, { reason: reason || '' })
+          updateDepenseState(updated)
         } else if (action === 'delete') {
           if (!window.confirm('Supprimer définitivement cette dépense ?')) {
             return
           }
           await deleteDepense(depense.id)
+          removeDepenseState(depense.id)
         }
         await loadData()
       } catch (err) {
         alert('Action impossible : ' + err.message)
+      }
+    }
+
+    const scrollToTimeline = () => {
+      if (timelineRef.current) {
+        timelineRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
     }
 
@@ -1695,14 +2066,42 @@ function AdminDashboard({ admin, onLogout }) {
       setSubmitting(true)
       try {
         if (showModal === 'cotisation') {
-          await createCotisation(formData)
+          const payload = {
+            ...formData,
+            annee: formData.periode_annee || formData.annee || new Date().getFullYear(),
+          }
+          await createCotisation(payload)
           alert('Cotisation créée avec succès !')
         } else if (showModal === 'paiement') {
-          await createPaiement(formData)
-          alert('Paiement créé avec succès !')
+          const payload = {
+            ...formData,
+            membre_id: null,
+          }
+          if (editingPaiement) {
+            // Mise à jour d'un paiement existant
+            await updatePaiement(editingPaiement.id, payload)
+            alert('Paiement modifié avec succès !')
+            setEditingPaiement(null)
+          } else {
+            // Création d'un nouveau paiement
+            await createPaiement(payload)
+            alert('Paiement créé avec succès !')
+          }
         } else if (showModal === 'relance') {
-          await createRelance(formData)
-          alert('Relance créée avec succès !')
+          if (!selectedRelanceMembers.length) {
+            alert('Veuillez sélectionner au moins un membre.')
+            setSubmitting(false)
+            return
+          }
+          await Promise.all(
+            selectedRelanceMembers.map((memberId) =>
+              createRelance({
+                ...formData,
+                membre_id: memberId,
+              })
+            )
+          )
+          alert('Relances créées avec succès !')
         } else if (showModal === 'carte') {
           await createCarteMembre(formData)
           alert('Carte membre créée avec succès !')
@@ -1712,6 +2111,8 @@ function AdminDashboard({ admin, onLogout }) {
         }
         setShowModal(null)
         setFormData({})
+        setEditingPaiement(null)
+        setSelectedRelanceMembers([])
         await loadData()
       } catch (err) {
         alert('Erreur : ' + err.message)
@@ -1738,6 +2139,12 @@ function AdminDashboard({ admin, onLogout }) {
 
     return (
       <div className="module-content">
+        <TreasuryFilters
+          filters={filters}
+          onChange={handleFilterChange}
+          onReset={handleResetFilters}
+          monthOptions={MONTH_OPTIONS}
+        />
         <section className="kpi-grid">
           <div className="kpi-card">
             <div className="kpi-icon blue">
@@ -1747,7 +2154,7 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Cotisations totales</p>
-              <p className="kpi-value">{tresorerieStats?.total_cotisations || 0}</p>
+              <p className="kpi-value">{kpis.total_cotisations}</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -1758,7 +2165,7 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Cotisations payées</p>
-              <p className="kpi-value">{tresorerieStats?.cotisations_payees || 0}</p>
+              <p className="kpi-value">{kpis.cotisations_payees}</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -1769,7 +2176,7 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
             <div className="kpi-content">
               <p className="kpi-label">En attente</p>
-              <p className="kpi-value">{tresorerieStats?.cotisations_en_attente || 0}</p>
+              <p className="kpi-value">{kpis.cotisations_en_attente}</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -1780,7 +2187,7 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Montant total (EUR)</p>
-              <p className="kpi-value">{tresorerieStats?.montant_total_eur?.toFixed(2) || '0.00'} €</p>
+              <p className="kpi-value">{kpis.montant_total_eur.toFixed(2)} €</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -1791,8 +2198,8 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Cotisations Sénégal (EUR)</p>
-              <p className="kpi-value">{tresorerieStats?.montant_senegal_eur?.toFixed(2) || '0.00'} €</p>
-              <p className="card-subtitle">{tresorerieStats?.cotisations_senegal || 0} cotisations</p>
+              <p className="kpi-value">{kpis.montant_senegal_eur.toFixed(2)} €</p>
+              <p className="card-subtitle">{senegalCotisations} cotisations</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -1803,8 +2210,20 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Cotisations Internationales (EUR)</p>
-              <p className="kpi-value">{tresorerieStats?.montant_international_eur?.toFixed(2) || '0.00'} €</p>
-              <p className="card-subtitle">{tresorerieStats?.cotisations_internationales || 0} cotisations</p>
+              <p className="kpi-value">{kpis.montant_international_eur.toFixed(2)} €</p>
+              <p className="card-subtitle">{internationalCotisations} cotisations</p>
+            </div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-icon slate">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v8m0 0H6m6 0h6M6 12h12" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Dons & subventions (EUR)</p>
+              <p className="kpi-value">{kpis.total_paiements_dons_eur.toFixed(2)} €</p>
+              <p className="card-subtitle">{kpis.paiements_dons_count} paiements</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -1815,11 +2234,19 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Dépenses validées (EUR)</p>
-              <p className="kpi-value">{tresorerieStats?.depenses_validees_eur?.toFixed(2) || '0.00'} €</p>
-              <p className="card-subtitle">{tresorerieStats?.depenses_validees || 0} dépenses</p>
+              <p className="kpi-value">{kpis.depenses_validees_eur.toFixed(2)} €</p>
+              <p className="card-subtitle">{kpis.depenses_validees} dépenses</p>
             </div>
           </div>
         </section>
+        <TreasuryActionsBar
+          exporting={exporting}
+          onExportCsv={handleExport}
+          onExportPdf={handleReportDownload}
+          onScrollTimeline={scrollToTimeline}
+        />
+        <TreasuryAnalytics trendsData={analyticsData.trends} distributionData={analyticsData.distribution} />
+        <TreasuryTimeline ref={timelineRef} data={analyticsData.timeline} loading={loading} />
 
         <section className="table-section">
           <div className="table-card">
@@ -1833,7 +2260,7 @@ function AdminDashboard({ admin, onLogout }) {
                   + Ajouter Cotisation
                 </button>
                 <button className="btn-primary" onClick={() => setShowModal('paiement')}>
-                  + Ajouter Paiement
+                  + Ajouter don/subvention
                 </button>
                 <button className="btn-primary" onClick={() => setShowModal('relance')}>
                   + Créer Relance
@@ -1920,7 +2347,7 @@ function AdminDashboard({ admin, onLogout }) {
               <div className="modal-header">
                 <h2>
                   {showModal === 'cotisation' && 'Ajouter une Cotisation'}
-                  {showModal === 'paiement' && 'Ajouter un Paiement'}
+                  {showModal === 'paiement' && (editingPaiement ? 'Modifier don/subvention' : 'Ajouter don/subvention')}
                   {showModal === 'relance' && 'Créer une Relance'}
                   {showModal === 'carte' && 'Créer une Carte Membre'}
                 </h2>
@@ -1975,23 +2402,15 @@ function AdminDashboard({ admin, onLogout }) {
                           value={formData.periode_annee || ''}
                           onChange={(e) => {
                             const value = parseInt(e.target.value, 10)
-                            setFormData({ ...formData, periode_annee: isNaN(value) ? '' : value })
+                            setFormData({
+                              ...formData,
+                              periode_annee: isNaN(value) ? '' : value,
+                              annee: isNaN(value) ? '' : value,
+                            })
                           }}
                           placeholder="Année"
                         />
-          </div>
-                    </div>
-                    <div className="form-group">
-                      <label>Année *</label>
-                      <input
-                        type="number"
-                        required
-                        value={formData.annee || ''}
-                        onChange={(e) => setFormData({ ...formData, annee: parseInt(e.target.value) })}
-                        placeholder="Ex: 2025"
-                        min="2020"
-                        max="2100"
-                      />
+                      </div>
                     </div>
                     <div className="form-group">
                       <label>Montant *</label>
@@ -2041,21 +2460,9 @@ function AdminDashboard({ admin, onLogout }) {
 
                 {showModal === 'paiement' && (
                   <>
-                    <div className="form-group">
-                      <label>Membre *</label>
-                      <select
-                        required
-                        value={formData.membre_id || ''}
-                        onChange={(e) => setFormData({ ...formData, membre_id: e.target.value })}
-                      >
-                        <option value="">Sélectionner un membre</option>
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.prenom} {m.nom} ({m.numero_membre})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <p className="form-hint">
+                      Ces paiements correspondent aux dons ou subventions reçus par l’association. Aucun membre n’est associé.
+                    </p>
                     <div className="form-group">
                       <label>Période concernée *</label>
                       <div style={{ display: 'flex', gap: '10px' }}>
@@ -2089,12 +2496,11 @@ function AdminDashboard({ admin, onLogout }) {
                       <label>Type de paiement *</label>
                       <select
                         required
-                        value={formData.type_paiement || ''}
+                        value={formData.type_paiement || 'don'}
                         onChange={(e) => setFormData({ ...formData, type_paiement: e.target.value })}
                       >
-                        <option value="">Sélectionner</option>
-                        <option value="cotisation">Cotisation</option>
                         <option value="don">Don</option>
+                        <option value="subvention">Subvention</option>
                         <option value="autre">Autre</option>
                       </select>
                     </div>
@@ -2119,6 +2525,7 @@ function AdminDashboard({ admin, onLogout }) {
                         <option value="virement">Virement</option>
                         <option value="cheque">Chèque</option>
                         <option value="especes">Espèces</option>
+                        <option value="autre">Autre</option>
                       </select>
                     </div>
                     <div className="form-group">
@@ -2130,11 +2537,13 @@ function AdminDashboard({ admin, onLogout }) {
                       />
                     </div>
                     <div className="form-group">
-                      <label>Détails</label>
+                      <label>Description / Source *</label>
                       <textarea
+                        required
                         value={formData.details || ''}
                         onChange={(e) => setFormData({ ...formData, details: e.target.value })}
                         rows="3"
+                        placeholder="Ex : Don entreprise X, Subvention ministère..."
                       />
                     </div>
                   </>
@@ -2143,19 +2552,35 @@ function AdminDashboard({ admin, onLogout }) {
                 {showModal === 'relance' && (
                   <>
                     <div className="form-group">
-                      <label>Membre *</label>
-                      <select
-                        required
-                        value={formData.membre_id || ''}
-                        onChange={(e) => setFormData({ ...formData, membre_id: e.target.value })}
-                      >
-                        <option value="">Sélectionner un membre</option>
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.prenom} {m.nom} ({m.numero_membre})
-                          </option>
+                      <label>Membres concernés *</label>
+                      <input
+                        type="text"
+                        placeholder="Filtrer..."
+                        value={relanceSearch}
+                        onChange={(e) => setRelanceSearch(e.target.value)}
+                      />
+                      <div className="multi-select-list">
+                        {filteredRelanceMembers.map((membre) => (
+                          <label key={membre.id} className="multi-select-item">
+                            <input
+                              type="checkbox"
+                              checked={selectedRelanceMembers.includes(membre.id)}
+                              onChange={(e) => {
+                                const checked = e.target.checked
+                                setSelectedRelanceMembers((prev) =>
+                                  checked ? [...prev, membre.id] : prev.filter((id) => id !== membre.id)
+                                )
+                              }}
+                            />
+                            <span>
+                              {membre.prenom} {membre.nom} ({membre.numero_membre})
+                            </span>
+                          </label>
                         ))}
-                      </select>
+                        {filteredRelanceMembers.length === 0 && (
+                          <p className="form-hint">Aucun membre ne correspond à votre recherche.</p>
+                        )}
+                      </div>
                     </div>
                     <div className="form-group">
                       <label>Année *</label>
@@ -2843,6 +3268,1093 @@ function AdminDashboard({ admin, onLogout }) {
     )
   }
 
+  // Composant pour le contenu Formations
+  const FormationsContent = () => {
+    const [stats, setStats] = useState({})
+    const [formations, setFormations] = useState([])
+    const [sessions, setSessions] = useState([])
+    const [inscriptions, setInscriptions] = useState([])
+    const [formateurs, setFormateurs] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [showModal, setShowModal] = useState(null) // 'formation', 'session', 'inscription', 'formateur'
+    const [formData, setFormData] = useState({})
+    const [editingId, setEditingId] = useState(null)
+    const [submitting, setSubmitting] = useState(false)
+    const [filters, setFilters] = useState({ search: '', categorie: '', statut: '' })
+
+    const loadData = useCallback(async () => {
+      setLoading(true)
+      try {
+        const [statsData, formationsData, sessionsData, inscriptionsData, formateursData] = await Promise.all([
+          fetchFormationStats(),
+          fetchFormations({ page: 1, limit: 50 }),
+          fetchSessions({ page: 1, limit: 50 }),
+          fetchInscriptions({ page: 1, limit: 50 }),
+          fetchFormateurs(),
+        ])
+        setStats(statsData || {})
+        setFormations(Array.isArray(formationsData) ? formationsData : [])
+        setSessions(Array.isArray(sessionsData) ? sessionsData : [])
+        setInscriptions(Array.isArray(inscriptionsData) ? inscriptionsData : [])
+        setFormateurs(Array.isArray(formateursData) ? formateursData : [])
+      } catch (err) {
+        console.error('Erreur chargement formations:', err)
+        setStats({})
+        setFormations([])
+        setSessions([])
+        setInscriptions([])
+        setFormateurs([])
+      } finally {
+        setLoading(false)
+      }
+    }, [])
+
+    useEffect(() => {
+      loadData()
+    }, [loadData])
+
+    const handleSubmit = async (e) => {
+      e.preventDefault()
+      setSubmitting(true)
+      try {
+        if (showModal === 'formation') {
+          if (editingId) {
+            await updateFormation(editingId, formData)
+            alert('Formation mise à jour avec succès !')
+          } else {
+            await createFormation(formData)
+            alert('Formation créée avec succès !')
+          }
+        } else if (showModal === 'session') {
+          if (editingId) {
+            await updateSession(editingId, formData)
+            alert('Session mise à jour avec succès !')
+          } else {
+            await createSession(formData)
+            alert('Session créée avec succès !')
+          }
+        } else if (showModal === 'inscription') {
+          if (editingId) {
+            await updateInscription(editingId, formData)
+            alert('Inscription mise à jour avec succès !')
+          } else {
+            await createInscription(formData)
+            alert('Inscription créée avec succès !')
+          }
+        } else if (showModal === 'formateur') {
+          if (editingId) {
+            await updateFormateur(editingId, formData)
+            alert('Formateur mis à jour avec succès !')
+          } else {
+            await createFormateur(formData)
+            alert('Formateur créé avec succès !')
+          }
+        }
+        setShowModal(null)
+        setFormData({})
+        setEditingId(null)
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors de l\'opération')
+      } finally {
+        setSubmitting(false)
+      }
+    }
+
+    const handleDelete = async (type, id) => {
+      if (!window.confirm(`Supprimer définitivement cet élément ?`)) return
+      try {
+        if (type === 'formation') await deleteFormation(id)
+        else if (type === 'session') await deleteSession(id)
+        else if (type === 'inscription') await deleteInscription(id)
+        else if (type === 'formateur') await deleteFormateur(id)
+        alert('Élément supprimé avec succès !')
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors de la suppression')
+      }
+    }
+
+    const handleConfirmInscription = async (id) => {
+      try {
+        await confirmInscription(id)
+        alert('Inscription confirmée avec succès !')
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors de la confirmation')
+      }
+    }
+
+    const handleRejectInscription = async (id) => {
+      try {
+        await rejectInscription(id)
+        alert('Inscription rejetée avec succès !')
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors du rejet')
+      }
+    }
+
+    useEffect(() => {
+      if (!showModal) {
+        setFormData({})
+        setEditingId(null)
+      }
+    }, [showModal])
+
+    if (loading) {
+      return <div className="module-content"><p>Chargement...</p></div>
+    }
+
+    return (
+      <div className="module-content">
+        {/* KPI Section */}
+        <section className="kpi-grid">
+          <div className="kpi-card">
+            <div className="kpi-icon blue">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Formations actives</p>
+              <p className="kpi-value">{stats.total_formations || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon green">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Inscriptions totales</p>
+              <p className="kpi-value">{stats.total_inscriptions || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon orange">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Inscriptions confirmées</p>
+              <p className="kpi-value">{stats.confirmed_inscriptions || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon yellow">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">En attente</p>
+              <p className="kpi-value">{stats.pending_inscriptions || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon purple">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Sessions à venir</p>
+              <p className="kpi-value">{stats.upcoming_sessions || 0}</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Toolbar */}
+        <section className="module-toolbar">
+          <div className="toolbar-filters">
+            <input
+              type="text"
+              placeholder="Rechercher..."
+              value={filters.search}
+              onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+              className="filter-input"
+            />
+            <select
+              value={filters.categorie}
+              onChange={(e) => setFilters({ ...filters, categorie: e.target.value })}
+              className="filter-select"
+            >
+              <option value="">Toutes les catégories</option>
+              {Object.keys(stats.categories || {}).map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button className="btn-primary" onClick={() => { setShowModal('formation'); setEditingId(null); setFormData({}) }}>
+              + Ajouter Formation
+            </button>
+            <button className="btn-primary" onClick={() => { setShowModal('session'); setEditingId(null); setFormData({}) }}>
+              + Ajouter Session
+            </button>
+            <button className="btn-primary" onClick={() => { setShowModal('inscription'); setEditingId(null); setFormData({}) }}>
+              + Ajouter Inscription
+            </button>
+            <button className="btn-primary" onClick={() => { setShowModal('formateur'); setEditingId(null); setFormData({}) }}>
+              + Ajouter Formateur
+            </button>
+          </div>
+        </section>
+
+        {/* Formations Table */}
+        <section className="table-section">
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Formations</h3>
+                <p className="card-subtitle">{formations.length} formation{formations.length !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Titre</th>
+                    <th>Catégorie</th>
+                    <th>Mode</th>
+                    <th>Inscriptions</th>
+                    <th>Statut</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {formations.length === 0 ? (
+                    <tr>
+                      <td colSpan="6" style={{ textAlign: 'center', padding: '2rem' }}>Aucune formation</td>
+                    </tr>
+                  ) : (
+                    formations.map((formation) => (
+                      <tr key={formation.id}>
+                        <td>{formation.titre || '—'}</td>
+                        <td>{formation.categorie || '—'}</td>
+                        <td>{formation.mode || '—'}</td>
+                        <td>{formation.inscriptions_count || 0} / {formation.participants_max || '∞'}</td>
+                        <td>
+                          <span className={`status-badge ${formation.is_active ? 'approved' : 'rejected'}`}>
+                            {formation.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="table-actions">
+                            <button type="button" className="btn-link" onClick={() => { setShowModal('formation'); setEditingId(formation.id); setFormData(formation) }}>
+                              Modifier
+                            </button>
+                            <button type="button" className="btn-link danger" onClick={() => handleDelete('formation', formation.id)}>
+                              Supprimer
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        {/* Sessions Table */}
+        <section className="table-section">
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Sessions</h3>
+                <p className="card-subtitle">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Formation</th>
+                    <th>Date début</th>
+                    <th>Date fin</th>
+                    <th>Capacité</th>
+                    <th>Statut</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.length === 0 ? (
+                    <tr>
+                      <td colSpan="6" style={{ textAlign: 'center', padding: '2rem' }}>Aucune session</td>
+                    </tr>
+                  ) : (
+                    sessions.map((session) => (
+                      <tr key={session.id}>
+                        <td>{session.formation?.titre || '—'}</td>
+                        <td>{session.date_debut ? new Date(session.date_debut).toLocaleDateString('fr-FR') : '—'}</td>
+                        <td>{session.date_fin ? new Date(session.date_fin).toLocaleDateString('fr-FR') : '—'}</td>
+                        <td>{session.inscriptions_count || 0} / {session.capacite_max || '∞'}</td>
+                        <td>
+                          <span className={`status-badge ${session.statut === 'ouverte' ? 'approved' : 'pending'}`}>
+                            {session.statut || '—'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="table-actions">
+                            <button type="button" className="btn-link" onClick={() => { setShowModal('session'); setEditingId(session.id); setFormData(session) }}>
+                              Modifier
+                            </button>
+                            <button type="button" className="btn-link danger" onClick={() => handleDelete('session', session.id)}>
+                              Supprimer
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        {/* Inscriptions Table */}
+        <section className="table-section">
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Inscriptions</h3>
+                <p className="card-subtitle">{inscriptions.length} inscription{inscriptions.length !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Nom</th>
+                    <th>Email</th>
+                    <th>Formation</th>
+                    <th>Niveau</th>
+                    <th>Statut</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inscriptions.length === 0 ? (
+                    <tr>
+                      <td colSpan="6" style={{ textAlign: 'center', padding: '2rem' }}>Aucune inscription</td>
+                    </tr>
+                  ) : (
+                    inscriptions.map((inscription) => (
+                      <tr key={inscription.id}>
+                        <td>{inscription.prenom} {inscription.nom}</td>
+                        <td>{inscription.email || '—'}</td>
+                        <td>{inscription.formation?.titre || '—'}</td>
+                        <td>{inscription.niveau || '—'}</td>
+                        <td>
+                          <span className={`status-badge ${inscription.status === 'confirmed' ? 'approved' : inscription.status === 'pending' ? 'pending' : 'rejected'}`}>
+                            {inscription.status || '—'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="table-actions">
+                            {inscription.status === 'pending' && (
+                              <>
+                                <button type="button" className="btn-link" onClick={() => handleConfirmInscription(inscription.id)}>
+                                  Confirmer
+                                </button>
+                                <button type="button" className="btn-link danger" onClick={() => handleRejectInscription(inscription.id)}>
+                                  Rejeter
+                                </button>
+                              </>
+                            )}
+                            <button type="button" className="btn-link" onClick={() => { setShowModal('inscription'); setEditingId(inscription.id); setFormData(inscription) }}>
+                              Modifier
+                            </button>
+                            <button type="button" className="btn-link danger" onClick={() => handleDelete('inscription', inscription.id)}>
+                              Supprimer
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        {/* Modals */}
+        {showModal && typeof document !== 'undefined' && createPortal(
+          <div className="modal-overlay" onClick={() => setShowModal(null)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>
+                  {showModal === 'formation' && (editingId ? 'Modifier Formation' : 'Ajouter Formation')}
+                  {showModal === 'session' && (editingId ? 'Modifier Session' : 'Ajouter Session')}
+                  {showModal === 'inscription' && (editingId ? 'Modifier Inscription' : 'Ajouter Inscription')}
+                  {showModal === 'formateur' && (editingId ? 'Modifier Formateur' : 'Ajouter Formateur')}
+                </h2>
+                <button className="modal-close" onClick={() => setShowModal(null)}>×</button>
+              </div>
+              <form onSubmit={handleSubmit} className="modal-form">
+                {showModal === 'formation' && (
+                  <>
+                    <div className="form-group">
+                      <label>Slug *</label>
+                      <input type="text" required value={formData.slug || ''} onChange={(e) => setFormData({ ...formData, slug: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Titre *</label>
+                      <input type="text" required value={formData.titre || ''} onChange={(e) => setFormData({ ...formData, titre: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Catégorie *</label>
+                      <input type="text" required value={formData.categorie || ''} onChange={(e) => setFormData({ ...formData, categorie: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Mode</label>
+                      <input type="text" value={formData.mode || ''} onChange={(e) => setFormData({ ...formData, mode: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Participants max</label>
+                      <input type="number" value={formData.participants_max || ''} onChange={(e) => setFormData({ ...formData, participants_max: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Prix</label>
+                      <input type="number" step="0.01" value={formData.prix || ''} onChange={(e) => setFormData({ ...formData, prix: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Formateur</label>
+                      <select value={formData.formateur_id || ''} onChange={(e) => setFormData({ ...formData, formateur_id: e.target.value || null })}>
+                        <option value="">Aucun</option>
+                        {formateurs.map((f) => (
+                          <option key={f.id} value={f.id}>{f.prenom} {f.nom}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Active</label>
+                      <input type="checkbox" checked={formData.is_active !== false} onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })} />
+                    </div>
+                  </>
+                )}
+
+                {showModal === 'session' && (
+                  <>
+                    <div className="form-group">
+                      <label>Formation *</label>
+                      <select required value={formData.formation_id || ''} onChange={(e) => setFormData({ ...formData, formation_id: e.target.value })}>
+                        <option value="">Sélectionner...</option>
+                        {formations.map((f) => (
+                          <option key={f.id} value={f.id}>{f.titre}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Date début *</label>
+                      <input type="date" required value={formData.date_debut || ''} onChange={(e) => setFormData({ ...formData, date_debut: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Date fin</label>
+                      <input type="date" value={formData.date_fin || ''} onChange={(e) => setFormData({ ...formData, date_fin: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Capacité max</label>
+                      <input type="number" value={formData.capacite_max || ''} onChange={(e) => setFormData({ ...formData, capacite_max: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Statut</label>
+                      <select value={formData.statut || 'ouverte'} onChange={(e) => setFormData({ ...formData, statut: e.target.value })}>
+                        <option value="ouverte">Ouverte</option>
+                        <option value="fermee">Fermée</option>
+                        <option value="terminee">Terminée</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
+                {showModal === 'inscription' && (
+                  <>
+                    <div className="form-group">
+                      <label>Prénom *</label>
+                      <input type="text" required value={formData.prenom || ''} onChange={(e) => setFormData({ ...formData, prenom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom *</label>
+                      <input type="text" required value={formData.nom || ''} onChange={(e) => setFormData({ ...formData, nom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Email *</label>
+                      <input type="email" required value={formData.email || ''} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Formation *</label>
+                      <select required value={formData.formation_id || ''} onChange={(e) => setFormData({ ...formData, formation_id: e.target.value })}>
+                        <option value="">Sélectionner...</option>
+                        {formations.map((f) => (
+                          <option key={f.id} value={f.id}>{f.titre}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Session</label>
+                      <select value={formData.session_id || ''} onChange={(e) => setFormData({ ...formData, session_id: e.target.value || null })}>
+                        <option value="">Aucune</option>
+                        {sessions.filter(s => s.formation_id === formData.formation_id).map((s) => (
+                          <option key={s.id} value={s.id}>{new Date(s.date_debut).toLocaleDateString('fr-FR')}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Niveau *</label>
+                      <select required value={formData.niveau || ''} onChange={(e) => setFormData({ ...formData, niveau: e.target.value })}>
+                        <option value="">Sélectionner...</option>
+                        <option value="Débutant">Débutant</option>
+                        <option value="Intermédiaire">Intermédiaire</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Statut</label>
+                      <select value={formData.status || 'pending'} onChange={(e) => setFormData({ ...formData, status: e.target.value })}>
+                        <option value="pending">En attente</option>
+                        <option value="confirmed">Confirmée</option>
+                        <option value="cancelled">Annulée</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
+                {showModal === 'formateur' && (
+                  <>
+                    <div className="form-group">
+                      <label>Prénom *</label>
+                      <input type="text" required value={formData.prenom || ''} onChange={(e) => setFormData({ ...formData, prenom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom *</label>
+                      <input type="text" required value={formData.nom || ''} onChange={(e) => setFormData({ ...formData, nom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Email *</label>
+                      <input type="email" required value={formData.email || ''} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Photo URL</label>
+                      <input type="url" value={formData.photo_url || ''} onChange={(e) => setFormData({ ...formData, photo_url: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Biographie</label>
+                      <textarea value={formData.bio || ''} onChange={(e) => setFormData({ ...formData, bio: e.target.value })} rows="3" />
+                    </div>
+                  </>
+                )}
+
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setShowModal(null)}>
+                    Annuler
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={submitting}>
+                    {submitting ? 'En cours...' : editingId ? 'Mettre à jour' : 'Créer'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+      </div>
+    )
+  }
+
+  // Composant pour le contenu Webinaires
+  const WebinairesContent = () => {
+    const [stats, setStats] = useState({})
+    const [webinaires, setWebinaires] = useState([])
+    const [inscriptions, setInscriptions] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [showModal, setShowModal] = useState(null) // 'webinaire', 'inscription', 'presentateur'
+    const [formData, setFormData] = useState({})
+    const [editingId, setEditingId] = useState(null)
+    const [submitting, setSubmitting] = useState(false)
+    const [filters, setFilters] = useState({ search: '', theme: '', statut: '' })
+    const [selectedWebinaire, setSelectedWebinaire] = useState(null)
+    const [presentateurs, setPresentateurs] = useState([])
+
+    const loadData = useCallback(async () => {
+      setLoading(true)
+      try {
+        const [statsData, webinairesData, inscriptionsData] = await Promise.all([
+          fetchWebinaireStats(),
+          fetchWebinaires({ page: 1, limit: 50 }),
+          fetchWebinaireInscriptions({ page: 1, limit: 50 }),
+        ])
+        setStats(statsData || {})
+        setWebinaires(Array.isArray(webinairesData) ? webinairesData : [])
+        setInscriptions(Array.isArray(inscriptionsData) ? inscriptionsData : [])
+      } catch (err) {
+        console.error('Erreur chargement webinaires:', err)
+        setStats({})
+        setWebinaires([])
+        setInscriptions([])
+      } finally {
+        setLoading(false)
+      }
+    }, [])
+
+    useEffect(() => {
+      loadData()
+    }, [loadData])
+
+    const loadPresentateurs = useCallback(async (webinaireId) => {
+      try {
+        const data = await fetchPresentateurs(webinaireId)
+        setPresentateurs(Array.isArray(data) ? data : [])
+      } catch (err) {
+        console.error('Erreur chargement présentateurs:', err)
+        setPresentateurs([])
+      }
+    }, [])
+
+    useEffect(() => {
+      if (selectedWebinaire) {
+        loadPresentateurs(selectedWebinaire)
+      }
+    }, [selectedWebinaire, loadPresentateurs])
+
+    const handleSubmit = async (e) => {
+      e.preventDefault()
+      setSubmitting(true)
+      try {
+        if (showModal === 'webinaire') {
+          if (editingId) {
+            await updateWebinaire(editingId, formData)
+            alert('Webinaire mis à jour avec succès !')
+          } else {
+            await createWebinaire(formData)
+            alert('Webinaire créé avec succès !')
+          }
+        } else if (showModal === 'inscription') {
+          if (editingId) {
+            await updateWebinaireInscription(editingId, formData)
+            alert('Inscription mise à jour avec succès !')
+          } else {
+            await createWebinaireInscription(formData)
+            alert('Inscription créée avec succès !')
+          }
+        } else if (showModal === 'presentateur') {
+          if (editingId) {
+            await updatePresentateur(editingId, formData)
+            alert('Présentateur mis à jour avec succès !')
+          } else {
+            await createPresentateur(formData)
+            alert('Présentateur créé avec succès !')
+          }
+          if (selectedWebinaire) {
+            await loadPresentateurs(selectedWebinaire)
+          }
+        }
+        setShowModal(null)
+        setFormData({})
+        setEditingId(null)
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors de l\'opération')
+      } finally {
+        setSubmitting(false)
+      }
+    }
+
+    const handleDelete = async (type, id) => {
+      if (!window.confirm(`Supprimer définitivement cet élément ?`)) return
+      try {
+        if (type === 'webinaire') await deleteWebinaire(id)
+        else if (type === 'inscription') await deleteWebinaireInscription(id)
+        else if (type === 'presentateur') {
+          await deletePresentateur(id)
+          if (selectedWebinaire) {
+            await loadPresentateurs(selectedWebinaire)
+          }
+        }
+        alert('Élément supprimé avec succès !')
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors de la suppression')
+      }
+    }
+
+    useEffect(() => {
+      if (!showModal) {
+        setFormData({})
+        setEditingId(null)
+      }
+    }, [showModal])
+
+    if (loading) {
+      return <div className="module-content"><p>Chargement...</p></div>
+    }
+
+    return (
+      <div className="module-content">
+        {/* KPI Section */}
+        <section className="kpi-grid">
+          <div className="kpi-card">
+            <div className="kpi-icon blue">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Webinaires programmés</p>
+              <p className="kpi-value">{stats.total_webinaires || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon green">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">À venir</p>
+              <p className="kpi-value">{stats.upcoming_webinaires || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon orange">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Inscriptions totales</p>
+              <p className="kpi-value">{stats.total_inscriptions || 0}</p>
+            </div>
+          </div>
+
+          <div className="kpi-card">
+            <div className="kpi-icon purple">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Taux moyen participation</p>
+              <p className="kpi-value">{stats.taux_moyen_participation || 0}%</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Toolbar */}
+        <section className="module-toolbar">
+          <div className="toolbar-filters">
+            <input
+              type="text"
+              placeholder="Rechercher..."
+              value={filters.search}
+              onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+              className="filter-input"
+            />
+            <select
+              value={filters.theme}
+              onChange={(e) => setFilters({ ...filters, theme: e.target.value })}
+              className="filter-select"
+            >
+              <option value="">Tous les thèmes</option>
+              {Object.keys(stats.themes || {}).map((theme) => (
+                <option key={theme} value={theme}>{theme}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button className="btn-primary" onClick={() => { setShowModal('webinaire'); setEditingId(null); setFormData({}) }}>
+              + Ajouter Webinaire
+            </button>
+            <button className="btn-primary" onClick={() => { setShowModal('inscription'); setEditingId(null); setFormData({}) }}>
+              + Ajouter Inscription
+            </button>
+          </div>
+        </section>
+
+        {/* Webinaires Table */}
+        <section className="table-section">
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Webinaires</h3>
+                <p className="card-subtitle">{webinaires.length} webinaire{webinaires.length !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Titre</th>
+                    <th>Thème</th>
+                    <th>Date</th>
+                    <th>Heure</th>
+                    <th>Inscriptions</th>
+                    <th>Statut</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {webinaires.length === 0 ? (
+                    <tr>
+                      <td colSpan="7" style={{ textAlign: 'center', padding: '2rem' }}>Aucun webinaire</td>
+                    </tr>
+                  ) : (
+                    webinaires.map((webinaire) => (
+                      <tr key={webinaire.id}>
+                        <td>{webinaire.titre || '—'}</td>
+                        <td>{webinaire.theme || '—'}</td>
+                        <td>{webinaire.date_webinaire ? new Date(webinaire.date_webinaire).toLocaleDateString('fr-FR') : '—'}</td>
+                        <td>{webinaire.heure_debut || '—'}</td>
+                        <td>{webinaire.inscriptions_count || 0} / {webinaire.capacite_max || '∞'}</td>
+                        <td>
+                          <span className={`status-badge ${webinaire.is_active ? 'approved' : 'rejected'}`}>
+                            {webinaire.is_active ? 'Actif' : 'Inactif'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="table-actions">
+                            <button type="button" className="btn-link" onClick={() => { setSelectedWebinaire(webinaire.id); setShowModal('presentateur'); setEditingId(null); setFormData({ webinaire_id: webinaire.id }) }}>
+                              Présentateurs
+                            </button>
+                            <button type="button" className="btn-link" onClick={() => { setShowModal('webinaire'); setEditingId(webinaire.id); setFormData(webinaire) }}>
+                              Modifier
+                            </button>
+                            <button type="button" className="btn-link danger" onClick={() => handleDelete('webinaire', webinaire.id)}>
+                              Supprimer
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        {/* Inscriptions Table */}
+        <section className="table-section">
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Inscriptions</h3>
+                <p className="card-subtitle">{inscriptions.length} inscription{inscriptions.length !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Nom</th>
+                    <th>Email</th>
+                    <th>Pays</th>
+                    <th>Webinaire</th>
+                    <th>Membre</th>
+                    <th>Statut</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inscriptions.length === 0 ? (
+                    <tr>
+                      <td colSpan="7" style={{ textAlign: 'center', padding: '2rem' }}>Aucune inscription</td>
+                    </tr>
+                  ) : (
+                    inscriptions.map((inscription) => (
+                      <tr key={inscription.id}>
+                        <td>{inscription.prenom} {inscription.nom}</td>
+                        <td>{inscription.email || '—'}</td>
+                        <td>{inscription.pays || '—'}</td>
+                        <td>{inscription.webinaire?.titre || '—'}</td>
+                        <td>{inscription.membre ? 'Oui' : 'Non'}</td>
+                        <td>
+                          <span className={`status-badge ${inscription.statut === 'confirmed' ? 'approved' : inscription.statut === 'pending' ? 'pending' : 'rejected'}`}>
+                            {inscription.statut || '—'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="table-actions">
+                            <button type="button" className="btn-link" onClick={() => { setShowModal('inscription'); setEditingId(inscription.id); setFormData(inscription) }}>
+                              Modifier
+                            </button>
+                            <button type="button" className="btn-link danger" onClick={() => handleDelete('inscription', inscription.id)}>
+                              Supprimer
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        {/* Modals */}
+        {showModal && typeof document !== 'undefined' && createPortal(
+          <div className="modal-overlay" onClick={() => setShowModal(null)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>
+                  {showModal === 'webinaire' && (editingId ? 'Modifier Webinaire' : 'Ajouter Webinaire')}
+                  {showModal === 'inscription' && (editingId ? 'Modifier Inscription' : 'Ajouter Inscription')}
+                  {showModal === 'presentateur' && (editingId ? 'Modifier Présentateur' : 'Ajouter Présentateur')}
+                </h2>
+                <button className="modal-close" onClick={() => setShowModal(null)}>×</button>
+              </div>
+              <form onSubmit={handleSubmit} className="modal-form">
+                {showModal === 'webinaire' && (
+                  <>
+                    <div className="form-group">
+                      <label>Slug *</label>
+                      <input type="text" required value={formData.slug || ''} onChange={(e) => setFormData({ ...formData, slug: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Titre *</label>
+                      <input type="text" required value={formData.titre || ''} onChange={(e) => setFormData({ ...formData, titre: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Thème *</label>
+                      <input type="text" required value={formData.theme || ''} onChange={(e) => setFormData({ ...formData, theme: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Date webinaire *</label>
+                      <input type="date" required value={formData.date_webinaire || ''} onChange={(e) => setFormData({ ...formData, date_webinaire: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Heure début *</label>
+                      <input type="time" required value={formData.heure_debut || ''} onChange={(e) => setFormData({ ...formData, heure_debut: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Heure fin</label>
+                      <input type="time" value={formData.heure_fin || ''} onChange={(e) => setFormData({ ...formData, heure_fin: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Mode</label>
+                      <input type="text" value={formData.mode || 'En ligne'} onChange={(e) => setFormData({ ...formData, mode: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Lien webinaire</label>
+                      <input type="url" value={formData.lien_webinaire || ''} onChange={(e) => setFormData({ ...formData, lien_webinaire: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Capacité max</label>
+                      <input type="number" value={formData.capacite_max || ''} onChange={(e) => setFormData({ ...formData, capacite_max: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Active</label>
+                      <input type="checkbox" checked={formData.is_active !== false} onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })} />
+                    </div>
+                  </>
+                )}
+
+                {showModal === 'inscription' && (
+                  <>
+                    <div className="form-group">
+                      <label>Webinaire *</label>
+                      <select required value={formData.webinaire_id || ''} onChange={(e) => setFormData({ ...formData, webinaire_id: e.target.value })}>
+                        <option value="">Sélectionner...</option>
+                        {webinaires.map((w) => (
+                          <option key={w.id} value={w.id}>{w.titre}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Prénom *</label>
+                      <input type="text" required value={formData.prenom || ''} onChange={(e) => setFormData({ ...formData, prenom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom *</label>
+                      <input type="text" required value={formData.nom || ''} onChange={(e) => setFormData({ ...formData, nom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Email *</label>
+                      <input type="email" required value={formData.email || ''} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Pays</label>
+                      <input type="text" value={formData.pays || 'France'} onChange={(e) => setFormData({ ...formData, pays: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>WhatsApp</label>
+                      <input type="text" value={formData.whatsapp || ''} onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Statut</label>
+                      <select value={formData.statut || 'pending'} onChange={(e) => setFormData({ ...formData, statut: e.target.value })}>
+                        <option value="pending">En attente</option>
+                        <option value="confirmed">Confirmée</option>
+                        <option value="cancelled">Annulée</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
+                {showModal === 'presentateur' && (
+                  <>
+                    <div className="form-group">
+                      <label>Webinaire *</label>
+                      <select required value={formData.webinaire_id || selectedWebinaire || ''} onChange={(e) => setFormData({ ...formData, webinaire_id: e.target.value })} disabled={!!selectedWebinaire}>
+                        <option value="">Sélectionner...</option>
+                        {webinaires.map((w) => (
+                          <option key={w.id} value={w.id}>{w.titre}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Prénom *</label>
+                      <input type="text" required value={formData.prenom || ''} onChange={(e) => setFormData({ ...formData, prenom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom *</label>
+                      <input type="text" required value={formData.nom || ''} onChange={(e) => setFormData({ ...formData, nom: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>Biographie</label>
+                      <textarea value={formData.bio || ''} onChange={(e) => setFormData({ ...formData, bio: e.target.value })} rows="3" />
+                    </div>
+                    <div className="form-group">
+                      <label>Photo URL</label>
+                      <input type="url" value={formData.photo_url || ''} onChange={(e) => setFormData({ ...formData, photo_url: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label>LinkedIn</label>
+                      <input type="url" value={formData.linkedin || ''} onChange={(e) => setFormData({ ...formData, linkedin: e.target.value })} />
+                    </div>
+                  </>
+                )}
+
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setShowModal(null)}>
+                    Annuler
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={submitting}>
+                    {submitting ? 'En cours...' : editingId ? 'Mettre à jour' : 'Créer'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="admin-dashboard">
       {/* Sidebar */}
@@ -2998,6 +4510,9 @@ function AdminDashboard({ admin, onLogout }) {
 
         {/* Main Content Area */}
         <main className="admin-content">
+          {activeModule === 'adhesions' && <AdhesionContent />}
+          {activeModule === 'formations' && <FormationsContent />}
+          {activeModule === 'webinaires' && <WebinairesContent />}
           {activeModule === 'mentorat' && <MentoratContent />}
           {activeModule === 'recrutement' && <RecrutementContent />}
           {activeModule === 'tresorerie' && <TresorerieContent />}
@@ -3242,4 +4757,4 @@ function AdminDashboard({ admin, onLogout }) {
   )
 }
 
-export default AdminDash
+export default AdminDashboard

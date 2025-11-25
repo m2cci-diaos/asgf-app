@@ -502,16 +502,555 @@ export async function getFormationStats() {
       categoryStats[f.categorie] = (categoryStats[f.categorie] || 0) + 1
     })
 
+    // Total sessions
+    const { count: totalSessions } = await supabaseFormation
+      .from('sessions')
+      .select('*', { count: 'exact', head: true })
+
+    // Sessions à venir
+    const today = new Date().toISOString().split('T')[0]
+    const { count: upcomingSessions } = await supabaseFormation
+      .from('sessions')
+      .select('*', { count: 'exact', head: true })
+      .gte('date_debut', today)
+
+    // Répartition par mode
+    const { data: formationsByMode } = await supabaseFormation
+      .from('formations')
+      .select('mode')
+      .eq('is_active', true)
+
+    const modeStats = {}
+    formationsByMode?.forEach((f) => {
+      const mode = f.mode || 'Non spécifié'
+      modeStats[mode] = (modeStats[mode] || 0) + 1
+    })
+
     return {
       total_formations: totalFormations || 0,
       total_inscriptions: totalInscriptions || 0,
       confirmed_inscriptions: confirmedInscriptions || 0,
       pending_inscriptions: pendingInscriptions || 0,
       rejected_inscriptions: (totalInscriptions || 0) - (confirmedInscriptions || 0) - (pendingInscriptions || 0),
+      total_sessions: totalSessions || 0,
+      upcoming_sessions: upcomingSessions || 0,
       categories: categoryStats,
+      modes: modeStats,
     }
   } catch (err) {
     logError('getFormationStats exception', err)
+    throw err
+  }
+}
+
+/**
+ * Récupère toutes les sessions avec pagination
+ */
+export async function getAllSessions({ page = 1, limit = 20, formation_id = '', statut = '' }) {
+  try {
+    let query = supabaseFormation
+      .from('sessions')
+      .select('*', { count: 'exact' })
+      .order('date_debut', { ascending: true })
+
+    if (formation_id) {
+      query = query.eq('formation_id', formation_id)
+    }
+
+    if (statut) {
+      query = query.eq('statut', statut)
+    }
+
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    query = query.range(from, to)
+
+    const { data, error, count } = await query
+
+    if (error) {
+      logError('getAllSessions error', error)
+      throw new Error('Erreur lors de la récupération des sessions')
+    }
+
+    // Enrichir avec les données de formation et le nombre d'inscriptions
+    const sessionsEnriched = await Promise.all(
+      (data || []).map(async (session) => {
+        // Récupérer la formation
+        const { data: formation } = await supabaseFormation
+          .from('formations')
+          .select('titre, slug, participants_max')
+          .eq('id', session.formation_id)
+          .maybeSingle()
+
+        // Compter les inscriptions confirmées pour cette session
+        const { count: inscriptionsCount } = await supabaseFormation
+          .from('inscriptions')
+          .select('*', { count: 'exact', head: true })
+          .eq('session_id', session.id)
+          .eq('status', 'confirmed')
+
+        return {
+          ...session,
+          formation: formation || null,
+          inscriptions_count: inscriptionsCount || 0,
+          places_restantes: session.capacite_max ? session.capacite_max - (inscriptionsCount || 0) : null,
+          taux_occupation: session.capacite_max && session.capacite_max > 0
+            ? Math.round(((inscriptionsCount || 0) / session.capacite_max) * 100)
+            : null,
+        }
+      })
+    )
+
+    return {
+      sessions: sessionsEnriched,
+      pagination: {
+        page,
+        limit,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limit),
+      },
+    }
+  } catch (err) {
+    logError('getAllSessions exception', err)
+    throw err
+  }
+}
+
+/**
+ * Crée une nouvelle session
+ */
+export async function createSession(sessionData) {
+  try {
+    const { formation_id, date_debut, date_fin, capacite_max, statut } = sessionData
+
+    if (!formation_id || !date_debut) {
+      throw new Error('formation_id et date_debut sont requis')
+    }
+
+    const { data: session, error } = await supabaseFormation
+      .from('sessions')
+      .insert({
+        formation_id,
+        date_debut,
+        date_fin: date_fin || null,
+        capacite_max: capacite_max ? parseInt(capacite_max) : null,
+        statut: statut || 'ouverte',
+      })
+      .select()
+      .single()
+
+    if (error) {
+      logError('createSession error', error)
+      throw new Error('Erreur lors de la création de la session')
+    }
+
+    logInfo('Session créée', { id: session.id, formation_id })
+    return session
+  } catch (err) {
+    logError('createSession exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour une session
+ */
+export async function updateSession(sessionId, updateData) {
+  try {
+    const updateObj = {}
+    if (updateData.date_debut !== undefined) updateObj.date_debut = updateData.date_debut
+    if (updateData.date_fin !== undefined) updateObj.date_fin = updateData.date_fin
+    if (updateData.capacite_max !== undefined) updateObj.capacite_max = updateData.capacite_max ? parseInt(updateData.capacite_max) : null
+    if (updateData.statut !== undefined) updateObj.statut = updateData.statut
+
+    const { data, error } = await supabaseFormation
+      .from('sessions')
+      .update(updateObj)
+      .eq('id', sessionId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('updateSession error', error)
+      throw new Error('Erreur lors de la mise à jour de la session')
+    }
+
+    if (!data) {
+      throw new Error('Session introuvable')
+    }
+
+    logInfo('Session mise à jour', { id: sessionId })
+    return data
+  } catch (err) {
+    logError('updateSession exception', err)
+    throw err
+  }
+}
+
+/**
+ * Supprime une session
+ */
+export async function deleteSession(sessionId) {
+  try {
+    const { error } = await supabaseFormation
+      .from('sessions')
+      .delete()
+      .eq('id', sessionId)
+
+    if (error) {
+      logError('deleteSession error', error)
+      throw new Error('Erreur lors de la suppression de la session')
+    }
+
+    logInfo('Session supprimée', { id: sessionId })
+    return { success: true, message: 'Session supprimée avec succès' }
+  } catch (err) {
+    logError('deleteSession exception', err)
+    throw err
+  }
+}
+
+/**
+ * Récupère toutes les inscriptions avec pagination
+ */
+export async function getAllInscriptions({ page = 1, limit = 20, formation_id = '', session_id = '', status = '' }) {
+  try {
+    let query = supabaseFormation
+      .from('inscriptions')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+
+    if (formation_id) {
+      query = query.eq('formation_id', formation_id)
+    }
+
+    if (session_id) {
+      query = query.eq('session_id', session_id)
+    }
+
+    if (status) {
+      query = query.eq('status', status)
+    }
+
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    query = query.range(from, to)
+
+    const { data, error, count } = await query
+
+    if (error) {
+      logError('getAllInscriptions error', error)
+      throw new Error('Erreur lors de la récupération des inscriptions')
+    }
+
+    // Enrichir avec les données de formation et session
+    const inscriptionsEnriched = await Promise.all(
+      (data || []).map(async (inscription) => {
+        const [formation, session] = await Promise.all([
+          supabaseFormation
+            .from('formations')
+            .select('titre, slug')
+            .eq('id', inscription.formation_id)
+            .maybeSingle(),
+          inscription.session_id
+            ? supabaseFormation
+                .from('sessions')
+                .select('date_debut, date_fin')
+                .eq('id', inscription.session_id)
+                .maybeSingle()
+            : Promise.resolve({ data: null }),
+        ])
+
+        return {
+          ...inscription,
+          formation: formation?.data || null,
+          session: session?.data || null,
+        }
+      })
+    )
+
+    return {
+      inscriptions: inscriptionsEnriched,
+      pagination: {
+        page,
+        limit,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limit),
+      },
+    }
+  } catch (err) {
+    logError('getAllInscriptions exception', err)
+    throw err
+  }
+}
+
+/**
+ * Crée une nouvelle inscription
+ */
+export async function createInscription(inscriptionData) {
+  try {
+    const {
+      prenom,
+      nom,
+      email,
+      formation_id,
+      session_id,
+      niveau,
+      niveau_etude,
+      adresse,
+      ville,
+      pays,
+      whatsapp,
+      membre_id,
+      paiement_status,
+      source,
+      notes_admin,
+    } = inscriptionData
+
+    if (!prenom || !nom || !email || !formation_id || !niveau) {
+      throw new Error('prenom, nom, email, formation_id et niveau sont requis')
+    }
+
+    const { data: inscription, error } = await supabaseFormation
+      .from('inscriptions')
+      .insert({
+        prenom,
+        nom,
+        email,
+        formation_id,
+        session_id: session_id || null,
+        niveau,
+        niveau_etude: niveau_etude || null,
+        adresse: adresse || null,
+        ville: ville || null,
+        pays: pays || 'France',
+        whatsapp: whatsapp || null,
+        membre_id: membre_id || null,
+        paiement_status: paiement_status || 'non payé',
+        source: source || 'site web',
+        notes_admin: notes_admin || null,
+        status: 'pending',
+      })
+      .select()
+      .single()
+
+    if (error) {
+      logError('createInscription error', error)
+      throw new Error('Erreur lors de la création de l\'inscription')
+    }
+
+    logInfo('Inscription créée', { id: inscription.id, email })
+    return inscription
+  } catch (err) {
+    logError('createInscription exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour une inscription
+ */
+export async function updateInscription(inscriptionId, updateData) {
+  try {
+    const updateObj = {}
+    if (updateData.prenom !== undefined) updateObj.prenom = updateData.prenom
+    if (updateData.nom !== undefined) updateObj.nom = updateData.nom
+    if (updateData.email !== undefined) updateObj.email = updateData.email
+    if (updateData.session_id !== undefined) updateObj.session_id = updateData.session_id || null
+    if (updateData.niveau !== undefined) updateObj.niveau = updateData.niveau
+    if (updateData.niveau_etude !== undefined) updateObj.niveau_etude = updateData.niveau_etude
+    if (updateData.status !== undefined) updateObj.status = updateData.status
+    if (updateData.paiement_status !== undefined) updateObj.paiement_status = updateData.paiement_status
+    if (updateData.notes_admin !== undefined) updateObj.notes_admin = updateData.notes_admin
+    if (updateData.status === 'confirmed' && !updateData.confirmed_at) {
+      updateObj.confirmed_at = new Date().toISOString()
+    }
+
+    const { data, error } = await supabaseFormation
+      .from('inscriptions')
+      .update(updateObj)
+      .eq('id', inscriptionId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('updateInscription error', error)
+      throw new Error('Erreur lors de la mise à jour de l\'inscription')
+    }
+
+    if (!data) {
+      throw new Error('Inscription introuvable')
+    }
+
+    logInfo('Inscription mise à jour', { id: inscriptionId })
+    return data
+  } catch (err) {
+    logError('updateInscription exception', err)
+    throw err
+  }
+}
+
+/**
+ * Supprime une inscription
+ */
+export async function deleteInscription(inscriptionId) {
+  try {
+    const { error } = await supabaseFormation
+      .from('inscriptions')
+      .delete()
+      .eq('id', inscriptionId)
+
+    if (error) {
+      logError('deleteInscription error', error)
+      throw new Error('Erreur lors de la suppression de l\'inscription')
+    }
+
+    logInfo('Inscription supprimée', { id: inscriptionId })
+    return { success: true, message: 'Inscription supprimée avec succès' }
+  } catch (err) {
+    logError('deleteInscription exception', err)
+    throw err
+  }
+}
+
+/**
+ * Récupère tous les formateurs
+ */
+export async function getAllFormateurs() {
+  try {
+    const { data, error } = await supabaseFormation
+      .from('formateurs')
+      .select('*')
+      .order('nom', { ascending: true })
+
+    if (error) {
+      logError('getAllFormateurs error', error)
+      throw new Error('Erreur lors de la récupération des formateurs')
+    }
+
+    return data || []
+  } catch (err) {
+    logError('getAllFormateurs exception', err)
+    throw err
+  }
+}
+
+/**
+ * Crée un nouveau formateur
+ */
+export async function createFormateur(formateurData) {
+  try {
+    const { nom, prenom, email, photo_url, bio } = formateurData
+
+    if (!nom || !prenom || !email) {
+      throw new Error('nom, prenom et email sont requis')
+    }
+
+    // Vérifier si l'email existe déjà
+    const { data: existing } = await supabaseFormation
+      .from('formateurs')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle()
+
+    if (existing) {
+      throw new Error('Un formateur avec cet email existe déjà')
+    }
+
+    const { data: formateur, error } = await supabaseFormation
+      .from('formateurs')
+      .insert({
+        nom,
+        prenom,
+        email,
+        photo_url: photo_url || null,
+        bio: bio || null,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      logError('createFormateur error', error)
+      throw new Error('Erreur lors de la création du formateur')
+    }
+
+    logInfo('Formateur créé', { id: formateur.id, email })
+    return formateur
+  } catch (err) {
+    logError('createFormateur exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour un formateur
+ */
+export async function updateFormateur(formateurId, updateData) {
+  try {
+    const updateObj = {}
+    if (updateData.nom !== undefined) updateObj.nom = updateData.nom
+    if (updateData.prenom !== undefined) updateObj.prenom = updateData.prenom
+    if (updateData.email !== undefined) updateObj.email = updateData.email
+    if (updateData.photo_url !== undefined) updateObj.photo_url = updateData.photo_url
+    if (updateData.bio !== undefined) updateObj.bio = updateData.bio
+
+    // Vérifier l'email si modifié
+    if (updateData.email) {
+      const { data: existing } = await supabaseFormation
+        .from('formateurs')
+        .select('id')
+        .eq('email', updateData.email)
+        .neq('id', formateurId)
+        .maybeSingle()
+
+      if (existing) {
+        throw new Error('Cet email est déjà utilisé par un autre formateur')
+      }
+    }
+
+    const { data, error } = await supabaseFormation
+      .from('formateurs')
+      .update(updateObj)
+      .eq('id', formateurId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('updateFormateur error', error)
+      throw new Error('Erreur lors de la mise à jour du formateur')
+    }
+
+    if (!data) {
+      throw new Error('Formateur introuvable')
+    }
+
+    logInfo('Formateur mis à jour', { id: formateurId })
+    return data
+  } catch (err) {
+    logError('updateFormateur exception', err)
+    throw err
+  }
+}
+
+/**
+ * Supprime un formateur
+ */
+export async function deleteFormateur(formateurId) {
+  try {
+    const { error } = await supabaseFormation
+      .from('formateurs')
+      .delete()
+      .eq('id', formateurId)
+
+    if (error) {
+      logError('deleteFormateur error', error)
+      throw new Error('Erreur lors de la suppression du formateur')
+    }
+
+    logInfo('Formateur supprimé', { id: formateurId })
+    return { success: true, message: 'Formateur supprimé avec succès' }
+  } catch (err) {
+    logError('deleteFormateur exception', err)
     throw err
   }
 }

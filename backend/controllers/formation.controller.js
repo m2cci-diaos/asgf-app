@@ -9,6 +9,18 @@ import {
   confirmInscription,
   rejectInscription,
   getFormationStats,
+  getAllSessions,
+  createSession,
+  updateSession,
+  deleteSession,
+  getAllInscriptions,
+  createInscription,
+  updateInscription,
+  deleteInscription,
+  getAllFormateurs,
+  createFormateur,
+  updateFormateur,
+  deleteFormateur,
 } from '../services/formation.service.js'
 import { validateId, validatePagination } from '../utils/validators.js'
 import { logError } from '../utils/logger.js'
@@ -310,6 +322,364 @@ export async function getStats(req, res) {
     return res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des statistiques',
+    })
+  }
+}
+
+/**
+ * GET /api/formation/sessions
+ * Liste toutes les sessions
+ */
+export async function listSessions(req, res) {
+  try {
+    const pagination = validatePagination(req.query)
+    if (!pagination.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: pagination.errors,
+      })
+    }
+
+    const result = await getAllSessions({
+      ...pagination.data,
+      formation_id: req.query.formation_id || '',
+      statut: req.query.statut || '',
+    })
+
+    return res.json({
+      success: true,
+      data: result.sessions,
+      pagination: result.pagination,
+    })
+  } catch (err) {
+    logError('listSessions error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la récupération des sessions',
+    })
+  }
+}
+
+/**
+ * POST /api/formation/sessions
+ * Crée une nouvelle session
+ */
+export async function createSessionController(req, res) {
+  try {
+    const { formation_id, date_debut } = req.body
+
+    if (!formation_id || !date_debut) {
+      return res.status(400).json({
+        success: false,
+        message: 'formation_id et date_debut sont requis',
+      })
+    }
+
+    const session = await createSession(req.body)
+    return res.status(201).json({
+      success: true,
+      message: 'Session créée avec succès',
+      data: session,
+    })
+  } catch (err) {
+    logError('createSessionController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la création de la session',
+    })
+  }
+}
+
+/**
+ * PUT /api/formation/sessions/:id
+ * Met à jour une session
+ */
+export async function updateSessionController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const session = await updateSession(req.params.id, req.body)
+    return res.json({
+      success: true,
+      message: 'Session mise à jour avec succès',
+      data: session,
+    })
+  } catch (err) {
+    logError('updateSessionController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la mise à jour de la session',
+    })
+  }
+}
+
+/**
+ * DELETE /api/formation/sessions/:id
+ * Supprime une session
+ */
+export async function deleteSessionController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const result = await deleteSession(req.params.id)
+    return res.json({
+      success: true,
+      message: result.message,
+    })
+  } catch (err) {
+    logError('deleteSessionController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la suppression de la session',
+    })
+  }
+}
+
+/**
+ * GET /api/formation/inscriptions
+ * Liste toutes les inscriptions
+ */
+export async function listInscriptions(req, res) {
+  try {
+    const pagination = validatePagination(req.query)
+    if (!pagination.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: pagination.errors,
+      })
+    }
+
+    const result = await getAllInscriptions({
+      ...pagination.data,
+      formation_id: req.query.formation_id || '',
+      session_id: req.query.session_id || '',
+      status: req.query.status || '',
+    })
+
+    return res.json({
+      success: true,
+      data: result.inscriptions,
+      pagination: result.pagination,
+    })
+  } catch (err) {
+    logError('listInscriptions error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la récupération des inscriptions',
+    })
+  }
+}
+
+/**
+ * POST /api/formation/inscriptions
+ * Crée une nouvelle inscription
+ */
+export async function createInscriptionController(req, res) {
+  try {
+    const { prenom, nom, email, formation_id, niveau } = req.body
+
+    if (!prenom || !nom || !email || !formation_id || !niveau) {
+      return res.status(400).json({
+        success: false,
+        message: 'prenom, nom, email, formation_id et niveau sont requis',
+      })
+    }
+
+    const inscription = await createInscription(req.body)
+    return res.status(201).json({
+      success: true,
+      message: 'Inscription créée avec succès',
+      data: inscription,
+    })
+  } catch (err) {
+    logError('createInscriptionController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la création de l\'inscription',
+    })
+  }
+}
+
+/**
+ * PUT /api/formation/inscriptions/:id
+ * Met à jour une inscription
+ */
+export async function updateInscriptionController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const inscription = await updateInscription(req.params.id, req.body)
+    return res.json({
+      success: true,
+      message: 'Inscription mise à jour avec succès',
+      data: inscription,
+    })
+  } catch (err) {
+    logError('updateInscriptionController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la mise à jour de l\'inscription',
+    })
+  }
+}
+
+/**
+ * DELETE /api/formation/inscriptions/:id
+ * Supprime une inscription
+ */
+export async function deleteInscriptionController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const result = await deleteInscription(req.params.id)
+    return res.json({
+      success: true,
+      message: result.message,
+    })
+  } catch (err) {
+    logError('deleteInscriptionController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la suppression de l\'inscription',
+    })
+  }
+}
+
+/**
+ * GET /api/formation/formateurs
+ * Liste tous les formateurs
+ */
+export async function listFormateurs(req, res) {
+  try {
+    const formateurs = await getAllFormateurs()
+    return res.json({
+      success: true,
+      data: formateurs,
+    })
+  } catch (err) {
+    logError('listFormateurs error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la récupération des formateurs',
+    })
+  }
+}
+
+/**
+ * POST /api/formation/formateurs
+ * Crée un nouveau formateur
+ */
+export async function createFormateurController(req, res) {
+  try {
+    const { nom, prenom, email } = req.body
+
+    if (!nom || !prenom || !email) {
+      return res.status(400).json({
+        success: false,
+        message: 'nom, prenom et email sont requis',
+      })
+    }
+
+    const formateur = await createFormateur(req.body)
+    return res.status(201).json({
+      success: true,
+      message: 'Formateur créé avec succès',
+      data: formateur,
+    })
+  } catch (err) {
+    logError('createFormateurController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la création du formateur',
+    })
+  }
+}
+
+/**
+ * PUT /api/formation/formateurs/:id
+ * Met à jour un formateur
+ */
+export async function updateFormateurController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const formateur = await updateFormateur(req.params.id, req.body)
+    return res.json({
+      success: true,
+      message: 'Formateur mis à jour avec succès',
+      data: formateur,
+    })
+  } catch (err) {
+    logError('updateFormateurController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la mise à jour du formateur',
+    })
+  }
+}
+
+/**
+ * DELETE /api/formation/formateurs/:id
+ * Supprime un formateur
+ */
+export async function deleteFormateurController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const result = await deleteFormateur(req.params.id)
+    return res.json({
+      success: true,
+      message: result.message,
+    })
+  } catch (err) {
+    logError('deleteFormateurController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de la suppression du formateur',
     })
   }
 }

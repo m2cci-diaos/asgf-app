@@ -27,7 +27,7 @@ function buildQueryString(params = {}) {
   return queryString ? `?${queryString}` : ''
 }
 
-async function downloadBinaryResource(endpoint, params = {}) {
+async function downloadBinaryResource(endpoint, params = {}, fallbackName = 'export-asgf.dat') {
   const query = buildQueryString(params)
   const res = await fetch(`${API_URL}${endpoint}${query}`, {
     headers: {
@@ -48,7 +48,7 @@ async function downloadBinaryResource(endpoint, params = {}) {
   const blob = await res.blob()
   const disposition = res.headers.get('content-disposition') || ''
   const match = disposition.match(/filename="?([^"]+)"?/i)
-  const filename = match ? match[1] : 'export-asgf.dat'
+  const filename = match ? match[1] : fallbackName
   return { blob, filename }
 }
 
@@ -141,6 +141,25 @@ export async function fetchPendingMembers() {
 
   // Gérer le nouveau format { success: true, data: [...] } ou l'ancien format (tableau direct)
   return data?.data || data || []
+}
+
+export async function fetchAdhesionStats() {
+  const res = await fetch(`${API_URL}/api/adhesion/stats`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des statistiques')
+  }
+
+  return data?.data || {}
 }
 
 export async function approveMember(memberId) {
@@ -650,6 +669,27 @@ export async function createPaiement(paiementData) {
   return data?.data || data
 }
 
+export async function updatePaiement(paiementId, updates) {
+  const res = await fetch(`${API_URL}/api/tresorerie/paiements/${paiementId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour du paiement')
+  }
+
+  return data?.data || data
+}
+
 export async function createRelance(relanceData) {
   const res = await fetch(`${API_URL}/api/tresorerie/relances`, {
     method: 'POST',
@@ -690,6 +730,28 @@ export async function createCarteMembre(carteData) {
   }
 
   return data?.data || data
+}
+
+export async function fetchCarteMembreByNumero(numeroMembre) {
+  const res = await fetch(`${API_URL}/api/tresorerie/cartes/numero/${encodeURIComponent(numeroMembre)}`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    if (res.status === 404) {
+      return null // Pas de carte membre trouvée
+    }
+    throw new Error(data?.message || 'Erreur lors de la récupération de la carte membre')
+  }
+
+  return data?.data || null
 }
 
 export async function fetchDepenses(params = {}) {
@@ -787,6 +849,36 @@ export async function fetchHistorique(params = {}) {
   return data?.data || []
 }
 
+export async function fetchRelances(params = {}) {
+  const queryParams = new URLSearchParams({
+    page: params.page || 1,
+    limit: params.limit || 20,
+    ...(params.annee && { annee: params.annee }),
+    ...(params.type_relance && { type_relance: params.type_relance }),
+    ...(params.statut && { statut: params.statut }),
+  }).toString()
+
+  const res = await fetch(`${API_URL}/api/tresorerie/relances?${queryParams}`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des relances')
+  }
+
+  if (data?.data?.relances) {
+    return data.data.relances
+  }
+  return data?.data || []
+}
+
 export function validateCotisation(cotisationId, payload = {}) {
   return sendJsonRequest(`/api/tresorerie/cotisations/${cotisationId}/validate`, {
     method: 'POST',
@@ -846,19 +938,19 @@ export function deleteDepense(depenseId) {
 }
 
 export function downloadCotisationsExport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/exports/cotisations', params)
+  return downloadBinaryResource('/api/tresorerie/exports/cotisations', params, 'cotisations.csv')
 }
 
 export function downloadPaiementsExport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/exports/paiements', params)
+  return downloadBinaryResource('/api/tresorerie/exports/paiements', params, 'paiements.csv')
 }
 
 export function downloadDepensesExport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/exports/depenses', params)
+  return downloadBinaryResource('/api/tresorerie/exports/depenses', params, 'depenses.csv')
 }
 
 export function downloadTresorerieReport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/reports/mensuel', params)
+  return downloadBinaryResource('/api/tresorerie/reports/mensuel', params, 'rapport-tresorerie.pdf')
 }
 
 // ───── Secrétariat ─────
@@ -1011,4 +1103,616 @@ export async function createDocument(documentData) {
   }
 
   return data?.data || data
+}
+
+// ============================================
+// MODULE FORMATION
+// ============================================
+
+export async function fetchFormationStats() {
+  const res = await fetch(`${API_URL}/api/formation/stats`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des statistiques')
+  }
+  return data?.data || {}
+}
+
+export async function fetchFormations({ page = 1, limit = 20, search = '', categorie = '', statut = '' }) {
+  const params = { page, limit }
+  if (search) params.search = search
+  if (categorie) params.categorie = categorie
+  if (statut) params.statut = statut
+
+  const res = await fetch(`${API_URL}/api/formation/formations${buildQueryString(params)}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des formations')
+  }
+  return data?.data || []
+}
+
+export async function fetchFormationById(formationId) {
+  const res = await fetch(`${API_URL}/api/formation/formations/${formationId}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement de la formation')
+  }
+  return data?.data || null
+}
+
+export async function createFormation(formationData) {
+  const res = await fetch(`${API_URL}/api/formation/formations`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(formationData),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création de la formation')
+  }
+  return data?.data || data
+}
+
+export async function updateFormation(formationId, updates) {
+  const res = await fetch(`${API_URL}/api/formation/formations/${formationId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de la formation')
+  }
+  return data?.data || data
+}
+
+export async function deleteFormation(formationId) {
+  const res = await fetch(`${API_URL}/api/formation/formations/${formationId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression de la formation')
+  }
+  return data
+}
+
+export async function fetchSessions({ page = 1, limit = 20, formation_id = '', statut = '' }) {
+  const params = { page, limit }
+  if (formation_id) params.formation_id = formation_id
+  if (statut) params.statut = statut
+
+  const res = await fetch(`${API_URL}/api/formation/sessions${buildQueryString(params)}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des sessions')
+  }
+  return data?.data || []
+}
+
+export async function createSession(sessionData) {
+  const res = await fetch(`${API_URL}/api/formation/sessions`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(sessionData),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création de la session')
+  }
+  return data?.data || data
+}
+
+export async function updateSession(sessionId, updates) {
+  const res = await fetch(`${API_URL}/api/formation/sessions/${sessionId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de la session')
+  }
+  return data?.data || data
+}
+
+export async function deleteSession(sessionId) {
+  const res = await fetch(`${API_URL}/api/formation/sessions/${sessionId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression de la session')
+  }
+  return data
+}
+
+export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '', session_id = '', status = '' }) {
+  const params = { page, limit }
+  if (formation_id) params.formation_id = formation_id
+  if (session_id) params.session_id = session_id
+  if (status) params.status = status
+
+  const res = await fetch(`${API_URL}/api/formation/inscriptions${buildQueryString(params)}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des inscriptions')
+  }
+  return data?.data || []
+}
+
+export async function createInscription(inscriptionData) {
+  const res = await fetch(`${API_URL}/api/formation/inscriptions`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(inscriptionData),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création de l\'inscription')
+  }
+  return data?.data || data
+}
+
+export async function updateInscription(inscriptionId, updates) {
+  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de l\'inscription')
+  }
+  return data?.data || data
+}
+
+export async function deleteInscription(inscriptionId) {
+  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression de l\'inscription')
+  }
+  return data
+}
+
+export async function confirmInscription(inscriptionId) {
+  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}/confirm`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la confirmation de l\'inscription')
+  }
+  return data?.data || data
+}
+
+export async function rejectInscription(inscriptionId) {
+  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}/reject`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du rejet de l\'inscription')
+  }
+  return data?.data || data
+}
+
+export async function fetchFormateurs() {
+  const res = await fetch(`${API_URL}/api/formation/formateurs`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des formateurs')
+  }
+  return data?.data || []
+}
+
+export async function createFormateur(formateurData) {
+  const res = await fetch(`${API_URL}/api/formation/formateurs`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(formateurData),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création du formateur')
+  }
+  return data?.data || data
+}
+
+export async function updateFormateur(formateurId, updates) {
+  const res = await fetch(`${API_URL}/api/formation/formateurs/${formateurId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour du formateur')
+  }
+  return data?.data || data
+}
+
+export async function deleteFormateur(formateurId) {
+  const res = await fetch(`${API_URL}/api/formation/formateurs/${formateurId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression du formateur')
+  }
+  return data
+}
+
+// ============================================
+// MODULE WEBINAIRE
+// ============================================
+
+export async function fetchWebinaireStats() {
+  const res = await fetch(`${API_URL}/api/webinaire/stats`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des statistiques')
+  }
+  return data?.data || {}
+}
+
+export async function fetchWebinaires({ page = 1, limit = 20, search = '', theme = '', statut = '' }) {
+  const params = { page, limit }
+  if (search) params.search = search
+  if (theme) params.theme = theme
+  if (statut) params.statut = statut
+
+  const res = await fetch(`${API_URL}/api/webinaire/webinaires${buildQueryString(params)}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des webinaires')
+  }
+  return data?.data || []
+}
+
+export async function fetchWebinaireById(webinaireId) {
+  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement du webinaire')
+  }
+  return data?.data || null
+}
+
+export async function createWebinaire(webinaireData) {
+  const res = await fetch(`${API_URL}/api/webinaire/webinaires`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(webinaireData),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création du webinaire')
+  }
+  return data?.data || data
+}
+
+export async function updateWebinaire(webinaireId, updates) {
+  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour du webinaire')
+  }
+  return data?.data || data
+}
+
+export async function deleteWebinaire(webinaireId) {
+  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression du webinaire')
+  }
+  return data
+}
+
+export async function fetchWebinaireInscriptions({ page = 1, limit = 20, webinaire_id = '', statut = '' }) {
+  const params = { page, limit }
+  if (webinaire_id) params.webinaire_id = webinaire_id
+  if (statut) params.statut = statut
+
+  const res = await fetch(`${API_URL}/api/webinaire/inscriptions${buildQueryString(params)}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des inscriptions')
+  }
+  return data?.data || []
+}
+
+export async function createWebinaireInscription(inscriptionData) {
+  const res = await fetch(`${API_URL}/api/webinaire/inscriptions`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(inscriptionData),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création de l\'inscription')
+  }
+  return data?.data || data
+}
+
+export async function updateWebinaireInscription(inscriptionId, updates) {
+  const res = await fetch(`${API_URL}/api/webinaire/inscriptions/${inscriptionId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de l\'inscription')
+  }
+  return data?.data || data
+}
+
+export async function deleteWebinaireInscription(inscriptionId) {
+  const res = await fetch(`${API_URL}/api/webinaire/inscriptions/${inscriptionId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression de l\'inscription')
+  }
+  return data
+}
+
+export async function fetchPresentateurs(webinaireId) {
+  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}/presentateurs`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des présentateurs')
+  }
+  return data?.data || []
+}
+
+export async function createPresentateur(presentateurData) {
+  const res = await fetch(`${API_URL}/api/webinaire/presentateurs`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(presentateurData),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création du présentateur')
+  }
+  return data?.data || data
+}
+
+export async function updatePresentateur(presentateurId, updates) {
+  const res = await fetch(`${API_URL}/api/webinaire/presentateurs/${presentateurId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour du présentateur')
+  }
+  return data?.data || data
+}
+
+export async function deletePresentateur(presentateurId) {
+  const res = await fetch(`${API_URL}/api/webinaire/presentateurs/${presentateurId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression du présentateur')
+  }
+  return data
 }

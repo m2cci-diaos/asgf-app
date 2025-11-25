@@ -82,8 +82,8 @@ export function validatePagination(query) {
     return { isValid: false, errors: [{ field: 'page', message: 'Page doit être >= 1' }] }
   }
 
-  if (limit < 1 || limit > 100) {
-    return { isValid: false, errors: [{ field: 'limit', message: 'Limit doit être entre 1 et 100' }] }
+  if (limit < 1 || limit > 500) {
+    return { isValid: false, errors: [{ field: 'limit', message: 'Limit doit être entre 1 et 500' }] }
   }
 
   return { isValid: true, errors: [], data: { page, limit, search: query.search } }

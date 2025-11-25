@@ -5,6 +5,7 @@ import {
   getPendingMembersController,
   approveMemberController,
   rejectMemberController,
+  getAdhesionStatsController,
 } from '../controllers/adhesion.controller.js'
 import { requireAuth, requireModule } from '../middlewares/auth.js'
 import { MODULES } from '../config/constants.js'
@@ -22,5 +23,8 @@ router.get('/members', listMembersController)
 router.get('/members/pending', getPendingMembersController)
 router.post('/members/:id/approve', approveMemberController)
 router.post('/members/:id/reject', rejectMemberController)
+
+// Route pour les statistiques
+router.get('/stats', getAdhesionStatsController)
 
 export default router

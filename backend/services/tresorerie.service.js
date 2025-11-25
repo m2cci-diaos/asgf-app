@@ -633,7 +633,7 @@ export async function createPaiement(paiementData) {
     const { data, error } = await supabaseTresorerie
       .from('paiements')
       .insert({
-        membre_id: paiementData.membre_id,
+        membre_id: paiementData.membre_id || null,
         type_paiement: paiementData.type_paiement,
         montant: paiementData.montant,
         mode_paiement: paiementData.mode_paiement || null,
@@ -1364,6 +1364,44 @@ export async function updateCarteMembre(carteId, updates) {
     return data
   } catch (err) {
     logError('updateCarteMembre exception', err)
+    throw err
+  }
+}
+
+/**
+ * Récupère la carte membre par numero_membre
+ */
+export async function getCarteMembreByNumero(numeroMembre) {
+  try {
+    if (!numeroMembre) {
+      return null
+    }
+
+    const { data, error } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .eq('numero_membre', numeroMembre)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (error) {
+      logError('getCarteMembreByNumero error', error)
+      throw new Error('Erreur lors de la récupération de la carte membre')
+    }
+
+    if (!data) {
+      return null
+    }
+
+    const tarifInfo = getTarifInfoForCountry(data.pays)
+    return {
+      ...data,
+      devise: tarifInfo.devise,
+      currencySymbol: tarifInfo.symbol,
+    }
+  } catch (err) {
+    logError('getCarteMembreByNumero exception', err)
     throw err
   }
 }

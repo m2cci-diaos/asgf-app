@@ -25,6 +25,7 @@ import {
   listCartes,
   createCarte,
   updateCarte,
+  getCarteByNumero,
   listHistorique,
   createHistorique,
   getStats,
@@ -75,6 +76,7 @@ router.post('/relances', createRelance)
 
 // Routes pour les cartes membres
 router.get('/cartes', listCartes)
+router.get('/cartes/numero/:numero', getCarteByNumero)
 router.post('/cartes', createCarte)
 router.put('/cartes/:id', updateCarte)
 

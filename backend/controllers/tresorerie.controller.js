@@ -775,6 +775,35 @@ export async function updateCarte(req, res) {
   }
 }
 
+/**
+ * GET /api/tresorerie/cartes/numero/:numero
+ * Récupère la carte membre par numero_membre
+ */
+export async function getCarteByNumero(req, res) {
+  try {
+    const { numero } = req.params
+    if (!numero) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le numéro de membre est requis',
+      })
+    }
+
+    const carte = await tresorerieService.getCarteMembreByNumero(numero)
+
+    return res.json({
+      success: true,
+      data: carte,
+    })
+  } catch (err) {
+    logError('getCarteByNumero error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la récupération de la carte membre',
+    })
+  }
+}
+
 // ========== HISTORIQUE ==========
 
 export async function listHistorique(req, res) {

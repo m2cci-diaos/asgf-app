@@ -4,6 +4,7 @@ import {
   getPendingMembers,
   approveMember,
   rejectMember,
+  getAdhesionStats,
 } from '../services/adhesion.service.js'
 import { validateId, validatePagination } from '../utils/validators.js'
 import { logError } from '../utils/logger.js'
@@ -135,6 +136,26 @@ export async function rejectMemberController(req, res) {
     return res.status(400).json({
       success: false,
       message: err.message || 'Erreur lors du rejet du membre',
+    })
+  }
+}
+
+/**
+ * GET /api/adhesion/stats
+ * Récupère les statistiques d'adhésion
+ */
+export async function getAdhesionStatsController(req, res) {
+  try {
+    const stats = await getAdhesionStats()
+    return res.json({
+      success: true,
+      data: stats,
+    })
+  } catch (err) {
+    logError('getAdhesionStatsController error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la récupération des statistiques',
     })
   }
 }

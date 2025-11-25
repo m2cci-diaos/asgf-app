@@ -71,3 +71,12 @@ export const supabaseSecretariat = createClient(
     db: { schema: 'secretariat' },
   }
 )
+
+// 👉 client pour le schéma "webinaire" (tables webinaire.webinaires, inscriptions, presentateurs, stats)
+export const supabaseWebinaire = createClient(
+  supabaseUrl,
+  supabaseServiceKey,
+  {
+    db: { schema: 'webinaire' },
+  }
+)
