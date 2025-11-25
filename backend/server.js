@@ -17,6 +17,7 @@ import recrutementRoutes from './routes/recrutement.routes.js'
 import tresorerieRoutes from './routes/tresorerie.routes.js'
 import secretariatRoutes from './routes/secretariat.routes.js'
 import webinaireRoutes from './routes/webinaire.routes.js'
+import geocodeRoutes from './routes/geocode.routes.js'
 
 // Import du gestionnaire d'erreurs
 import { errorHandler } from './middlewares/errorHandler.js'
@@ -43,6 +44,7 @@ app.use('/api/recrutement', recrutementRoutes)
 app.use('/api/tresorerie', tresorerieRoutes)
 app.use('/api/secretariat', secretariatRoutes)
 app.use('/api/webinaire', webinaireRoutes)
+app.use('/api/geocode', geocodeRoutes)
 
 // Log des routes enregistrées (pour debug)
 console.log('📋 Routes enregistrées:')
@@ -55,6 +57,7 @@ console.log('  - /api/recrutement')
 console.log('  - /api/tresorerie')
 console.log('  - /api/secretariat')
 console.log('  - /api/webinaire')
+console.log('  - /api/geocode')
 
 // Routes de compatibilité pour l'ancien endpoint /admin/members
 import { requireAuth, requireModule } from './middlewares/auth.js'

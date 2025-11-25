@@ -732,6 +732,11 @@ export async function createCarteMembre(carteData) {
   return data?.data || data
 }
 
+export async function geocodeMemberAddress({ adresse = '', ville = '', pays = '' } = {}) {
+  const query = buildQueryString({ adresse, ville, pays })
+  return sendJsonRequest(`/api/geocode/search${query}`)
+}
+
 export async function fetchCarteMembreByNumero(numeroMembre) {
   const res = await fetch(`${API_URL}/api/tresorerie/cartes/numero/${encodeURIComponent(numeroMembre)}`, {
     headers: getAuthHeaders(),

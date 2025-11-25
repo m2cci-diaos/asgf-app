@@ -27,6 +27,7 @@ import {
   updatePaiement,
   createRelance,
   createCarteMembre,
+  geocodeMemberAddress,
   fetchCarteMembreByNumero,
   fetchDepenses,
   createDepense,
@@ -85,12 +86,43 @@ import {
   updatePresentateur,
   deletePresentateur,
 } from "../services/api"
+import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet"
+import MarkerClusterGroup from "react-leaflet-cluster"
+import L from "leaflet"
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png"
+import markerIcon from "leaflet/dist/images/marker-icon.png"
+import markerShadow from "leaflet/dist/images/marker-shadow.png"
+import "leaflet/dist/leaflet.css"
 import logoASGF from "../img/Logo_officiel_ASGF.png"
 import "./AdminDashboard.css"
 import TreasuryFilters from "../components/treasury/TreasuryFilters"
 import TreasuryActionsBar from "../components/treasury/TreasuryActionsBar"
 import TreasuryAnalytics from "../components/treasury/TreasuryAnalytics"
 import TreasuryTimeline from "../components/treasury/TreasuryTimeline"
+
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
+})
+
+const MEMBER_MARKER_ICON = L.icon({
+  iconUrl:
+    "data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%23f97316' stroke='%23ffffff' stroke-width='1' d='M12 2c-3.87 0-7 3.13-7 7 0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z'/%3E%3C/svg%3E",
+  iconSize: [32, 32],
+  iconAnchor: [16, 30],
+  popupAnchor: [0, -28],
+  shadowUrl: markerShadow,
+  shadowSize: [40, 40],
+  shadowAnchor: [12, 40],
+})
+
+const createClusterIcon = (cluster) =>
+  L.divIcon({
+    html: `<div class="member-cluster"><span>${cluster.getChildCount()}</span></div>`,
+    className: "member-cluster-icon",
+    iconSize: L.point(44, 44, true),
+  })
 
 const MONTH_OPTIONS = [
   { value: 1, label: "Janvier" },
@@ -227,6 +259,16 @@ const filterByMemberQuery = (items, query) => {
     const numero = normalizeText(item.membre?.numero_membre || "")
     return fullName.includes(normalizedQuery) || numero.includes(normalizedQuery)
   })
+}
+
+const DEFAULT_MAP_CENTER = [14.4974, -14.4524] // Dakar par défaut
+
+const buildGeocodeKey = (member) => {
+  if (!member) return ''
+  return [member.adresse, member.ville, member.pays]
+    .map((value) => (value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(', ')
 }
 
 function AdminDashboard({ admin, onLogout }) {
@@ -466,7 +508,7 @@ function AdminDashboard({ admin, onLogout }) {
         <section className="table-section">
           <div className="table-card">
             <div className="card-header">
-              <div>
+          <div>
                 <h3 className="card-title">Binômes mentor/mentoré</h3>
                 <p className="card-subtitle">
                   {loading ? 'Chargement...' : `${relations.length} relation${relations.length > 1 ? 's' : ''} active${relations.length > 1 ? 's' : ''}`}
@@ -531,7 +573,7 @@ function AdminDashboard({ admin, onLogout }) {
                             <td>
                               <span className={`status-badge ${rel.statut_relation === 'active' ? 'approved' : 'pending'}`}>
                                 {rel.statut_relation || 'active'}
-                              </span>
+                </span>
                             </td>
                           </tr>
                         )
@@ -543,7 +585,7 @@ function AdminDashboard({ admin, onLogout }) {
                     )}
                   </tbody>
                 </table>
-              </div>
+          </div>
             )}
           </div>
         </section>
@@ -1286,6 +1328,595 @@ function AdminDashboard({ admin, onLogout }) {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>,
+          document.body
+        )}
+      </div>
+    )
+  }
+
+  // Composant pour le contenu Membres
+  const MembersContent = () => {
+    const [members, setMembers] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [searchQuery, setSearchQuery] = useState('')
+    const [selectedMember, setSelectedMember] = useState(null)
+    const [carteMembre, setCarteMembre] = useState(null)
+    const [loadingCarte, setLoadingCarte] = useState(false)
+    const [currentPage, setCurrentPage] = useState(1)
+    const [memberLocations, setMemberLocations] = useState([])
+    const [geocoding, setGeocoding] = useState(false)
+    const [geocodeProgress, setGeocodeProgress] = useState({ done: 0, total: 0 })
+    const [mapReady, setMapReady] = useState(false)
+    const geocodeCacheRef = useRef({})
+    const PAGE_SIZE = 20
+
+    useEffect(() => {
+      setMapReady(true)
+      if (typeof window === 'undefined') return
+      try {
+        const storedCache = window.localStorage.getItem('asgf_member_geocode_cache')
+        if (storedCache) {
+          geocodeCacheRef.current = JSON.parse(storedCache) || {}
+        }
+      } catch (err) {
+        console.warn('Impossible de charger le cache de géocodage:', err)
+      }
+    }, [])
+
+    const persistGeocodeCache = useCallback(() => {
+      if (typeof window === 'undefined') return
+      try {
+        window.localStorage.setItem('asgf_member_geocode_cache', JSON.stringify(geocodeCacheRef.current))
+      } catch (err) {
+        console.warn('Impossible de sauvegarder le cache de géocodage:', err)
+      }
+    }, [])
+
+    const updateMapLocationsFromCache = useCallback((membersList) => {
+      if (!Array.isArray(membersList) || membersList.length === 0) {
+        setMemberLocations([])
+        return
+      }
+
+      const mapped = membersList
+        .map((member) => {
+          const key = buildGeocodeKey(member)
+          if (!key) return null
+          const cached = geocodeCacheRef.current[key]
+          if (!cached?.lat || !cached?.lng) return null
+          return {
+            memberId: member.id,
+            lat: Number(cached.lat),
+            lng: Number(cached.lng),
+            member,
+            label: cached.label || cached.display_name || '',
+          }
+        })
+        .filter(Boolean)
+
+      setMemberLocations(mapped)
+    }, [])
+
+    const geocodeMissingLocations = useCallback(
+      async (membersList) => {
+        if (!Array.isArray(membersList) || membersList.length === 0) {
+          setMemberLocations([])
+          return
+        }
+
+        const membersWithAddress = membersList.filter((member) => buildGeocodeKey(member))
+        const missingMembers = membersWithAddress.filter((member) => {
+          const key = buildGeocodeKey(member)
+          return key && !geocodeCacheRef.current[key]
+        })
+
+        if (!missingMembers.length) {
+          updateMapLocationsFromCache(membersList)
+          return
+        }
+
+        setGeocoding(true)
+        setGeocodeProgress({ done: 0, total: missingMembers.length })
+
+        for (let i = 0; i < missingMembers.length; i += 1) {
+          const member = missingMembers[i]
+          const key = buildGeocodeKey(member)
+          if (!key) {
+            setGeocodeProgress((prev) => ({ ...prev, done: Math.min(prev.done + 1, prev.total) }))
+            continue
+          }
+
+          try {
+            const result = await geocodeMemberAddress({
+              adresse: member.adresse,
+              ville: member.ville,
+              pays: member.pays,
+            })
+
+            if (result?.lat && result?.lng) {
+              geocodeCacheRef.current[key] = {
+                lat: Number(result.lat),
+                lng: Number(result.lng),
+                label: result.display_name || '',
+              }
+              persistGeocodeCache()
+            }
+          } catch (err) {
+            console.warn('Erreur géocodage membre', member.id, err)
+          } finally {
+            setGeocodeProgress((prev) => ({
+              ...prev,
+              done: Math.min(prev.done + 1, prev.total),
+            }))
+
+            if (i < missingMembers.length - 1) {
+              await new Promise((resolve) => setTimeout(resolve, 1100))
+            }
+          }
+        }
+
+        updateMapLocationsFromCache(membersList)
+        setGeocoding(false)
+      },
+      [persistGeocodeCache, updateMapLocationsFromCache]
+    )
+
+    const loadMembers = useCallback(async () => {
+      setLoading(true)
+      try {
+        const allMembers = []
+        let page = 1
+        let hasMore = true
+
+        while (hasMore) {
+          const chunk = await fetchAllMembers({ page, limit: 100 })
+          const membersData = Array.isArray(chunk) ? chunk : chunk?.data || []
+          allMembers.push(...membersData)
+          hasMore = membersData.length === 100
+          page += 1
+        }
+
+        setMembers(allMembers)
+        updateMapLocationsFromCache(allMembers)
+        geocodeMissingLocations(allMembers)
+      } catch (err) {
+        console.error('Erreur chargement membres:', err)
+        setMembers([])
+        setMemberLocations([])
+      } finally {
+        setLoading(false)
+      }
+    }, [geocodeMissingLocations, updateMapLocationsFromCache])
+
+    useEffect(() => {
+      loadMembers()
+    }, [loadMembers])
+
+    const handleViewMember = async (member) => {
+      setSelectedMember(member)
+      setCarteMembre(null)
+
+      if (member.numero_membre) {
+        setLoadingCarte(true)
+        try {
+          const carte = await fetchCarteMembreByNumero(member.numero_membre)
+          setCarteMembre(carte)
+        } catch (err) {
+          console.error('Erreur chargement carte membre:', err)
+        } finally {
+          setLoadingCarte(false)
+        }
+      }
+    }
+
+    const filteredMembers = useMemo(() => {
+      if (!searchQuery) return members
+      const query = searchQuery.toLowerCase()
+      return members.filter((m) => {
+        const fullName = `${m.prenom || ''} ${m.nom || ''}`.toLowerCase()
+        const email = (m.email || '').toLowerCase()
+        const numero = (m.numero_membre || '').toLowerCase()
+        return fullName.includes(query) || email.includes(query) || numero.includes(query)
+      })
+    }, [members, searchQuery])
+
+    const paginatedMembers = useMemo(() => {
+      const start = (currentPage - 1) * PAGE_SIZE
+      return filteredMembers.slice(start, start + PAGE_SIZE)
+    }, [filteredMembers, currentPage])
+
+    const totalPages = Math.ceil(filteredMembers.length / PAGE_SIZE)
+    const mapCenter = useMemo(() => {
+      if (!memberLocations.length) return DEFAULT_MAP_CENTER
+      const avgLat = memberLocations.reduce((sum, loc) => sum + loc.lat, 0) / memberLocations.length
+      const avgLng = memberLocations.reduce((sum, loc) => sum + loc.lng, 0) / memberLocations.length
+      return [avgLat, avgLng]
+    }, [memberLocations])
+    const localizedPlural = memberLocations.length !== 1 ? 's' : ''
+
+    return (
+      <div className="module-content">
+        <div className="module-header">
+          <h2>Gestion des Membres</h2>
+          <p className="module-subtitle">Fiches techniques des membres de l'association</p>
+        </div>
+
+        {/* Barre de recherche */}
+        <div className="search-bar" style={{ marginBottom: '20px' }}>
+          <input
+            type="text"
+            placeholder="Rechercher par nom, email ou numéro de membre..."
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value)
+              setCurrentPage(1)
+            }}
+            className="search-input"
+          />
+        </div>
+
+        {/* Carte interactive */}
+        <section className="card members-map-card">
+          <div className="card-header">
+            <div>
+              <h3>Carte des membres</h3>
+              <p className="card-subtitle">Localisation approximative basée sur Adresse / Ville / Pays</p>
+            </div>
+            <div className="map-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => geocodeMissingLocations(members)}
+                disabled={geocoding || !members.length}
+              >
+                {geocoding
+                  ? `Géocodage... (${geocodeProgress.done}/${geocodeProgress.total})`
+                  : 'Mettre à jour la carte'}
+              </button>
+              <span className="map-counter">
+                {memberLocations.length} membre{localizedPlural} localisé{localizedPlural}
+              </span>
+            </div>
+          </div>
+          <div className="map-wrapper">
+            {!mapReady && <div className="loading-state">Préparation de la carte...</div>}
+            {mapReady && memberLocations.length > 0 && (
+              <MapContainer
+                key={memberLocations.length}
+                center={mapCenter}
+                zoom={3}
+                minZoom={2}
+                maxZoom={10}
+                scrollWheelZoom
+                className="members-map"
+              >
+                <TileLayer
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                />
+                <MarkerClusterGroup
+                  chunkedLoading
+                  showCoverageOnHover={false}
+                  spiderfyOnMaxZoom
+                  iconCreateFunction={createClusterIcon}
+                >
+                  {memberLocations.map((location) => (
+                    <Marker key={location.memberId} position={[location.lat, location.lng]} icon={MEMBER_MARKER_ICON}>
+                      <Popup>
+                        <div className="map-popup">
+                          <p className="map-popup-title">
+                            {location.member?.prenom || ''} {location.member?.nom || ''}
+                          </p>
+                          <p>Numéro : {location.member?.numero_membre || '—'}</p>
+                          <p>Ville : {location.member?.ville || '—'}</p>
+                          <p>Pays : {location.member?.pays || '—'}</p>
+                          <button className="btn-link" type="button" onClick={() => handleViewMember(location.member)}>
+                            Ouvrir la fiche membre
+                          </button>
+                        </div>
+                      </Popup>
+                    </Marker>
+                  ))}
+                </MarkerClusterGroup>
+              </MapContainer>
+            )}
+            {mapReady && memberLocations.length === 0 && (
+              <div className="no-data">
+                <p>Aucun membre géolocalisé pour le moment.</p>
+                <p>Utilisez le bouton ci-dessus pour lancer le géocodage.</p>
+              </div>
+            )}
+          </div>
+          {geocoding && (
+            <div className="geocode-progress">
+              Géocodage en cours ({geocodeProgress.done}/{geocodeProgress.total})
+            </div>
+          )}
+        </section>
+
+        {/* Tableau des membres */}
+        {loading ? (
+          <div className="loading-state">Chargement des membres...</div>
+        ) : (
+          <>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Numéro</th>
+                    <th>Nom</th>
+                    <th>Prénom</th>
+                    <th>Email</th>
+                    <th>Statut</th>
+                    <th>Statut Pro</th>
+                    <th>Pays</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedMembers.length > 0 ? (
+                    paginatedMembers.map((member) => (
+                      <tr key={member.id}>
+                        <td>{member.numero_membre || '-'}</td>
+                        <td>{member.nom || '-'}</td>
+                        <td>{member.prenom || '-'}</td>
+                        <td>{member.email || '-'}</td>
+                        <td>
+                          <span className={`status-badge ${member.status === 'approved' ? 'approved' : member.status === 'pending' ? 'pending' : 'rejected'}`}>
+                            {member.status === 'approved' ? 'Approuvé' : member.status === 'pending' ? 'En attente' : 'Rejeté'}
+                          </span>
+                        </td>
+                        <td>{member.statut_pro || '-'}</td>
+                        <td>{member.pays || '-'}</td>
+                        <td>
+          <button
+                            onClick={() => handleViewMember(member)}
+                            className="action-btn view"
+                            title="Voir la fiche"
+          >
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="8" className="text-center py-4">
+                        {searchQuery ? 'Aucun membre trouvé' : 'Aucun membre'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+        </div>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="pagination">
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="pagination-btn"
+                >
+                  Précédent
+                </button>
+                <span className="pagination-info">
+                  Page {currentPage} sur {totalPages} ({filteredMembers.length} membre{filteredMembers.length !== 1 ? 's' : ''})
+              </span>
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="pagination-btn"
+                >
+                  Suivant
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Modal Fiche Technique Membre */}
+        {selectedMember && createPortal(
+          <div className="modal-overlay" onClick={() => setSelectedMember(null)}>
+            <div className="modal-content large" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>Fiche Technique - {selectedMember.prenom} {selectedMember.nom}</h3>
+                <button className="modal-close" onClick={() => setSelectedMember(null)}>
+                  <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="modal-body" style={{ maxHeight: '80vh', overflowY: 'auto' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
+                  {/* Colonne gauche - Informations personnelles */}
+                  <div>
+                    <h4 style={{ marginBottom: '15px', color: '#2563eb', borderBottom: '2px solid #2563eb', paddingBottom: '10px' }}>
+                      Informations Personnelles
+                    </h4>
+                    <div className="info-grid">
+                      <div className="info-item">
+                        <span className="info-label">Numéro de membre :</span>
+                        <span className="info-value">{selectedMember.numero_membre || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Nom :</span>
+                        <span className="info-value">{selectedMember.nom || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Prénom :</span>
+                        <span className="info-value">{selectedMember.prenom || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Email :</span>
+                        <span className="info-value">{selectedMember.email || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Téléphone :</span>
+                        <span className="info-value">{selectedMember.telephone || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Date de naissance :</span>
+                        <span className="info-value">
+                          {selectedMember.date_naissance ? new Date(selectedMember.date_naissance).toLocaleDateString('fr-FR') : '-'}
+              </span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Statut :</span>
+                        <span className={`status-badge ${selectedMember.status === 'approved' ? 'approved' : selectedMember.status === 'pending' ? 'pending' : 'rejected'}`}>
+                          {selectedMember.status === 'approved' ? 'Approuvé' : selectedMember.status === 'pending' ? 'En attente' : 'Rejeté'}
+                        </span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Date d'adhésion :</span>
+                        <span className="info-value">
+                          {selectedMember.date_adhesion ? new Date(selectedMember.date_adhesion).toLocaleDateString('fr-FR') : '-'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <h4 style={{ marginTop: '30px', marginBottom: '15px', color: '#2563eb', borderBottom: '2px solid #2563eb', paddingBottom: '10px' }}>
+                      Informations Professionnelles
+                    </h4>
+                    <div className="info-grid">
+                      <div className="info-item">
+                        <span className="info-label">Statut Pro :</span>
+                        <span className="info-value">{selectedMember.statut_pro || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Domaine :</span>
+                        <span className="info-value">{selectedMember.domaine || '-'}</span>
+                      </div>
+                    </div>
+
+                    <h4 style={{ marginTop: '30px', marginBottom: '15px', color: '#2563eb', borderBottom: '2px solid #2563eb', paddingBottom: '10px' }}>
+                      Informations Académiques
+                    </h4>
+                    <div className="info-grid">
+                      <div className="info-item">
+                        <span className="info-label">Université :</span>
+                        <span className="info-value">{selectedMember.universite || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Niveau d'études :</span>
+                        <span className="info-value">{selectedMember.niveau_etudes || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Année universitaire :</span>
+                        <span className="info-value">{selectedMember.annee_universitaire || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Spécialité :</span>
+                        <span className="info-value">{selectedMember.specialite || '-'}</span>
+                      </div>
+                    </div>
+
+                    <h4 style={{ marginTop: '30px', marginBottom: '15px', color: '#2563eb', borderBottom: '2px solid #2563eb', paddingBottom: '10px' }}>
+                      Adresse
+                    </h4>
+                    <div className="info-grid">
+                      <div className="info-item">
+                        <span className="info-label">Adresse :</span>
+                        <span className="info-value">{selectedMember.adresse || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Ville :</span>
+                        <span className="info-value">{selectedMember.ville || '-'}</span>
+                      </div>
+                      <div className="info-item">
+                        <span className="info-label">Pays :</span>
+                        <span className="info-value">{selectedMember.pays || '-'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Colonne droite - Carte Membre */}
+                  <div>
+                    <h4 style={{ marginBottom: '15px', color: '#2563eb', borderBottom: '2px solid #2563eb', paddingBottom: '10px' }}>
+                      Carte Membre
+                    </h4>
+                    {loadingCarte ? (
+                      <div className="loading-state">Chargement de la carte membre...</div>
+                    ) : carteMembre ? (
+                      <div className="carte-membre-container">
+                        <div className="info-grid">
+                          <div className="info-item">
+                            <span className="info-label">Numéro de membre :</span>
+                            <span className="info-value">{carteMembre.numero_membre || '-'}</span>
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Date d'émission :</span>
+                            <span className="info-value">
+                              {carteMembre.date_emission ? new Date(carteMembre.date_emission).toLocaleDateString('fr-FR') : '-'}
+                            </span>
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Date de validité :</span>
+                            <span className="info-value">
+                              {carteMembre.date_validite ? new Date(carteMembre.date_validite).toLocaleDateString('fr-FR') : '-'}
+                            </span>
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Pays :</span>
+                            <span className="info-value">{carteMembre.pays || '-'}</span>
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Statut carte :</span>
+                            <span className="info-value">{carteMembre.statut_carte || '-'}</span>
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Statut paiement :</span>
+                            <span className="info-value">{carteMembre.statut_paiement || '-'}</span>
+                          </div>
+                        </div>
+
+                        {carteMembre.lien_pdf && (
+                          <div style={{ marginTop: '20px' }}>
+                            <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>Carte Membre PDF :</div>
+                            <iframe
+                              src={carteMembre.lien_pdf}
+                              style={{
+                                width: '100%',
+                                height: '500px',
+                                border: '1px solid #ddd',
+                                borderRadius: '8px',
+                              }}
+                              title="Carte Membre PDF"
+                            />
+                            <div style={{ marginTop: '10px' }}>
+                              <a
+                                href={carteMembre.lien_pdf}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="btn-primary"
+                                style={{ display: 'inline-block', textDecoration: 'none' }}
+                              >
+                                Ouvrir dans un nouvel onglet
+                              </a>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="no-data">
+                        <p>Aucune carte membre trouvée pour ce membre.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-actions">
+                <button type="button" className="btn-secondary" onClick={() => setSelectedMember(null)}>
+                  Fermer
+                </button>
+              </div>
             </div>
           </div>,
           document.body
@@ -2410,7 +3041,7 @@ function AdminDashboard({ admin, onLogout }) {
                           }}
                           placeholder="Année"
                         />
-                      </div>
+          </div>
                     </div>
                     <div className="form-group">
                       <label>Montant *</label>
@@ -2574,13 +3205,13 @@ function AdminDashboard({ admin, onLogout }) {
                             />
                             <span>
                               {membre.prenom} {membre.nom} ({membre.numero_membre})
-                            </span>
+              </span>
                           </label>
                         ))}
                         {filteredRelanceMembers.length === 0 && (
                           <p className="form-hint">Aucun membre ne correspond à votre recherche.</p>
                         )}
-                      </div>
+          </div>
                     </div>
                     <div className="form-group">
                       <label>Année *</label>
@@ -3257,8 +3888,8 @@ function AdminDashboard({ admin, onLogout }) {
                   </button>
                   <button type="submit" className="btn-primary" disabled={submitting}>
                     {submitting ? 'En cours...' : 'Créer'}
-                  </button>
-                </div>
+            </button>
+          </div>
               </form>
             </div>
           </div>,
@@ -4087,7 +4718,7 @@ function AdminDashboard({ admin, onLogout }) {
         <section className="table-section">
           <div className="table-card">
             <div className="card-header">
-              <div>
+                  <div>
                 <h3 className="card-title">Webinaires</h3>
                 <p className="card-subtitle">{webinaires.length} webinaire{webinaires.length !== 1 ? 's' : ''}</p>
               </div>
@@ -4510,6 +5141,7 @@ function AdminDashboard({ admin, onLogout }) {
 
         {/* Main Content Area */}
         <main className="admin-content">
+          {activeModule === 'members' && <MembersContent />}
           {activeModule === 'adhesions' && <AdhesionContent />}
           {activeModule === 'formations' && <FormationsContent />}
           {activeModule === 'webinaires' && <WebinairesContent />}
