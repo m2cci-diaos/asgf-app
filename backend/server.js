@@ -27,7 +27,9 @@ const app = express()
 
 // Middlewares globaux
 app.use(cors())
-app.use(express.json())
+// Augmenter la limite pour permettre l'upload de photos en base64 (jusqu'à 10MB)
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 // Route de test racine
 app.get('/', (req, res) => {

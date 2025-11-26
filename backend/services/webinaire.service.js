@@ -490,6 +490,44 @@ export async function createInscription(inscriptionData) {
     // Mettre à jour les stats
     await updateWebinaireStats(webinaire_id)
 
+    // Envoyer l'email de confirmation (asynchrone, ne bloque pas)
+    try {
+      const { sendWebinaireConfirmationEmail } = await import('./email.service.js')
+      const { data: webinaireDetails } = await supabaseWebinaire
+        .from('webinaires')
+        .select('titre, date_webinaire, heure_debut, lien_webinaire')
+        .eq('id', webinaire_id)
+        .single()
+
+      if (webinaireDetails) {
+        const webinaireDate = webinaireDetails.date_webinaire
+          ? new Date(webinaireDetails.date_webinaire).toLocaleDateString('fr-FR', {
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric'
+            })
+          : ''
+
+        // Envoyer l'email en arrière-plan (ne pas attendre)
+        sendWebinaireConfirmationEmail({
+          to: email,
+          prenom,
+          nom,
+          webinaireTitre: webinaireDetails.titre,
+          webinaireDate,
+          webinaireHeure: webinaireDetails.heure_debut ? webinaireDetails.heure_debut.substring(0, 5) : '',
+          webinaireLien: webinaireDetails.lien_webinaire || null,
+          confirmationCode: inscription.confirmation_code || null,
+        }).catch(err => {
+          // Logger l'erreur mais ne pas faire échouer l'inscription
+          logError('Erreur envoi email confirmation (non bloquant)', err)
+        })
+      }
+    } catch (emailErr) {
+      // Ne pas faire échouer l'inscription si l'email échoue
+      logError('Erreur préparation email confirmation (non bloquant)', emailErr)
+    }
+
     logInfo('Inscription créée', { id: inscription.id, email })
     return inscription
   } catch (err) {
