@@ -1260,12 +1260,20 @@ function buildHtmlEmail({
 
   const paragraphsHtml = paragraphs.map((p) => `<p style="margin:0 0 12px 0;color:#0f172a;">${sanitize(p)}</p>`).join('')
 
+  // Pour messageBlock, on veut préserver les <br> mais sanitizer le reste
+  // On remplace d'abord les <br> par un placeholder, on sanitize, puis on remet les <br>
   const messageHtml = messageBlock
-    ? `
+    ? (() => {
+        const placeholder = '___BR_PLACEHOLDER___'
+        const withPlaceholders = messageBlock.replace(/<br\s*\/?>/gi, placeholder)
+        const sanitized = sanitize(withPlaceholders)
+        const withBr = sanitized.replace(new RegExp(placeholder, 'g'), '<br/>')
+        return `
         <div style="margin-top:12px;padding:16px;border-left:4px solid ${ACCENT_COLOR};background:#f8fafc;color:#0f172a;border-radius:8px;">
-          ${sanitize(messageBlock).replace(/\n/g, '<br/>')}
+          ${withBr.replace(/\n/g, '<br/>')}
         </div>
       `
+      })()
     : ''
 
   return `

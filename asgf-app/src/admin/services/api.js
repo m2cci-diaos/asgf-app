@@ -812,6 +812,88 @@ export async function createRelance(relanceData) {
   return data?.data || data
 }
 
+export async function generateMonthlyCotisations(mois, annee) {
+  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/generate-monthly`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ mois, annee }),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la génération des cotisations')
+  }
+
+  return data?.data || data
+}
+
+export async function updateOverdueCotisations() {
+  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/update-overdue`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour des cotisations')
+  }
+
+  return data?.data || data
+}
+
+export async function cleanDuplicateCotisations() {
+  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/clean-duplicates`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du nettoyage des doublons')
+  }
+
+  return data?.data || data
+}
+
+export async function createMissingCotisations(annee = null, mois = null) {
+  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/create-missing`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ annee, mois }),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création des cotisations manquantes')
+  }
+
+  return data?.data || data
+}
+
 export async function createCarteMembre(carteData) {
   const res = await fetch(`${API_URL}/api/tresorerie/cartes`, {
     method: 'POST',

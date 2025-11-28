@@ -4,6 +4,7 @@ import { logError, logInfo, logWarning } from '../utils/logger.js'
 import { Parser as Json2CsvParser } from 'json2csv'
 import ExcelJS from 'exceljs'
 import PDFDocument from 'pdfkit'
+import { notifyMemberEmail } from './notifications.service.js'
 
 const MEMBER_FIELDS = 'id, prenom, nom, email, numero_membre, pays'
 const SENEGAL_KEYWORDS = ['senegal', 'sénégal']
@@ -423,7 +424,16 @@ export async function validateCotisation(cotisationId, { date_paiement = null, a
       referenceDate: effectiveDate,
     })
 
-    const { data, error } = await supabaseTresorerie
+    logInfo('validateCotisation: Mise à jour', { 
+      cotisationId, 
+      statut_paiement: 'paye', 
+      date_paiement: effectiveDate,
+      periode_mois: periode.periode_mois,
+      periode_annee: periode.periode_annee
+    })
+
+    // Mettre à jour la cotisation
+    const { data: updateResult, error: updateError } = await supabaseTresorerie
       .from('cotisations')
       .update({
         statut_paiement: 'paye',
@@ -435,23 +445,143 @@ export async function validateCotisation(cotisationId, { date_paiement = null, a
       .select()
       .single()
 
-    if (error) {
-      logError('validateCotisation error', error)
-      throw new Error('Impossible de valider la cotisation')
+    if (updateError) {
+      logError('validateCotisation error', updateError)
+      logError('validateCotisation error details', { 
+        message: updateError.message, 
+        details: updateError.details, 
+        hint: updateError.hint,
+        code: updateError.code
+      })
+      throw new Error(`Impossible de valider la cotisation: ${updateError.message || 'Erreur inconnue'}`)
     }
 
-    if (!data) {
+    if (!updateResult) {
+      logWarning('validateCotisation: Aucune donnée retournée après mise à jour', { cotisationId })
       return null
     }
 
+    // Re-fetch la cotisation pour s'assurer d'avoir les données complètes après le trigger
+    const { data: fetchedData, error: fetchError } = await supabaseTresorerie
+      .from('cotisations')
+      .select('*')
+      .eq('id', cotisationId)
+      .single()
+
+    if (fetchError) {
+      logError('validateCotisation: Erreur lors de la récupération après mise à jour', fetchError)
+      // Utiliser updateResult si disponible
+      if (updateResult) {
+        logWarning('validateCotisation: Utilisation des données de mise à jour', { cotisationId })
+      } else {
+        return null
+      }
+    }
+
+    const finalData = fetchedData || updateResult
+
+    if (!finalData) {
+      logWarning('validateCotisation: Aucune donnée retournée après mise à jour', { cotisationId })
+      return null
+    }
+
+    logInfo('validateCotisation: Succès', { 
+      cotisationId, 
+      statut_paiement: finalData.statut_paiement,
+      date_paiement: finalData.date_paiement
+    })
+
     await logHistoriqueAction('cotisation_validated', {
-      membre_id: data.membre_id,
-      montant: data.montant,
-      description: `Cotisation validée ${buildPeriodLabel(data.periode_mois, data.periode_annee, data.date_paiement)}`,
+      membre_id: finalData.membre_id,
+      montant: finalData.montant,
+      description: `Cotisation validée ${buildPeriodLabel(finalData.periode_mois, finalData.periode_annee, finalData.date_paiement)}`,
       admin_id,
     })
 
-    return data
+    // Envoyer un email de confirmation au membre
+    try {
+      // Récupérer les informations du membre
+      const { data: membre, error: membreError } = await supabaseAdhesion
+        .from('members')
+        .select('id, prenom, nom, email, numero_membre, pays')
+        .eq('id', finalData.membre_id)
+        .single()
+
+      if (!membreError && membre && membre.email) {
+        // Formater la période en français (ex: "Novembre 2025")
+        const moisNoms = ['', 'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre']
+        const mois = finalData.periode_mois || (finalData.date_paiement ? new Date(finalData.date_paiement).getMonth() + 1 : new Date().getMonth() + 1)
+        const annee = finalData.periode_annee || (finalData.date_paiement ? new Date(finalData.date_paiement).getFullYear() : new Date().getFullYear())
+        const periodeLabel = `${moisNoms[mois] || 'Mois'} ${annee}`
+        
+        const tarifInfo = getTarifInfoForCountry(membre.pays)
+        const montantAffiche = `${finalData.montant} ${tarifInfo.symbol}`
+        const datePaiementFormatee = new Date(finalData.date_paiement).toLocaleDateString('fr-FR', { 
+          day: 'numeric', 
+          month: 'long', 
+          year: 'numeric' 
+        })
+        
+        const subject = `ASGF - Confirmation de paiement de cotisation - ${periodeLabel}`
+        const messageBody = `Bonjour {{prenom}} {{nom}},
+
+Nous vous confirmons la réception de votre paiement de cotisation pour la période ${periodeLabel}.
+
+Détails du paiement :
+• Montant : ${montantAffiche}
+• Date de paiement : ${datePaiementFormatee}
+• Numéro de membre : {{numero_membre}}
+
+Votre cotisation est maintenant à jour. Merci pour votre contribution à l'Association des Géomaticiens Sénégalais de France.
+
+Cordialement,
+L'équipe ASGF`
+
+        // Envoyer l'email
+        await notifyMemberEmail({
+          recipients: [{
+            email: membre.email,
+            prenom: membre.prenom,
+            nom: membre.nom,
+            numero_membre: membre.numero_membre || '',
+            pays: membre.pays || '',
+          }],
+          subject,
+          bodyTemplate: messageBody,
+          memberIds: [membre.id],
+        })
+
+        logInfo('Email de confirmation de paiement envoyé', { 
+          membre_id: membre.id, 
+          email: membre.email,
+          cotisation_id: cotisationId
+        })
+      } else {
+        logWarning('validateCotisation: Impossible d\'envoyer l\'email de confirmation', {
+          membre_id: finalData.membre_id,
+          error: membreError?.message,
+          hasEmail: !!membre?.email
+        })
+      }
+    } catch (emailErr) {
+      logError('validateCotisation: Erreur envoi email confirmation', emailErr)
+      // Ne pas faire échouer la validation si l'email échoue
+    }
+
+    // S'assurer que le statut est bien 'paye' dans la réponse
+    const responseData = {
+      ...finalData,
+      statut_paiement: 'paye', // Forcer le statut à 'paye' pour être sûr
+    }
+
+    logInfo('validateCotisation: Données retournées', { 
+      id: responseData.id,
+      statut_paiement: responseData.statut_paiement,
+      date_paiement: responseData.date_paiement,
+      allFields: Object.keys(responseData)
+    })
+
+    return responseData
   } catch (err) {
     logError('validateCotisation exception', err)
     throw err
@@ -1205,6 +1335,21 @@ export async function getAllRelances({ page = 1, limit = 20, annee = '', type_re
  */
 export async function createRelance(relanceData) {
   try {
+    // Récupérer les informations du membre
+    let membre = null
+    if (relanceData.membre_id) {
+      const { data: membreData, error: membreError } = await supabaseAdhesion
+        .from('members')
+        .select('id, prenom, nom, email, numero_membre, pays')
+        .eq('id', relanceData.membre_id)
+        .single()
+
+      if (!membreError && membreData) {
+        membre = membreData
+      }
+    }
+
+    // Créer la relance dans la base de données
     const { data, error } = await supabaseTresorerie
       .from('relances')
       .insert({
@@ -1223,9 +1368,481 @@ export async function createRelance(relanceData) {
     }
 
     logInfo('Relance créée', { id: data.id })
+
+    // Envoyer un email au membre si disponible
+    if (membre && membre.email) {
+      try {
+        const { notifyMemberEmail } = await import('./notifications.service.js')
+        
+        // Construire le message selon le type de relance
+        let subject = 'Rappel ASGF'
+        let messageBody = ''
+
+        if (relanceData.type_relance === 'cotisation') {
+          subject = `Rappel : Cotisation ASGF - ${relanceData.annee || new Date().getFullYear()}`
+          
+          // Déterminer les modalités de paiement selon le pays
+          const paysNormalise = membre.pays ? membre.pays.toLowerCase().trim() : ''
+          const isSenegal = paysNormalise.includes('senegal') || paysNormalise.includes('sénégal')
+          
+          let modalitesPaiement = ''
+          if (isSenegal) {
+            modalitesPaiement = `🇸🇳 Pour les membres au Sénégal
+
+Paiement géré par Mame Khady Niasse :
+Wave & Orange Money : +221 77 474 65 98`
+          } else {
+            modalitesPaiement = `🇫🇷 Pour les membres en France
+
+Wero : +33 6 52 45 47 85
+(Préciser dans le libellé : "Cotisation ASGF")
+
+Virement bancaire :
+Domiciliation : Crédit Agricole
+Code établissement : 13606
+Code guichet : 00045
+Numéro de compte : 46331012920
+Clé RIB : 80
+IBAN : FR76 1360 6000 4546 3310 1292 080
+BIC : AGRIFRPP836`
+          }
+          
+          // Déterminer le tarif selon le pays
+          const tarifInfo = getTarifInfoForCountry(membre.pays)
+          const tarifAffiche = `${tarifInfo.montant} ${tarifInfo.symbol}`
+          
+          messageBody = `Bonjour {{prenom}} {{nom}},
+
+Votre cotisation ASGF pour l'année ${relanceData.annee || new Date().getFullYear()} est en attente de paiement (${tarifAffiche}).
+
+💳 Modalités de paiement
+
+${modalitesPaiement}
+
+Cordialement,
+L'équipe ASGF`
+        } else if (relanceData.type_relance === 'carte_membre') {
+          subject = 'Rappel : Paiement de votre carte membre ASGF'
+          
+          // Déterminer les modalités de paiement selon le pays
+          const paysNormalise = membre.pays ? membre.pays.toLowerCase().trim() : ''
+          const isSenegal = paysNormalise.includes('senegal') || paysNormalise.includes('sénégal')
+          
+          let modalitesPaiement = ''
+          if (isSenegal) {
+            modalitesPaiement = `🇸🇳 Pour les membres au Sénégal
+
+Paiement géré par Mame Khady Niasse :
+Wave & Orange Money : +221 77 474 65 98`
+          } else {
+            modalitesPaiement = `🇫🇷 Pour les membres en France
+
+Wero : +33 6 52 45 47 85
+(Préciser dans le libellé : "Achat Carte Membre")
+
+Virement bancaire :
+Domiciliation : Crédit Agricole
+Code établissement : 13606
+Code guichet : 00045
+Numéro de compte : 46331012920
+Clé RIB : 80
+IBAN : FR76 1360 6000 4546 3310 1292 080
+BIC : AGRIFRPP836`
+          }
+          
+          // Construire le message propre et professionnel
+          // Déterminer le tarif selon le pays
+          const tarifInfo = getTarifInfoForCountry(membre.pays)
+          const tarifAffiche = `${tarifInfo.montant} ${tarifInfo.symbol}`
+          
+          messageBody = `Bonjour {{prenom}} {{nom}},
+
+Votre carte membre ASGF ({{numero_membre}}) est en attente de paiement (${tarifAffiche}).
+
+💳 Modalités de paiement
+
+${modalitesPaiement}
+
+Cordialement,
+L'équipe ASGF`
+        } else {
+          messageBody = `Bonjour {{prenom}} {{nom}},
+
+${relanceData.commentaire || 'Rappel important de l\'ASGF.'}
+
+Cordialement,
+L'équipe ASGF`
+        }
+
+        // Convertir les sauts de ligne en <br> pour le HTML
+        const htmlMessage = messageBody.replace(/\n/g, '<br>')
+
+        // Formater les données selon le format attendu par handleMemberEmail dans Apps Script
+        await notifyMemberEmail({
+          recipients: [{
+            email: membre.email,
+            prenom: membre.prenom,
+            nom: membre.nom,
+            numero_membre: membre.numero_membre || '',
+            pays: membre.pays || '',
+          }],
+          subject,
+          bodyTemplate: htmlMessage,
+          memberIds: [membre.id],
+        })
+
+        logInfo('Email de relance envoyé', { membre_id: membre.id, email: membre.email })
+      } catch (emailErr) {
+        logError('Erreur envoi email relance', emailErr)
+        // Ne pas faire échouer la création de relance si l'email échoue
+      }
+    }
+
     return data
   } catch (err) {
     logError('createRelance exception', err)
+    throw err
+  }
+}
+
+/**
+ * Génère automatiquement les cotisations mensuelles pour les membres qui n'ont pas encore payé
+ * @param {number} mois - Mois à traiter (1-12)
+ * @param {number} annee - Année à traiter
+ */
+export async function generateMonthlyCotisations(mois, annee) {
+  try {
+    logInfo('Génération cotisations mensuelles', { mois, annee })
+
+    // Récupérer tous les membres approuvés (actifs ou non, car is_active peut être null)
+    const { data: membres, error: membresError } = await supabaseAdhesion
+      .from('members')
+      .select('id, prenom, nom, email, numero_membre, pays, status')
+      .eq('status', 'approved')
+
+    if (membresError) {
+      logError('Erreur récupération membres pour génération cotisations', membresError)
+      throw new Error('Erreur lors de la récupération des membres')
+    }
+
+    if (!membres || membres.length === 0) {
+      logInfo('Aucun membre actif trouvé')
+      return { created: 0, skipped: 0 }
+    }
+
+    let created = 0
+    let skipped = 0
+
+    // Pour chaque membre, vérifier s'il a déjà une cotisation pour ce mois
+    for (const membre of membres) {
+      try {
+        // Vérifier si une cotisation existe déjà pour ce membre, ce mois et cette année
+        // Utiliser une requête plus stricte pour éviter les doublons
+        const { data: existingCotisations, error: checkError } = await supabaseTresorerie
+          .from('cotisations')
+          .select('id')
+          .eq('membre_id', membre.id)
+          .eq('periode_mois', mois)
+          .eq('periode_annee', annee)
+
+        if (checkError) {
+          logError(`Erreur vérification cotisation existante pour membre ${membre.id}`, checkError)
+          skipped++
+          continue
+        }
+
+        if (existingCotisations && existingCotisations.length > 0) {
+          skipped++
+          logInfo('Cotisation déjà existante, ignorée', { membre_id: membre.id, mois, annee })
+          continue
+        }
+
+        // Créer la cotisation avec statut "en_attente"
+        const tarifInfo = getTarifInfoForCountry(membre.pays)
+        const { error: insertError } = await supabaseTresorerie
+          .from('cotisations')
+          .insert({
+            membre_id: membre.id,
+            annee,
+            periode_mois: mois,
+            periode_annee: annee,
+            montant: tarifInfo.montant,
+            statut_paiement: 'en_attente',
+            mode_paiement: null,
+            date_paiement: null,
+            preuve_url: null,
+          })
+
+        if (insertError) {
+          logError(`Erreur création cotisation pour membre ${membre.id}`, insertError)
+          skipped++
+        } else {
+          created++
+          logInfo('Cotisation générée', { membre_id: membre.id, mois, annee })
+        }
+      } catch (err) {
+        logError(`Erreur traitement membre ${membre.id}`, err)
+        skipped++
+      }
+    }
+
+    logInfo('Génération cotisations terminée', { created, skipped, total: membres.length })
+    return { created, skipped, total: membres.length }
+  } catch (err) {
+    logError('generateMonthlyCotisations exception', err)
+    throw err
+  }
+}
+
+/**
+ * Crée des cotisations manquantes pour tous les membres approuvés qui n'en ont pas
+ * Utile pour synchroniser les membres avec les cotisations
+ */
+export async function createMissingCotisations(annee = null, mois = null) {
+  try {
+    const currentYear = annee || new Date().getFullYear()
+    const currentMonth = mois || new Date().getMonth() + 1
+
+    logInfo('Création cotisations manquantes', { annee: currentYear, mois: currentMonth })
+
+    // Récupérer tous les membres approuvés
+    const { data: membres, error: membresError } = await supabaseAdhesion
+      .from('members')
+      .select('id, prenom, nom, email, numero_membre, pays, status')
+      .eq('status', 'approved')
+
+    if (membresError) {
+      logError('Erreur récupération membres pour cotisations manquantes', membresError)
+      throw new Error('Erreur lors de la récupération des membres')
+    }
+
+    if (!membres || membres.length === 0) {
+      logInfo('Aucun membre approuvé trouvé')
+      return { created: 0, skipped: 0, total: 0 }
+    }
+
+    let created = 0
+    let skipped = 0
+    const membersWithoutCotisations = []
+
+    // Pour chaque membre, vérifier s'il a au moins une cotisation
+    for (const membre of membres) {
+      try {
+        // Vérifier si le membre a au moins une cotisation (peu importe le mois/année)
+        const { data: existingCotisations, error: checkError } = await supabaseTresorerie
+          .from('cotisations')
+          .select('id')
+          .eq('membre_id', membre.id)
+          .limit(1)
+
+        if (checkError) {
+          logError(`Erreur vérification cotisations pour membre ${membre.id}`, checkError)
+          skipped++
+          continue
+        }
+
+        // Si le membre n'a aucune cotisation, créer une pour le mois/année courant
+        if (!existingCotisations || existingCotisations.length === 0) {
+          const tarifInfo = getTarifInfoForCountry(membre.pays)
+          const periode = resolvePeriode({
+            periode_mois: currentMonth,
+            periode_annee: currentYear,
+            referenceDate: new Date(),
+          })
+
+          const { error: insertError } = await supabaseTresorerie
+            .from('cotisations')
+            .insert({
+              membre_id: membre.id,
+              annee: currentYear,
+              periode_mois: periode.periode_mois,
+              periode_annee: periode.periode_annee,
+              montant: tarifInfo.montant,
+              statut_paiement: 'en_attente',
+              mode_paiement: null,
+              date_paiement: null,
+              preuve_url: null,
+            })
+
+          if (insertError) {
+            logError(`Erreur création cotisation manquante pour membre ${membre.id}`, insertError)
+            skipped++
+            membersWithoutCotisations.push({
+              membre_id: membre.id,
+              numero_membre: membre.numero_membre,
+              error: insertError.message,
+            })
+          } else {
+            created++
+            logInfo('Cotisation manquante créée', { 
+              membre_id: membre.id, 
+              numero_membre: membre.numero_membre,
+              mois: currentMonth,
+              annee: currentYear
+            })
+          }
+        } else {
+          skipped++
+        }
+      } catch (err) {
+        logError(`Erreur traitement membre ${membre.id} pour cotisations manquantes`, err)
+        skipped++
+        membersWithoutCotisations.push({
+          membre_id: membre.id,
+          numero_membre: membre.numero_membre,
+          error: err.message,
+        })
+      }
+    }
+
+    logInfo('Création cotisations manquantes terminée', { 
+      created, 
+      skipped, 
+      total: membres.length,
+      membersWithoutCotisations: membersWithoutCotisations.length
+    })
+
+    return { 
+      created, 
+      skipped, 
+      total: membres.length,
+      membersWithoutCotisations 
+    }
+  } catch (err) {
+    logError('createMissingCotisations exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour les statuts des cotisations en retard (passe de "en_attente" à "non_paye" si le mois est dépassé)
+ */
+export async function updateOverdueCotisations() {
+  try {
+    logInfo('Mise à jour des cotisations en retard')
+
+    const now = new Date()
+    const currentMonth = now.getMonth() + 1 // 1-12
+    const currentYear = now.getFullYear()
+
+    // Récupérer toutes les cotisations "en_attente" dont le mois est dépassé
+    // Récupérer d'abord celles de l'année précédente
+    const { data: oldYearCotisations, error: error1 } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id, periode_mois, periode_annee, statut_paiement')
+      .eq('statut_paiement', 'en_attente')
+      .lt('periode_annee', currentYear)
+
+    // Récupérer celles de l'année courante mais mois dépassé
+    const { data: currentYearCotisations, error: error2 } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id, periode_mois, periode_annee, statut_paiement')
+      .eq('statut_paiement', 'en_attente')
+      .eq('periode_annee', currentYear)
+      .lt('periode_mois', currentMonth)
+
+    if (error1 || error2) {
+      logError('Erreur récupération cotisations en retard', error1 || error2)
+      throw new Error('Erreur lors de la récupération des cotisations en retard')
+    }
+
+    const overdueCotisations = [
+      ...(oldYearCotisations || []),
+      ...(currentYearCotisations || [])
+    ]
+
+    if (!overdueCotisations || overdueCotisations.length === 0) {
+      logInfo('Aucune cotisation en retard trouvée')
+      return { updated: 0 }
+    }
+
+    // Mettre à jour le statut à "non_paye"
+    const ids = overdueCotisations.map(c => c.id)
+    const { error: updateError } = await supabaseTresorerie
+      .from('cotisations')
+      .update({ statut_paiement: 'non_paye' })
+      .in('id', ids)
+
+    if (updateError) {
+      logError('Erreur mise à jour cotisations en retard', updateError)
+      throw new Error('Erreur lors de la mise à jour des cotisations')
+    }
+
+    logInfo('Cotisations en retard mises à jour', { count: ids.length })
+    return { updated: ids.length }
+  } catch (err) {
+    logError('updateOverdueCotisations exception', err)
+    throw err
+  }
+}
+
+/**
+ * Nettoie les doublons de cotisations (garde la plus récente pour chaque membre/mois/année)
+ */
+export async function cleanDuplicateCotisations() {
+  try {
+    logInfo('Nettoyage des doublons de cotisations')
+
+    // Récupérer toutes les cotisations
+    const { data: allCotisations, error } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id, membre_id, periode_mois, periode_annee, created_at')
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      logError('Erreur récupération cotisations pour nettoyage', error)
+      throw new Error('Erreur lors de la récupération des cotisations')
+    }
+
+    if (!allCotisations || allCotisations.length === 0) {
+      logInfo('Aucune cotisation à nettoyer')
+      return { removed: 0 }
+    }
+
+    // Grouper par membre_id + periode_mois + periode_annee
+    const groups = {}
+    allCotisations.forEach(cot => {
+      const key = `${cot.membre_id}_${cot.periode_mois}_${cot.periode_annee}`
+      if (!groups[key]) {
+        groups[key] = []
+      }
+      groups[key].push(cot)
+    })
+
+    // Pour chaque groupe, garder la plus récente et supprimer les autres
+    let removed = 0
+    const idsToRemove = []
+
+    Object.values(groups).forEach(group => {
+      if (group.length > 1) {
+        // Trier par created_at décroissant (plus récent en premier)
+        group.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+        // Garder la première (plus récente), supprimer les autres
+        const duplicates = group.slice(1)
+        duplicates.forEach(dup => {
+          idsToRemove.push(dup.id)
+          removed++
+        })
+      }
+    })
+
+    if (idsToRemove.length > 0) {
+      const { error: deleteError } = await supabaseTresorerie
+        .from('cotisations')
+        .delete()
+        .in('id', idsToRemove)
+
+      if (deleteError) {
+        logError('Erreur suppression doublons', deleteError)
+        throw new Error('Erreur lors de la suppression des doublons')
+      }
+
+      logInfo('Doublons supprimés', { count: removed })
+    }
+
+    return { removed }
+  } catch (err) {
+    logError('cleanDuplicateCotisations exception', err)
     throw err
   }
 }
@@ -1278,12 +1895,13 @@ export async function getAllCartesMembres({ page = 1, limit = 1000, search = '',
           try {
             const { data: membre, error: membreError } = await supabaseAdhesion
               .from('members')
-              .select('id, prenom, nom, email')
+              .select('id, prenom, nom, email, numero_membre, pays')
               .eq('numero_membre', carte.numero_membre)
               .maybeSingle()
             
             if (!membreError && membre) {
               membreInfo = {
+                id: membre.id, // Inclure l'ID du membre pour les relances
                 prenom: membre.prenom || '',
                 nom: membre.nom || '',
                 email: membre.email || '',
@@ -2181,6 +2799,22 @@ export async function generateMissingPDFs() {
  */
 export async function updateCarteMembre(carteId, updates) {
   try {
+    // Récupérer l'ancien statut avant la mise à jour
+    const { data: oldCarte, error: fetchError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('statut_paiement, numero_membre')
+      .eq('id', carteId)
+      .single()
+
+    if (fetchError) {
+      logWarning('Impossible de récupérer l\'ancien statut de la carte', { carteId, error: fetchError.message })
+    }
+
+    const oldStatutPaiement = oldCarte?.statut_paiement
+    const isNowPaid = updates.statut_paiement === 'oui' || updates.statut_paiement === 'paye'
+    const wasNotPaid = oldStatutPaiement !== 'oui' && oldStatutPaiement !== 'paye'
+
+    // Mettre à jour la carte
     const { data, error } = await supabaseTresorerie
       .from('cartes_membres')
       .update(updates)
@@ -2194,6 +2828,85 @@ export async function updateCarteMembre(carteId, updates) {
     }
 
     logInfo('Carte membre mise à jour', { id: carteId })
+
+    // Envoyer un email de confirmation si le statut passe à "payé"
+    if (isNowPaid && wasNotPaid && data.numero_membre) {
+      try {
+        // Récupérer les informations du membre
+        const { data: membre, error: membreError } = await supabaseAdhesion
+          .from('members')
+          .select('id, prenom, nom, email, numero_membre, pays')
+          .eq('numero_membre', data.numero_membre)
+          .single()
+
+        if (!membreError && membre && membre.email) {
+          const { notifyMemberEmail } = await import('./notifications.service.js')
+          
+          // Formater les dates
+          const dateEmission = data.date_emission 
+            ? new Date(data.date_emission).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+            : '—'
+          const dateValidite = data.date_validite
+            ? new Date(data.date_validite).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+            : '—'
+          
+          // Déterminer le tarif selon le pays
+          const tarifInfo = getTarifInfoForCountry(membre.pays || data.pays)
+          const tarifAffiche = `${tarifInfo.montant} ${tarifInfo.symbol}`
+          
+          const subject = 'ASGF - Confirmation de paiement de votre carte membre'
+          const messageBody = `Bonjour {{prenom}} {{nom}},
+
+Nous vous confirmons la réception du paiement de votre carte membre ASGF.
+
+Détails de votre carte :
+• Numéro de membre : {{numero_membre}}
+• Date d'émission : ${dateEmission}
+• Date de validité : ${dateValidite}
+• Statut : ${data.statut_carte || 'Membre actif'}
+• Montant payé : ${tarifAffiche}
+
+Votre carte membre est maintenant active. Merci pour votre contribution à l'Association des Géomaticiens Sénégalais de France.
+
+Cordialement,
+L'équipe ASGF`
+
+          // Convertir les sauts de ligne en <br> pour le HTML
+          const htmlMessage = messageBody.replace(/\n/g, '<br>')
+
+          await notifyMemberEmail({
+            recipients: [{
+              email: membre.email,
+              prenom: membre.prenom,
+              nom: membre.nom,
+              numero_membre: membre.numero_membre || '',
+              pays: membre.pays || '',
+            }],
+            subject,
+            bodyTemplate: htmlMessage,
+            memberIds: [membre.id],
+          })
+
+          logInfo('Email de confirmation de paiement carte membre envoyé', { 
+            membre_id: membre.id, 
+            email: membre.email,
+            carte_id: carteId,
+            numero_membre: data.numero_membre
+          })
+        } else {
+          logWarning('updateCarteMembre: Impossible d\'envoyer l\'email de confirmation', {
+            carte_id: carteId,
+            numero_membre: data.numero_membre,
+            error: membreError?.message,
+            hasEmail: !!membre?.email
+          })
+        }
+      } catch (emailErr) {
+        logError('updateCarteMembre: Erreur envoi email confirmation', emailErr)
+        // Ne pas faire échouer la mise à jour si l'email échoue
+      }
+    }
+
     return data
   } catch (err) {
     logError('updateCarteMembre exception', err)

@@ -22,6 +22,10 @@ import {
   deleteDepenseAction,
   listRelances,
   createRelance,
+  generateMonthlyCotisations,
+  updateOverdueCotisations,
+  cleanDuplicateCotisations,
+  createMissingCotisations,
   listCartes,
   createCarte,
   updateCarte,
@@ -56,6 +60,10 @@ router.put('/cotisations/:id', updateCotisation)
 router.post('/cotisations/:id/validate', validateCotisationAction)
 router.post('/cotisations/:id/reset', resetCotisationAction)
 router.delete('/cotisations/:id', deleteCotisationAction)
+router.post('/cotisations/generate-monthly', generateMonthlyCotisations)
+router.post('/cotisations/update-overdue', updateOverdueCotisations)
+router.post('/cotisations/clean-duplicates', cleanDuplicateCotisations)
+router.post('/cotisations/create-missing', createMissingCotisations)
 
 // Routes pour les paiements
 router.get('/paiements', listPaiements)

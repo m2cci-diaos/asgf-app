@@ -29,6 +29,10 @@ import {
   createPaiement,
   updatePaiement,
   createRelance,
+  generateMonthlyCotisations,
+  updateOverdueCotisations,
+  cleanDuplicateCotisations,
+  createMissingCotisations,
   createCarteMembre,
   geocodeMemberAddress,
   fetchCarteMembreByNumero,
@@ -4503,10 +4507,26 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     }
 
     const updateCotisationState = (updated) => {
-      if (!updated) return
-      setCotisationsData((prev) =>
-        prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
-      )
+      if (!updated) {
+        console.warn('updateCotisationState: Aucune donnée fournie', updated)
+        return
+      }
+      console.log('🔄 Mise à jour état cotisation:', { id: updated.id, statut_paiement: updated.statut_paiement })
+      setCotisationsData((prev) => {
+        const updatedList = prev.map((item) => {
+          if (item.id === updated.id) {
+            const merged = { ...item, ...updated }
+            console.log('✅ Cotisation mise à jour dans l\'état:', { 
+              id: merged.id, 
+              ancien_statut: item.statut_paiement, 
+              nouveau_statut: merged.statut_paiement 
+            })
+            return merged
+          }
+          return item
+        })
+        return updatedList
+      })
     }
 
     const removeCotisationState = (id) => {
@@ -4534,20 +4554,38 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     const handleCotisationAction = async (cot, action) => {
       try {
         if (action === 'validate') {
+          console.log('🔄 Validation cotisation:', cot.id, cot.statut_paiement)
           const updated = await validateCotisation(cot.id, { date_paiement: new Date().toISOString().split('T')[0] })
-          updateCotisationState(updated)
+          console.log('✅ Réponse validation:', updated)
+          if (updated) {
+            console.log('📊 Statut après validation:', updated.statut_paiement)
+            updateCotisationState(updated)
+            alert('✅ Cotisation validée avec succès !')
+            // Recharger les données pour s'assurer que tout est à jour
+            await loadData()
+          } else {
+            alert('⚠️ Erreur : La cotisation n\'a pas pu être validée')
+          }
         } else if (action === 'reset') {
           const updated = await resetCotisation(cot.id)
-          updateCotisationState(updated)
+          if (updated) {
+            updateCotisationState(updated)
+            alert('✅ Cotisation repassée en attente !')
+            await loadData()
+          } else {
+            alert('⚠️ Erreur : La cotisation n\'a pas pu être réinitialisée')
+          }
         } else if (action === 'delete') {
           if (!window.confirm('Supprimer définitivement cette cotisation ?')) {
             return
           }
           await deleteCotisation(cot.id)
           removeCotisationState(cot.id)
+          alert('✅ Cotisation supprimée !')
+          await loadData()
         }
-        await loadData()
       } catch (err) {
+        console.error('Erreur action cotisation:', err)
         alert('Action impossible : ' + err.message)
       }
     }
@@ -4853,6 +4891,73 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                 <button className="btn-primary" onClick={() => setShowModal('cotisation')}>
                   + Ajouter Cotisation
                 </button>
+                <button 
+                  className="btn-secondary" 
+                  onClick={async () => {
+                    const mois = prompt('Entrez le mois (1-12) :', new Date().getMonth() + 1)
+                    const annee = prompt('Entrez l\'année :', new Date().getFullYear())
+                    if (mois && annee) {
+                      try {
+                        const result = await generateMonthlyCotisations(parseInt(mois), parseInt(annee))
+                        alert(`✅ ${result.created} cotisation(s) générée(s), ${result.skipped} ignorée(s)`)
+                        await loadData()
+                      } catch (err) {
+                        alert('Erreur : ' + err.message)
+                      }
+                    }
+                  }}
+                  style={{ fontSize: '14px' }}
+                >
+                  🔄 Générer cotisations mensuelles
+                </button>
+                <button 
+                  className="btn-secondary" 
+                  onClick={async () => {
+                    if (!window.confirm('Mettre à jour les cotisations en retard ?')) return
+                    try {
+                      const result = await updateOverdueCotisations()
+                      alert(`✅ ${result.updated} cotisation(s) mise(s) à jour`)
+                      await loadData()
+                    } catch (err) {
+                      alert('Erreur : ' + err.message)
+                    }
+                  }}
+                  style={{ fontSize: '14px' }}
+                >
+                  ⚠️ Mettre à jour cotisations en retard
+                </button>
+                <button 
+                  className="btn-secondary" 
+                  onClick={async () => {
+                    if (!window.confirm('Nettoyer les doublons de cotisations ? Cette action est irréversible.')) return
+                    try {
+                      const result = await cleanDuplicateCotisations()
+                      alert(`✅ ${result.removed} doublon(s) supprimé(s)`)
+                      await loadData()
+                    } catch (err) {
+                      alert('Erreur : ' + err.message)
+                    }
+                  }}
+                  style={{ fontSize: '14px', background: '#f59e0b', color: 'white' }}
+                >
+                  🧹 Nettoyer les doublons
+                </button>
+                <button 
+                  className="btn-secondary" 
+                  onClick={async () => {
+                    if (!window.confirm('Créer les cotisations manquantes pour tous les membres approuvés qui n\'en ont pas ?')) return
+                    try {
+                      const result = await createMissingCotisations()
+                      alert(`✅ ${result.created} cotisation(s) manquante(s) créée(s) pour ${result.total} membre(s)`)
+                      await loadData()
+                    } catch (err) {
+                      alert('Erreur : ' + err.message)
+                    }
+                  }}
+                  style={{ fontSize: '14px', background: '#10b981', color: 'white' }}
+                >
+                  ➕ Créer cotisations manquantes
+                </button>
               </div>
             </div>
             
@@ -4988,8 +5093,9 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                       try {
                                         await createRelance({
                                           membre_id: cot.membre_id,
-                                          type: 'cotisation',
-                                          message: `Rappel: Votre cotisation pour ${formatPeriod(cot.periode_mois, cot.periode_annee, cot.date_paiement)} est en attente de paiement.`,
+                                          type_relance: 'cotisation',
+                                          annee: cot.periode_annee || new Date().getFullYear(),
+                                          commentaire: `Rappel: Votre cotisation pour ${formatPeriod(cot.periode_mois, cot.periode_annee, cot.date_paiement)} est en attente de paiement.`,
                                         })
                                         alert('Relance envoyée avec succès !')
                                       } catch (err) {
@@ -6200,10 +6306,15 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                 className="btn-link" 
                                 onClick={async () => {
                                   try {
+                                    if (!carte.membre?.id) {
+                                      alert('Erreur : Impossible de trouver le membre associé à cette carte.')
+                                      return
+                                    }
                                     await createRelance({
-                                      membre_id: carte.membre?.id || null,
-                                      type: 'carte_membre',
-                                      message: `Rappel: Votre carte membre ${carte.numero_membre} est en attente de paiement (${tarif}).`,
+                                      membre_id: carte.membre.id,
+                                      type_relance: 'carte_membre',
+                                      annee: new Date().getFullYear(),
+                                      // Ne pas envoyer de commentaire personnalisé, laisser le backend générer le message propre
                                     })
                                     alert('Relance envoyée avec succès !')
                                   } catch (err) {
