@@ -9,7 +9,8 @@ export function signAdminToken(admin) {
     {
       id: admin.id,
       numero_membre: admin.numero_membre,
-      role_global: admin.role_global,
+      role_type: admin.role_type,
+      super_scope: admin.super_scope || [],
       is_master: admin.is_master,
     },
     JWT_SECRET,

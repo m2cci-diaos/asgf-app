@@ -6,6 +6,8 @@ import {
   fetchPendingMembers,
   approveMember,
   rejectMember,
+  updateMember,
+  deleteMember,
   fetchAdhesionStats,
   fetchAllMembers,
   fetchMentoratStats,
@@ -30,6 +32,8 @@ import {
   createCarteMembre,
   geocodeMemberAddress,
   fetchCarteMembreByNumero,
+  listCartesMembres,
+  updateCarteMembre,
   fetchDepenses,
   createDepense,
   fetchHistorique,
@@ -86,6 +90,11 @@ import {
   createPresentateur,
   updatePresentateur,
   deletePresentateur,
+  sendInscriptionInvitation,
+  sendSessionReminder,
+  sendWebinaireInscriptionInvitation,
+  sendWebinaireReminder,
+  sendMemberEmails,
 } from "../services/api"
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet"
 import MarkerClusterGroup from "react-leaflet-cluster"
@@ -99,9 +108,14 @@ import {
   exportFormationsToPDF,
   exportFormateursToExcel
 } from "../utils/formationExports"
+import {
+  exportMembersToExcel,
+  exportMembersToPDF
+} from "../utils/memberExports"
 import StudioContent from "../components/StudioContent"
 import CarteMembreGenerator from "../components/CarteMembreGenerator"
 import "leaflet/dist/leaflet.css"
+import AdminSettingsPanel from "../components/AdminSettingsPanel"
 import logoASGF from "../img/Logo_officiel_ASGF.png"
 import "./AdminDashboard.css"
 import TreasuryFilters from "../components/treasury/TreasuryFilters"
@@ -288,7 +302,107 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [activeModule, setActiveModule] = useState("dashboard")
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === 'undefined') return true
+    return window.innerWidth >= 1024
+  })
+  const [accessDeniedInfo, setAccessDeniedInfo] = useState(null)
+
+  const MODULE_PERMISSION_KEYS = useMemo(
+    () => ({
+      dashboard: null,
+      adhesions: 'adhesion',
+      members: 'adhesion',
+      formations: 'formation',
+      webinaires: 'webinaire',
+      studio: 'secretariat',
+      mentorat: 'mentorat',
+      recrutement: 'recrutement',
+      tresorerie: 'tresorerie',
+      secretariat: 'secretariat',
+      settings: '__settings__',
+    }),
+    []
+  )
+
+  const MODULE_LABELS = useMemo(
+    () => ({
+      dashboard: 'Tableau de bord',
+      adhesions: 'Adhésions',
+      members: 'Membres',
+      formations: 'Formations',
+      webinaires: 'Webinaires',
+      studio: 'Studio',
+      mentorat: 'Mentorat',
+      recrutement: 'Recrutement',
+      tresorerie: 'Trésorerie',
+      secretariat: 'Secrétariat',
+      settings: 'Paramètres',
+    }),
+    []
+  )
+
+  const adminDisplayName = useMemo(() => {
+    const prenom = (admin?.prenom || '').trim()
+    const nom = (admin?.nom || '').trim()
+    const fullName = `${prenom} ${nom}`.trim()
+    return fullName || admin?.numero_membre || 'Admin'
+  }, [admin])
+
+  const adminRoleLabel = useMemo(() => {
+    if (admin?.is_master) return 'Superadmin global'
+    if (admin?.role_type === 'superadmin') return 'Superadmin'
+    return admin?.role_name || 'Admin'
+  }, [admin])
+
+  const canAccessModule = useCallback(
+    (module) => {
+      if (!module) return true
+      if (module === 'settings') {
+        return Boolean(admin?.is_master || admin?.role_type === 'superadmin')
+      }
+
+      const permissionKey = MODULE_PERMISSION_KEYS[module]
+      if (!permissionKey) return true
+
+      if (admin?.is_master) return true
+
+      if (admin?.role_type === 'superadmin') {
+        const scopeList = Array.isArray(admin?.super_scope) ? admin.super_scope : []
+        if (scopeList.length === 0 || scopeList.includes(permissionKey)) {
+          return true
+        }
+      }
+
+      const grantedModules = Array.isArray(admin?.modules) ? admin.modules : []
+      return grantedModules.includes(permissionKey)
+    },
+    [admin, MODULE_PERMISSION_KEYS]
+  )
+
+  const hasAccessToActiveModule = useMemo(() => canAccessModule(activeModule), [activeModule, canAccessModule])
+
+  const handleModuleSelect = useCallback(
+    (module) => {
+      const allowed = canAccessModule(module)
+      setActiveModule(module)
+      if (!allowed) {
+        setAccessDeniedInfo({
+          module,
+          label: MODULE_LABELS[module] || 'ce module',
+        })
+      } else {
+        setAccessDeniedInfo(null)
+      }
+    },
+    [canAccessModule, MODULE_LABELS]
+  )
+
+  useEffect(() => {
+    if (accessDeniedInfo && canAccessModule(accessDeniedInfo.module) && canAccessModule(activeModule)) {
+      setAccessDeniedInfo(null)
+    }
+  }, [accessDeniedInfo, activeModule, canAccessModule])
 
   useEffect(() => {
     console.log("Connecté ✅", { admin })
@@ -320,6 +434,19 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const handleResize = () => {
+      if (window.innerWidth >= 1024) {
+        setSidebarOpen(true)
+      } else {
+        setSidebarOpen(false)
+      }
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   const handleApprove = async (id) => {
     try {
@@ -1363,6 +1490,11 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     const [mapReady, setMapReady] = useState(false)
     const [showCarteGenerator, setShowCarteGenerator] = useState(false)
     const [selectedMemberForCarte, setSelectedMemberForCarte] = useState(null)
+    const [selectedMemberIds, setSelectedMemberIds] = useState([])
+    const [emailSubject, setEmailSubject] = useState('')
+    const [emailBody, setEmailBody] = useState('')
+    const [emailSending, setEmailSending] = useState(false)
+    const [emailAttachments, setEmailAttachments] = useState([]) // [{ name, data, type, size }]
     const geocodeCacheRef = useRef({})
     const PAGE_SIZE = 20
 
@@ -1509,6 +1641,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     }, [loadMembers])
 
     const handleViewMember = async (member) => {
+      console.log('🔍 Membre sélectionné:', member)
       setSelectedMember(member)
       setCarteMembre(null)
 
@@ -1550,6 +1683,224 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     }, [memberLocations])
     const localizedPlural = memberLocations.length !== 1 ? 's' : ''
 
+    const allVisibleMembersSelected =
+      paginatedMembers.length > 0 &&
+      paginatedMembers.every((m) => selectedMemberIds.includes(m.id))
+
+    const toggleSelectMember = (id) => {
+      setSelectedMemberIds((prev) =>
+        prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+      )
+    }
+
+    const toggleSelectAllVisibleMembers = () => {
+      if (allVisibleMembersSelected) {
+        setSelectedMemberIds((prev) =>
+          prev.filter((id) => !paginatedMembers.some((m) => m.id === id))
+        )
+      } else {
+        setSelectedMemberIds((prev) => {
+          const allIds = [...prev, ...paginatedMembers.map((m) => m.id)]
+          return Array.from(new Set(allIds))
+        })
+      }
+    }
+
+    const handleAttachmentUpload = (event) => {
+      const files = Array.from(event.target.files || [])
+      if (files.length === 0) return
+
+      const maxSize = 5 * 1024 * 1024 // 5MB par fichier
+      const allowedTypes = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+      ]
+
+      const newAttachments = []
+
+      files.forEach((file) => {
+        if (file.size > maxSize) {
+          alert(`Le fichier "${file.name}" dépasse la taille maximale de 5MB.`)
+          return
+        }
+
+        if (!allowedTypes.includes(file.type)) {
+          alert(`Le type de fichier "${file.name}" n'est pas autorisé. Formats acceptés : PDF, Word, Excel, Images.`)
+          return
+        }
+
+        if (emailAttachments.length + newAttachments.length >= 3) {
+          alert('Maximum 3 pièces jointes autorisées.')
+          return
+        }
+
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          try {
+            const result = reader.result
+            if (!result || typeof result !== 'string') {
+              throw new Error('Résultat de lecture invalide')
+            }
+
+            // Extraire les données base64 (enlever le préfixe data:type;base64,)
+            const parts = result.split(',')
+            if (parts.length !== 2) {
+              throw new Error('Format base64 invalide')
+            }
+
+            const base64Data = parts[1]
+            if (!base64Data || base64Data.length === 0) {
+              throw new Error('Données base64 vides')
+            }
+
+            newAttachments.push({
+              name: file.name,
+              data: base64Data,
+              type: file.type,
+              size: file.size,
+            })
+
+            console.log(`✓ Fichier "${file.name}" converti en base64 (${(base64Data.length / 1024).toFixed(1)} KB)`, {
+              type: file.type,
+              originalSize: file.size,
+              base64Length: base64Data.length,
+            })
+
+            // Vérifier si tous les fichiers sont traités
+            if (newAttachments.length === files.length) {
+              setEmailAttachments((prev) => {
+                const updated = [...prev, ...newAttachments]
+                console.log(`📎 ${updated.length} pièce(s) jointe(s) prête(s)`, updated.map(a => ({ name: a.name, type: a.type, size: a.size })))
+                return updated
+              })
+            }
+          } catch (err) {
+            console.error(`Erreur traitement fichier "${file.name}":`, err)
+            alert(`Erreur lors du traitement du fichier "${file.name}": ${err.message}`)
+          }
+        }
+        reader.onerror = (err) => {
+          console.error(`Erreur FileReader pour "${file.name}":`, err)
+          alert(`Erreur lors de la lecture du fichier "${file.name}".`)
+        }
+        reader.readAsDataURL(file)
+      })
+    }
+
+    const removeAttachment = (index) => {
+      setEmailAttachments((prev) => prev.filter((_, i) => i !== index))
+    }
+
+    const handleSendEmails = async () => {
+      const memberIds = selectedMemberIds.length
+        ? selectedMemberIds
+        : filteredMembers.map((m) => m.id)
+
+      if (!memberIds.length) {
+        alert('Aucun membre trouvé pour lenvoi.')
+        return
+      }
+
+      if (!emailSubject || !emailBody) {
+        alert('Merci de renseigner un objet et un contenu pour le mail.')
+        return
+      }
+
+      if (
+        !window.confirm(
+          `Envoyer cet email à ${memberIds.length} membre(s)${emailAttachments.length > 0 ? ` avec ${emailAttachments.length} pièce(s) jointe(s)` : ''} ?`
+        )
+      ) {
+        return
+      }
+
+      try {
+        setEmailSending(true)
+        
+        // Log pour debug
+        const selectedMembers = selectedMemberIds.length 
+          ? members.filter(m => selectedMemberIds.includes(m.id))
+          : filteredMembers
+        console.log('📧 Envoi email membres:', {
+          memberIds,
+          count: memberIds.length,
+          attachments: emailAttachments.length,
+          attachmentsDetails: emailAttachments.map(a => ({
+            name: a.name,
+            type: a.type,
+            size: a.size,
+            dataLength: a.data?.length || 0,
+            hasData: !!a.data,
+          })),
+          selectedMembers: selectedMembers.map(m => ({ id: m.id, email: m.email, nom: `${m.prenom} ${m.nom}` }))
+        })
+        
+        const result = await sendMemberEmails({
+          memberIds,
+          subject: emailSubject,
+          body: emailBody,
+          attachments: emailAttachments.map(a => ({
+            name: a.name,
+            data: a.data,
+            type: a.type,
+          })),
+        })
+        
+        // Vérifier si le résultat contient des informations
+        if (result?.success === false) {
+          const message = result.message || "Erreur lors de l'envoi des emails"
+          // Détecter les erreurs d'autorisation Google Apps Script
+          if (message.includes('autorisation') || message.includes('authorization') || message.includes('MailApp.sendEmail') || message.includes('script.send_mail') || message.includes('Apps Script')) {
+            alert(`⚠️ Erreur d'autorisation Google Apps Script\n\n${message}\n\nVeuillez vérifier que le script Google Apps Script a les autorisations nécessaires pour envoyer des emails (https://www.googleapis.com/auth/script.send_mail).`)
+          } else {
+            alert(`❌ Erreur lors de l'envoi :\n\n${message}`)
+          }
+        } else if (result?.success === true || result?.message) {
+          const message = result.message || `Email envoyé avec succès à ${memberIds.length} membre(s)`
+          alert(`✅ ${message}${emailAttachments.length > 0 ? ` avec ${emailAttachments.length} pièce(s) jointe(s)` : ''}`)
+          setSelectedMemberIds([])
+          setEmailAttachments([])
+          setEmailSubject('')
+          setEmailBody('')
+        } else {
+          alert(`✅ Email envoyé avec succès à ${memberIds.length} membre(s)${emailAttachments.length > 0 ? ` avec ${emailAttachments.length} pièce(s) jointe(s)` : ''}.`)
+          setSelectedMemberIds([])
+          setEmailAttachments([])
+          setEmailSubject('')
+          setEmailBody('')
+        }
+      } catch (err) {
+        console.error('❌ Erreur envoi email membres:', err)
+        
+        // Utiliser responseData si disponible (contient les détails du backend)
+        const errorData = err.responseData || {}
+        const errorMessage = errorData.message || err.message || "Erreur lors de l'envoi des emails membres"
+        const errors = errorData.errors || []
+        
+        // Construire un message d'erreur détaillé
+        let detailedMessage = errorMessage
+        if (errors.length > 0) {
+          const errorDetails = errors.slice(0, 3).join('\n• ') // Limiter à 3 erreurs pour la lisibilité
+          detailedMessage = `${errorMessage}\n\nDétails :\n• ${errorDetails}${errors.length > 3 ? `\n... et ${errors.length - 3} autre(s) erreur(s)` : ''}`
+        }
+        
+        // Détecter les erreurs d'autorisation Google Apps Script
+        if (errorMessage.includes('autorisation') || errorMessage.includes('authorization') || errorMessage.includes('MailApp.sendEmail') || errorMessage.includes('script.send_mail') || errorMessage.includes('Apps Script') || errors.some(e => e.includes('autorisation') || e.includes('authorization'))) {
+          alert(`⚠️ Erreur d'autorisation Google Apps Script\n\n${detailedMessage}\n\nPour résoudre ce problème :\n1. Ouvrez le script Google Apps Script dans Google Drive\n2. Cliquez sur "Exécuter" (▶️) pour autoriser le script\n3. Acceptez les autorisations demandées (notamment l'autorisation d'envoyer des emails)\n4. Réessayez l'envoi`)
+        } else {
+          alert(`❌ Erreur lors de l'envoi :\n\n${detailedMessage}`)
+        }
+      } finally {
+        setEmailSending(false)
+      }
+    }
+
     if (showCarteGenerator) {
       return (
         <CarteMembreGenerator
@@ -1564,10 +1915,10 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
 
     return (
       <div className="module-content">
-        <div className="module-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="module-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1.5rem', flexWrap: 'wrap' }}>
           <div>
             <h2>Gestion des Membres</h2>
-            <p className="module-subtitle">Fiches techniques des membres de l'association</p>
+            <p className="module-subtitle">Fiches, carte, emailing ciblé de la communauté ASGF</p>
           </div>
           <button
             onClick={() => setShowCarteGenerator(true)}
@@ -1609,15 +1960,275 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         <div className="search-bar" style={{ marginBottom: '20px' }}>
           <input
             type="text"
-            placeholder="Rechercher par nom, email ou numéro de membre..."
+            placeholder="🔍 Rechercher par nom, email ou numéro de membre..."
             value={searchQuery}
             onChange={(e) => {
               setSearchQuery(e.target.value)
               setCurrentPage(1)
             }}
             className="search-input"
+            style={{
+              padding: '0.6rem 1rem',
+              borderRadius: '999px',
+              border: '2px solid #0066CC',
+              fontSize: '0.95rem',
+              background: 'white',
+              color: '#212529',
+              fontWeight: '500',
+              width: '100%',
+              maxWidth: '500px',
+            }}
           />
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+            <p style={{ fontSize: '0.9rem', color: '#6b7280', margin: 0 }}>
+              <strong>{filteredMembers.length}</strong> membre{filteredMembers.length !== 1 ? 's' : ''} trouvé{filteredMembers.length !== 1 ? 's' : ''}
+            </p>
+            {selectedMemberIds.length > 0 && (
+              <p style={{ fontSize: '0.9rem', color: '#0066CC', margin: 0, fontWeight: 600 }}>
+                ✓ <strong>{selectedMemberIds.length}</strong> sélectionné{selectedMemberIds.length !== 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
         </div>
+
+        {/* Console d'emailing membres - Design moderne */}
+        <section className="card" style={{ marginBottom: '24px', padding: '1.5rem', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0,102,204,0.12)', background: 'linear-gradient(135deg, #f0f7ff 0%, #ffffff 100%)', border: '2px solid #e0f2fe' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', gap: '1rem', flexWrap: 'wrap' }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '1.25rem', color: '#0066CC', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+                  <polyline points="22,6 12,13 2,6"></polyline>
+                </svg>
+                Console d'Emailing Membres
+              </h3>
+              <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem', color: '#64748b' }}>
+                Envoyez des emails personnalisés aux membres sélectionnés ou à tous les membres filtrés
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={emailSending || (!emailSubject || !emailBody)}
+              onClick={handleSendEmails}
+              style={{
+                background: selectedMemberIds.length > 0 || filteredMembers.length > 0
+                  ? 'linear-gradient(135deg, #22c55e, #16a34a)'
+                  : '#94a3b8',
+                border: 'none',
+                color: 'white',
+                fontSize: '0.9rem',
+                padding: '0.6rem 1.5rem',
+                borderRadius: '999px',
+                fontWeight: 600,
+                cursor: (!emailSubject || !emailBody) ? 'not-allowed' : 'pointer',
+                boxShadow: '0 4px 12px rgba(34,197,94,0.3)',
+                transition: 'all 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (emailSubject && emailBody) {
+                  e.target.style.transform = 'translateY(-2px)'
+                  e.target.style.boxShadow = '0 6px 16px rgba(34,197,94,0.4)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.transform = 'translateY(0)'
+                e.target.style.boxShadow = '0 4px 12px rgba(34,197,94,0.3)'
+              }}
+            >
+              {emailSending ? (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ display: 'inline-block', marginRight: '0.5rem', animation: 'spin 1s linear infinite' }}>
+                    <path d="M21 12a9 9 0 11-6.219-8.56"></path>
+                  </svg>
+                  Envoi en cours...
+                </>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ display: 'inline-block', marginRight: '0.5rem' }}>
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                  </svg>
+                  Envoyer {selectedMemberIds.length > 0 ? `à ${selectedMemberIds.length} membre(s)` : `à tous (${filteredMembers.length})`}
+                </>
+              )}
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gap: '1rem' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#475569', marginBottom: '0.4rem' }}>
+                Objet du message *
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: Actualités ASGF, Relance cotisation, Invitation événement..."
+                value={emailSubject}
+                onChange={(e) => setEmailSubject(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: '2px solid #cbd5e1',
+                  fontSize: '0.95rem',
+                  background: 'white',
+                  color: '#0f172a',
+                  transition: 'all 0.2s',
+                }}
+                onFocus={(e) => {
+                  e.target.style.borderColor = '#0066CC'
+                  e.target.style.boxShadow = '0 0 0 3px rgba(0,102,204,0.1)'
+                }}
+                onBlur={(e) => {
+                  e.target.style.borderColor = '#cbd5e1'
+                  e.target.style.boxShadow = 'none'
+                }}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#475569', marginBottom: '0.4rem' }}>
+                Message *
+              </label>
+              <textarea
+                rows="5"
+                placeholder="Écrivez votre message ici... Vous pouvez utiliser des variables pour personnaliser :
+• {{prenom}} - Prénom du membre
+• {{nom}} - Nom du membre
+• {{numero_membre}} - Numéro de membre
+• {{pays}} - Pays du membre
+
+Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
+                value={emailBody}
+                onChange={(e) => setEmailBody(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '10px',
+                  border: '2px solid #cbd5e1',
+                  fontSize: '0.95rem',
+                  background: 'white',
+                  color: '#0f172a',
+                  resize: 'vertical',
+                  fontFamily: 'inherit',
+                  lineHeight: '1.6',
+                  transition: 'all 0.2s',
+                }}
+                onFocus={(e) => {
+                  e.target.style.borderColor = '#0066CC'
+                  e.target.style.boxShadow = '0 0 0 3px rgba(0,102,204,0.1)'
+                }}
+                onBlur={(e) => {
+                  e.target.style.borderColor = '#cbd5e1'
+                  e.target.style.boxShadow = 'none'
+                }}
+              />
+              <p style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.5rem', marginBottom: 0 }}>
+                💡 Astuce : Les variables seront automatiquement remplacées par les informations de chaque membre lors de l'envoi.
+              </p>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#475569', marginBottom: '0.4rem' }}>
+                Pièces jointes (optionnel)
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif"
+                  onChange={handleAttachmentUpload}
+                  disabled={emailAttachments.length >= 3}
+                  style={{
+                    padding: '0.5rem',
+                    borderRadius: '8px',
+                    border: '2px dashed #cbd5e1',
+                    fontSize: '0.9rem',
+                    background: 'white',
+                    cursor: emailAttachments.length >= 3 ? 'not-allowed' : 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (emailAttachments.length < 3) {
+                      e.target.style.borderColor = '#0066CC'
+                      e.target.style.background = '#f0f7ff'
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.target.style.borderColor = '#cbd5e1'
+                    e.target.style.background = 'white'
+                  }}
+                />
+                <p style={{ fontSize: '0.75rem', color: '#94a3b8', margin: 0 }}>
+                  Formats acceptés : PDF, Word, Excel, Images (JPG, PNG, GIF) • Max 5MB par fichier • Maximum 3 fichiers
+                </p>
+                {emailAttachments.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+                    {emailAttachments.map((att, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '0.5rem 0.75rem',
+                          background: '#f1f5f9',
+                          borderRadius: '8px',
+                          border: '1px solid #e2e8f0',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0 }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0, color: '#0066CC' }}>
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                            <line x1="16" y1="13" x2="8" y2="13"></line>
+                            <line x1="16" y1="17" x2="8" y2="17"></line>
+                          </svg>
+                          <span style={{ fontSize: '0.85rem', color: '#0f172a', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {att.name}
+                          </span>
+                          <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '0.5rem' }}>
+                            ({(att.size / 1024).toFixed(1)} KB)
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(index)}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#ef4444',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.25rem',
+                            transition: 'all 0.2s',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.target.style.background = '#dc2626'
+                          }}
+                          onMouseLeave={(e) => {
+                            e.target.style.background = '#ef4444'
+                          }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                          </svg>
+                          Retirer
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
 
         {/* Carte interactive */}
         <section className="card members-map-card">
@@ -1703,10 +2314,89 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           <div className="loading-state">Chargement des membres...</div>
         ) : (
           <>
+            {/* Barre d'actions groupées */}
+            {selectedMemberIds.length > 0 && (
+              <div style={{
+                marginBottom: '1rem',
+                padding: '1rem',
+                background: 'linear-gradient(135deg, #0066CC, #0052A3)',
+                borderRadius: '12px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '1rem',
+                flexWrap: 'wrap',
+                boxShadow: '0 4px 12px rgba(0,102,204,0.2)',
+              }}>
+                <div style={{ color: 'white', fontWeight: 600, fontSize: '0.95rem' }}>
+                  <strong>{selectedMemberIds.length}</strong> membre{selectedMemberIds.length !== 1 ? 's' : ''} sélectionné{selectedMemberIds.length !== 1 ? 's' : ''}
+                </div>
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMemberIds([])}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: 'rgba(255,255,255,0.2)',
+                      border: '1px solid rgba(255,255,255,0.3)',
+                      borderRadius: '8px',
+                      color: 'white',
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.target.style.background = 'rgba(255,255,255,0.3)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.target.style.background = 'rgba(255,255,255,0.2)'
+                    }}
+                  >
+                    Tout désélectionner
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const allIds = filteredMembers.map((m) => m.id)
+                      setSelectedMemberIds(allIds)
+                    }}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: 'rgba(255,255,255,0.2)',
+                      border: '1px solid rgba(255,255,255,0.3)',
+                      borderRadius: '8px',
+                      color: 'white',
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.target.style.background = 'rgba(255,255,255,0.3)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.target.style.background = 'rgba(255,255,255,0.2)'
+                    }}
+                  >
+                    Tout sélectionner ({filteredMembers.length})
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="table-container">
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th style={{ width: '50px' }}>
+                      <input
+                        type="checkbox"
+                        checked={allVisibleMembersSelected}
+                        onChange={toggleSelectAllVisibleMembers}
+                        style={{ cursor: 'pointer', width: '18px', height: '18px' }}
+                      />
+                    </th>
                     <th>Numéro</th>
                     <th>Nom</th>
                     <th>Prénom</th>
@@ -1720,8 +2410,21 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                 <tbody>
                   {paginatedMembers.length > 0 ? (
                     paginatedMembers.map((member) => (
-                      <tr key={member.id}>
-                        <td>{member.numero_membre || '-'}</td>
+                      <tr key={member.id} style={{ cursor: 'pointer' }} onMouseEnter={(e) => {
+                        e.currentTarget.style.background = '#f8fafc'
+                      }} onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent'
+                      }}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedMemberIds.includes(member.id)}
+                            onChange={() => toggleSelectMember(member.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ cursor: 'pointer', width: '18px', height: '18px' }}
+                          />
+                        </td>
+                        <td style={{ fontWeight: 600, color: '#0066CC' }}>{member.numero_membre || '-'}</td>
                         <td>{member.nom || '-'}</td>
                         <td>{member.prenom || '-'}</td>
                         <td>{member.email || '-'}</td>
@@ -1779,7 +2482,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan="8" className="text-center py-4">
+                      <td colSpan="9" className="text-center py-4">
                         {searchQuery ? 'Aucun membre trouvé' : 'Aucun membre'}
                       </td>
                     </tr>
@@ -1836,41 +2539,79 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     <div className="info-grid">
                       <div className="info-item">
                         <span className="info-label">Numéro de membre :</span>
-                        <span className="info-value">{selectedMember.numero_membre || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.numero_membre || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Nom :</span>
-                        <span className="info-value">{selectedMember.nom || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.nom || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Prénom :</span>
-                        <span className="info-value">{selectedMember.prenom || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.prenom || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Email :</span>
-                        <span className="info-value">{selectedMember.email || '-'}</span>
+                        <input 
+                          type="email" 
+                          className="info-value" 
+                          value={selectedMember.email || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Téléphone :</span>
-                        <span className="info-value">{selectedMember.telephone || '-'}</span>
+                        <input 
+                          type="tel" 
+                          className="info-value" 
+                          value={selectedMember.telephone || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Date de naissance :</span>
-                        <span className="info-value">
-                          {selectedMember.date_naissance ? new Date(selectedMember.date_naissance).toLocaleDateString('fr-FR') : '-'}
-              </span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.date_naissance ? new Date(selectedMember.date_naissance).toLocaleDateString('fr-FR') : ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Statut :</span>
-                        <span className={`status-badge ${selectedMember.status === 'approved' ? 'approved' : selectedMember.status === 'pending' ? 'pending' : 'rejected'}`}>
-                          {selectedMember.status === 'approved' ? 'Approuvé' : selectedMember.status === 'pending' ? 'En attente' : 'Rejeté'}
+                        <span className={`status-badge ${(selectedMember.status || selectedMember.statut) === 'approved' || (selectedMember.status || selectedMember.statut) === 'approuvé' ? 'approved' : (selectedMember.status || selectedMember.statut) === 'pending' || (selectedMember.status || selectedMember.statut) === 'en_attente' ? 'pending' : 'rejected'}`}>
+                          {(selectedMember.status || selectedMember.statut) === 'approved' || (selectedMember.status || selectedMember.statut) === 'approuvé' ? 'Approuvé' : (selectedMember.status || selectedMember.statut) === 'pending' || (selectedMember.status || selectedMember.statut) === 'en_attente' ? 'En attente' : 'Rejeté'}
                         </span>
                       </div>
                       <div className="info-item">
                         <span className="info-label">Date d'adhésion :</span>
-                        <span className="info-value">
-                          {selectedMember.date_adhesion ? new Date(selectedMember.date_adhesion).toLocaleDateString('fr-FR') : '-'}
-                        </span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.date_adhesion ? new Date(selectedMember.date_adhesion).toLocaleDateString('fr-FR') : ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                     </div>
 
@@ -1880,11 +2621,23 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     <div className="info-grid">
                       <div className="info-item">
                         <span className="info-label">Statut Pro :</span>
-                        <span className="info-value">{selectedMember.statut_pro || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.statut_pro || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Domaine :</span>
-                        <span className="info-value">{selectedMember.domaine || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.domaine || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                     </div>
 
@@ -1894,19 +2647,43 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     <div className="info-grid">
                       <div className="info-item">
                         <span className="info-label">Université :</span>
-                        <span className="info-value">{selectedMember.universite || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.universite || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Niveau d'études :</span>
-                        <span className="info-value">{selectedMember.niveau_etudes || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.niveau_etudes || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Année universitaire :</span>
-                        <span className="info-value">{selectedMember.annee_universitaire || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.annee_universitaire || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Spécialité :</span>
-                        <span className="info-value">{selectedMember.specialite || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.specialite || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                     </div>
 
@@ -1916,15 +2693,33 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     <div className="info-grid">
                       <div className="info-item">
                         <span className="info-label">Adresse :</span>
-                        <span className="info-value">{selectedMember.adresse || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.adresse || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Ville :</span>
-                        <span className="info-value">{selectedMember.ville || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.ville || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                       <div className="info-item">
                         <span className="info-label">Pays :</span>
-                        <span className="info-value">{selectedMember.pays || '-'}</span>
+                        <input 
+                          type="text" 
+                          className="info-value" 
+                          value={selectedMember.pays || ''} 
+                          readOnly 
+                          style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                        />
                       </div>
                     </div>
                   </div>
@@ -1941,31 +2736,63 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                         <div className="info-grid">
                           <div className="info-item">
                             <span className="info-label">Numéro de membre :</span>
-                            <span className="info-value">{carteMembre.numero_membre || '-'}</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={carteMembre.numero_membre || ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
                           </div>
                           <div className="info-item">
                             <span className="info-label">Date d'émission :</span>
-                            <span className="info-value">
-                              {carteMembre.date_emission ? new Date(carteMembre.date_emission).toLocaleDateString('fr-FR') : '-'}
-                            </span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={carteMembre.date_emission ? new Date(carteMembre.date_emission).toLocaleDateString('fr-FR') : ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
                           </div>
                           <div className="info-item">
                             <span className="info-label">Date de validité :</span>
-                            <span className="info-value">
-                              {carteMembre.date_validite ? new Date(carteMembre.date_validite).toLocaleDateString('fr-FR') : '-'}
-                            </span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={carteMembre.date_validite ? new Date(carteMembre.date_validite).toLocaleDateString('fr-FR') : ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
                           </div>
                           <div className="info-item">
                             <span className="info-label">Pays :</span>
-                            <span className="info-value">{carteMembre.pays || '-'}</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={carteMembre.pays || ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
                           </div>
                           <div className="info-item">
                             <span className="info-label">Statut carte :</span>
-                            <span className="info-value">{carteMembre.statut_carte || '-'}</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={carteMembre.statut_carte || ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
                           </div>
                           <div className="info-item">
                             <span className="info-label">Statut paiement :</span>
-                            <span className="info-value">{carteMembre.statut_paiement || '-'}</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={carteMembre.statut_paiement || ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
                           </div>
                         </div>
 
@@ -1997,8 +2824,85 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                         )}
                       </div>
                     ) : (
-                      <div className="no-data">
-                        <p>Aucune carte membre trouvée pour ce membre.</p>
+                      <div className="carte-membre-container">
+                        <div className="info-grid">
+                          <div className="info-item">
+                            <span className="info-label">Numéro de membre :</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={selectedMember.numero_membre || ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Date d'émission :</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value="" 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Date de validité :</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value="" 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Pays :</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value={selectedMember.pays || ''} 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Statut carte :</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value="" 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
+                          </div>
+                          <div className="info-item">
+                            <span className="info-label">Statut paiement :</span>
+                            <input 
+                              type="text" 
+                              className="info-value" 
+                              value="" 
+                              readOnly 
+                              style={{ background: '#f8fafc', border: '1px solid #e4e7ec', padding: '8px', borderRadius: '6px', width: '100%', color: '#0f172a' }}
+                            />
+                          </div>
+                        </div>
+                        <div style={{ marginTop: '20px' }}>
+                          <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>Carte Membre PDF :</div>
+                          <div style={{ 
+                            width: '100%', 
+                            height: '500px', 
+                            border: '1px solid #ddd', 
+                            borderRadius: '8px',
+                            background: '#f8fafc',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#94a3b8'
+                          }}>
+                            Aucune carte membre disponible
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2023,35 +2927,130 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     const [stats, setStats] = useState({})
     const [members, setMembers] = useState([])
     const [pendingMembers, setPendingMembers] = useState([])
+    const [allMembers, setAllMembers] = useState([])
     const [loading, setLoading] = useState(true)
     const [filters, setFilters] = useState({ search: '', status: '', pays: '' })
-    const [currentPage, setCurrentPage] = useState(1)
-    const PAGE_SIZE = 20
+    const [editingMember, setEditingMember] = useState(null)
+    const [memberFormData, setMemberFormData] = useState({})
+    const [submitting, setSubmitting] = useState(false)
+    const [uploadingPhoto, setUploadingPhoto] = useState(false)
+    const [photoPreview, setPhotoPreview] = useState(null)
+    const [exporting, setExporting] = useState(false)
 
     const loadData = useCallback(async () => {
       setLoading(true)
       try {
-        const [statsData, pendingData, membersData] = await Promise.all([
+        const [statsData, pendingData] = await Promise.all([
           fetchAdhesionStats(),
           fetchPendingMembers(),
-          fetchAllMembers({ page: currentPage, limit: PAGE_SIZE, ...filters }),
         ])
         setStats(statsData || {})
-        setPendingMembers(Array.isArray(pendingData) ? pendingData : [])
-        setMembers(Array.isArray(membersData) ? membersData : membersData?.data || [])
+        const pending = Array.isArray(pendingData) ? pendingData : []
+        setPendingMembers(pending)
+        
+        // Charger tous les membres avec pagination (limite max 500)
+        let allMembersList = []
+        let currentPage = 1
+        let hasMore = true
+        const maxLimit = 500
+        
+        while (hasMore) {
+          try {
+            const members = await fetchAllMembers({ page: currentPage, limit: maxLimit })
+            if (!Array.isArray(members)) {
+              console.warn('Format de données inattendu pour les membres')
+              hasMore = false
+              break
+            }
+            
+            allMembersList = [...allMembersList, ...members]
+            
+            // Si on a moins de membres que la limite, on a tout récupéré
+            if (members.length < maxLimit) {
+              hasMore = false
+            } else {
+              currentPage++
+            }
+          } catch (err) {
+            console.warn('Erreur lors du chargement des membres (page ' + currentPage + '):', err)
+            hasMore = false
+          }
+        }
+        
+        setAllMembers(allMembersList)
+        setMembers(allMembersList)
       } catch (err) {
         console.error('Erreur chargement adhésion:', err)
         setStats({})
         setPendingMembers([])
+        setAllMembers([])
         setMembers([])
       } finally {
         setLoading(false)
       }
-    }, [currentPage, filters])
+    }, [])
 
     useEffect(() => {
       loadData()
     }, [loadData])
+
+    // Filtrer les membres localement
+    const filteredMembers = useMemo(() => {
+      let filtered = [...allMembers]
+      
+      if (filters.search) {
+        const searchLower = filters.search.toLowerCase()
+        filtered = filtered.filter(m => 
+          (m.prenom && m.prenom.toLowerCase().includes(searchLower)) ||
+          (m.nom && m.nom.toLowerCase().includes(searchLower)) ||
+          (m.email && m.email.toLowerCase().includes(searchLower)) ||
+          (m.numero_membre && m.numero_membre.toLowerCase().includes(searchLower))
+        )
+      }
+      
+      if (filters.status) {
+        filtered = filtered.filter(m => {
+          const status = m.status || 'pending'
+          if (filters.status === 'pending') return status === 'pending' || status === 'en_attente'
+          if (filters.status === 'approved') return status === 'approved' || status === 'approuvé'
+          if (filters.status === 'rejected') return status === 'rejected' || status === 'rejeté'
+          return true
+        })
+      }
+      
+      if (filters.pays) {
+        const paysLower = filters.pays.toLowerCase()
+        filtered = filtered.filter(m => 
+          m.pays && m.pays.toLowerCase().includes(paysLower)
+        )
+      }
+      
+      return filtered
+    }, [allMembers, filters])
+
+    // Filtrer les membres en attente
+    const filteredPendingMembers = useMemo(() => {
+      let filtered = [...pendingMembers]
+      
+      if (filters.search) {
+        const searchLower = filters.search.toLowerCase()
+        filtered = filtered.filter(m => 
+          (m.prenom && m.prenom.toLowerCase().includes(searchLower)) ||
+          (m.nom && m.nom.toLowerCase().includes(searchLower)) ||
+          (m.email && m.email.toLowerCase().includes(searchLower)) ||
+          (m.numero_membre && m.numero_membre.toLowerCase().includes(searchLower))
+        )
+      }
+      
+      if (filters.pays) {
+        const paysLower = filters.pays.toLowerCase()
+        filtered = filtered.filter(m => 
+          m.pays && m.pays.toLowerCase().includes(paysLower)
+        )
+      }
+      
+      return filtered
+    }, [pendingMembers, filters])
 
     const handleApprove = async (id) => {
       try {
@@ -2073,6 +3072,209 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         alert('Membre rejeté.')
       } catch (err) {
         alert('Erreur : ' + err.message)
+      }
+    }
+
+    const handleEdit = (member) => {
+      setEditingMember(member)
+      setMemberFormData({
+        prenom: member.prenom || '',
+        nom: member.nom || '',
+        email: member.email || '',
+        telephone: member.telephone || '',
+        date_naissance: member.date_naissance || '',
+        universite: member.universite || '',
+        niveau_etudes: member.niveau_etudes || '',
+        annee_universitaire: member.annee_universitaire || '',
+        specialite: member.specialite || '',
+        interets: Array.isArray(member.interets) ? member.interets.join(', ') : (member.interets || ''),
+        motivation: member.motivation || '',
+        competences: member.competences || '',
+        is_newsletter_subscribed: member.is_newsletter_subscribed || false,
+        is_active: member.is_active || false,
+        adresse: member.adresse || '',
+        ville: member.ville || '',
+        pays: member.pays || '',
+        status: member.status || 'pending',
+        statut_pro: member.statut_pro || '',
+        domaine: member.domaine || '',
+        date_adhesion: member.date_adhesion || '',
+        photo_url: member.photo_url || '',
+      })
+      setPhotoPreview(member.photo_url || null)
+    }
+
+    // Fonction pour uploader une photo de membre
+    const handleMemberPhotoUpload = async (event) => {
+      const file = event.target.files?.[0]
+      if (!file) return
+
+      // Vérifier le type de fichier
+      if (!file.type.startsWith('image/')) {
+        alert('Veuillez sélectionner une image')
+        return
+      }
+
+      // Vérifier la taille (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        alert('L\'image ne doit pas dépasser 5MB')
+        return
+      }
+
+      try {
+        setUploadingPhoto(true)
+        
+        // Créer un nom de fichier unique
+        const fileExt = file.name.split('.').pop()
+        const fileName = `members/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`
+        
+        // Importer le client Supabase
+        const { supabaseAdhesion } = await import('../../public/config/supabase.config')
+        
+        // Essayer d'uploader vers Supabase Storage
+        let uploadSuccess = false
+        try {
+          const { data: uploadData, error: uploadError } = await supabaseAdhesion.storage
+            .from('adhesion') // Nom du bucket (à créer dans Supabase)
+            .upload(fileName, file, {
+              cacheControl: '3600',
+              upsert: false
+            })
+
+          if (!uploadError && uploadData) {
+            // Upload réussi vers Supabase Storage
+            const { data: { publicUrl } } = supabaseAdhesion.storage
+              .from('adhesion')
+              .getPublicUrl(fileName)
+
+            setPhotoPreview(publicUrl)
+            setMemberFormData({ ...memberFormData, photo_url: publicUrl })
+            uploadSuccess = true
+          }
+        } catch (storageError) {
+          // Erreur silencieuse - le bucket n'existe probablement pas
+          // On utilisera le fallback base64
+        }
+
+        // Si l'upload vers Supabase Storage a échoué, utiliser le fallback base64
+        if (!uploadSuccess) {
+          const reader = new FileReader()
+          reader.onloadend = () => {
+            setPhotoPreview(reader.result)
+            setMemberFormData({ ...memberFormData, photo_url: reader.result })
+            setUploadingPhoto(false)
+            // Photo stockée en base64 (fonctionne mais moins optimal)
+          }
+          reader.onerror = () => {
+            setUploadingPhoto(false)
+            alert('Erreur lors de la lecture du fichier')
+          }
+          reader.readAsDataURL(file)
+        } else {
+          setUploadingPhoto(false)
+        }
+      } catch (err) {
+        console.error('Erreur upload photo:', err)
+        alert('Erreur lors de l\'upload de la photo: ' + err.message)
+        setUploadingPhoto(false)
+      }
+    }
+
+    const handleUpdate = async (e) => {
+      e.preventDefault()
+      if (!editingMember) return
+      
+      setSubmitting(true)
+      try {
+        // Validation des champs requis
+        if (!memberFormData.prenom || !memberFormData.prenom.trim()) {
+          alert('Le prénom est requis')
+          setSubmitting(false)
+          return
+        }
+        if (!memberFormData.nom || !memberFormData.nom.trim()) {
+          alert('Le nom est requis')
+          setSubmitting(false)
+          return
+        }
+        if (!memberFormData.email || !memberFormData.email.trim()) {
+          alert('L\'email est requis')
+          setSubmitting(false)
+          return
+        }
+        
+        // Nettoyer les données avant envoi
+        const cleanedData = { ...memberFormData }
+        
+        // Convertir les chaînes vides en null pour les dates
+        if (cleanedData.date_naissance === '') cleanedData.date_naissance = null
+        if (cleanedData.date_adhesion === '') cleanedData.date_adhesion = null
+        
+        // Convertir les chaînes vides en null pour les champs texte optionnels
+        const optionalTextFields = ['telephone', 'universite', 'niveau_etudes', 'annee_universitaire', 
+          'specialite', 'motivation', 'competences', 'adresse', 'ville', 'pays', 'statut_pro', 'domaine']
+        optionalTextFields.forEach(field => {
+          if (cleanedData[field] === '') cleanedData[field] = null
+        })
+        
+        // Gérer les intérêts (convertir chaîne vide en null)
+        if (cleanedData.interets === '') {
+          cleanedData.interets = null
+        } else if (typeof cleanedData.interets === 'string' && cleanedData.interets.trim() !== '') {
+          // Le backend convertira la chaîne en tableau
+        }
+        
+        // S'assurer que les booléens sont bien des booléens
+        cleanedData.is_newsletter_subscribed = Boolean(cleanedData.is_newsletter_subscribed)
+        cleanedData.is_active = Boolean(cleanedData.is_active)
+        
+        await updateMember(editingMember.id, cleanedData)
+        await loadData()
+        setEditingMember(null)
+        setMemberFormData({})
+        alert('Membre mis à jour avec succès !')
+      } catch (err) {
+        console.error('Erreur mise à jour membre:', err)
+        alert('Erreur : ' + err.message)
+      } finally {
+        setSubmitting(false)
+      }
+    }
+
+    const handleDelete = async (id) => {
+      if (!window.confirm('Êtes-vous sûr de vouloir supprimer ce membre ? Cette action est irréversible.')) {
+        return
+      }
+      try {
+        await deleteMember(id)
+        await loadData()
+        alert('Membre supprimé avec succès.')
+      } catch (err) {
+        alert('Erreur : ' + err.message)
+      }
+    }
+
+    const handleExportExcel = () => {
+      setExporting(true)
+      try {
+        exportMembersToExcel(filteredMembers)
+        alert('Export Excel généré avec succès !')
+      } catch (err) {
+        alert('Erreur lors de l\'export : ' + err.message)
+      } finally {
+        setExporting(false)
+      }
+    }
+
+    const handleExportPDF = () => {
+      setExporting(true)
+      try {
+        exportMembersToPDF(filteredMembers)
+        alert('Export PDF généré avec succès !')
+      } catch (err) {
+        alert('Erreur lors de l\'export : ' + err.message)
+      } finally {
+        setExporting(false)
       }
     }
 
@@ -2191,7 +3393,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         {/* Analytics Section */}
         <section className="treasury-analytics">
           <div className="analytics-card">
-            <h3>Évolution mensuelle des adhésions</h3>
+            <h3>Événements</h3>
             {loading ? (
               <div className="loading-state">
                 <div className="spinner"></div>
@@ -2201,17 +3403,17 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                 <p>Aucune donnée disponible</p>
               </div>
             ) : (
-              <div style={{ height: '280px', display: 'flex', alignItems: 'flex-end', gap: '8px', padding: '20px' }}>
+              <div className="chart-events-container">
                 {(() => {
                   const maxTotal = Math.max(...monthlyData.map(m => m.total || 0), 1)
-                  return monthlyData.slice(-12).map((item, idx) => (
-                    <div key={idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '200px', gap: '2px' }}>
-                        <div style={{ height: `${((item.approved || 0) / maxTotal) * 100}%`, background: '#4ade80', borderRadius: '4px 4px 0 0', minHeight: item.approved > 0 ? '2px' : '0' }} title={`Approuvés: ${item.approved}`}></div>
-                        <div style={{ height: `${((item.pending || 0) / maxTotal) * 100}%`, background: '#f97316', borderRadius: '0', minHeight: item.pending > 0 ? '2px' : '0' }} title={`En attente: ${item.pending}`}></div>
-                        <div style={{ height: `${((item.rejected || 0) / maxTotal) * 100}%`, background: '#ef4444', borderRadius: '0 0 4px 4px', minHeight: item.rejected > 0 ? '2px' : '0' }} title={`Rejetés: ${item.rejected}`}></div>
+                  return monthlyData.slice(-6).map((item, idx) => (
+                    <div key={idx} className="chart-events-bar">
+                      <div>
+                        <div className="chart-events-segment chart-events-approved" style={{ width: `${((item.approved || 0) / maxTotal) * 100}%` }} title={`Approuvés: ${item.approved || 0}`}></div>
+                        <div className="chart-events-segment chart-events-pending" style={{ width: `${((item.pending || 0) / maxTotal) * 100}%` }} title={`En attente: ${item.pending || 0}`}></div>
+                        <div className="chart-events-segment chart-events-rejected" style={{ width: `${((item.rejected || 0) / maxTotal) * 100}%` }} title={`Rejetés: ${item.rejected || 0}`}></div>
                       </div>
-                      <span style={{ fontSize: '0.75rem', color: '#94a3b8', writingMode: 'vertical-rl', textOrientation: 'mixed' }}>{item.label}</span>
+                      <span className="chart-events-label">{item.label}</span>
                     </div>
                   ))
                 })()}
@@ -2230,62 +3432,24 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                 <p>Aucune donnée disponible</p>
               </div>
             ) : (
-              <div style={{ padding: '20px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  {countryData.slice(0, 8).map((item, idx) => {
-                    const total = countryData.reduce((sum, c) => sum + c.value, 0)
-                    const percentage = ((item.value / total) * 100).toFixed(1)
-                    return (
-                      <div key={idx}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                          <span style={{ fontSize: '0.875rem', color: '#e2e8f0' }}>{item.name}</span>
-                          <span style={{ fontSize: '0.875rem', color: '#94a3b8' }}>{item.value} ({percentage}%)</span>
-                        </div>
-                        <div style={{ height: '8px', background: 'rgba(148, 163, 184, 0.2)', borderRadius: '4px', overflow: 'hidden' }}>
-                          <div style={{ height: '100%', width: `${percentage}%`, background: '#38bdf8', transition: 'width 0.3s' }}></div>
-                        </div>
+              <div className="chart-country-container">
+                {countryData.slice(0, 8).map((item, idx) => {
+                  const total = countryData.reduce((sum, c) => sum + c.value, 0)
+                  const percentage = ((item.value / total) * 100).toFixed(1)
+                  return (
+                    <div key={idx} className="chart-country-item">
+                      <div className="chart-country-header">
+                        <span className="chart-country-name">{item.name}</span>
+                        <span className="chart-country-value">{item.value} ({percentage}%)</span>
                       </div>
-                    )
-                  })}
-                </div>
+                      <div className="chart-country-bar-wrapper">
+                        <div className="chart-country-bar" style={{ width: `${percentage}%` }}></div>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
-          </div>
-        </section>
-
-        {/* Filters */}
-        <section className="module-toolbar">
-          <div className="toolbar-filters">
-            <div className="filter-item">
-              <label>Recherche</label>
-              <input
-                type="text"
-                value={filters.search}
-                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-                placeholder="Nom, email, numéro..."
-              />
-            </div>
-            <div className="filter-item">
-              <label>Statut</label>
-              <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-                <option value="">Tous</option>
-                <option value="pending">En attente</option>
-                <option value="approved">Approuvé</option>
-                <option value="rejected">Rejeté</option>
-              </select>
-            </div>
-            <div className="filter-item">
-              <label>Pays</label>
-              <input
-                type="text"
-                value={filters.pays}
-                onChange={(e) => setFilters({ ...filters, pays: e.target.value })}
-                placeholder="Filtrer par pays..."
-              />
-            </div>
-            <button className="btn-secondary" onClick={() => setFilters({ search: '', status: '', pays: '' })}>
-              Réinitialiser
-            </button>
           </div>
         </section>
 
@@ -2295,7 +3459,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
             <div className="card-header">
               <div>
                 <h3 className="card-title">Adhésions en attente de validation</h3>
-                <p className="card-subtitle">{pendingMembers.length} demande{pendingMembers.length !== 1 ? 's' : ''} en attente</p>
+                <p className="card-subtitle">{filteredPendingMembers.length} demande{filteredPendingMembers.length !== 1 ? 's' : ''} en attente</p>
               </div>
             </div>
             {loading ? (
@@ -2303,7 +3467,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                 <div className="spinner"></div>
                 <p>Chargement...</p>
               </div>
-            ) : pendingMembers.length === 0 ? (
+            ) : filteredPendingMembers.length === 0 ? (
               <div className="empty-state">
                 <p>Aucune adhésion en attente</p>
               </div>
@@ -2320,7 +3484,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {pendingMembers.map((membre) => (
+                    {filteredPendingMembers.map((membre) => (
                       <tr key={membre.id}>
                         <td>
                           <div className="table-cell-name">
@@ -2366,6 +3530,24 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                               </svg>
                             </button>
+                            <button
+                              onClick={() => handleEdit(membre)}
+                              className="action-btn view"
+                              title="Modifier"
+                            >
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => handleDelete(membre.id)}
+                              className="action-btn reject"
+                              title="Supprimer"
+                            >
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -2376,6 +3558,453 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
             )}
           </div>
         </section>
+
+        {/* Filters */}
+        <section className="module-toolbar" style={{ marginTop: '2.5rem' }}>
+          <div className="toolbar-filters">
+            <div className="filter-item">
+              <label>Recherche</label>
+              <input
+                type="text"
+                value={filters.search}
+                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                placeholder="Nom, email, numéro..."
+              />
+            </div>
+            <div className="filter-item">
+              <label>Statut</label>
+              <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+                <option value="">Tous</option>
+                <option value="pending">En attente</option>
+                <option value="approved">Approuvé</option>
+                <option value="rejected">Rejeté</option>
+              </select>
+            </div>
+            <div className="filter-item">
+              <label>Pays</label>
+              <input
+                type="text"
+                value={filters.pays}
+                onChange={(e) => setFilters({ ...filters, pays: e.target.value })}
+                placeholder="Filtrer par pays..."
+              />
+            </div>
+            <button className="btn-secondary" onClick={() => setFilters({ search: '', status: '', pays: '' })}>
+              Réinitialiser
+            </button>
+          </div>
+          <div className="toolbar-actions">
+            <button 
+              className="btn-primary" 
+              onClick={handleExportExcel}
+              disabled={exporting || filteredMembers.length === 0}
+            >
+              {exporting ? 'Export...' : '📥 Excel'}
+            </button>
+            <button 
+              className="btn-primary" 
+              onClick={handleExportPDF}
+              disabled={exporting || filteredMembers.length === 0}
+            >
+              {exporting ? 'Export...' : '📄 PDF'}
+            </button>
+          </div>
+        </section>
+
+        {/* All Members Table */}
+        <section className="table-section">
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Tous les membres</h3>
+                <p className="card-subtitle">{filteredMembers.length} membre{filteredMembers.length !== 1 ? 's' : ''} trouvé{filteredMembers.length !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Chargement...</p>
+              </div>
+            ) : filteredMembers.length === 0 ? (
+              <div className="empty-state">
+                <p>Aucun membre trouvé</p>
+              </div>
+            ) : (
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Nom</th>
+                      <th>Email</th>
+                      <th>Pays</th>
+                      <th>Statut</th>
+                      <th>Date</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredMembers.map((membre) => (
+                      <tr key={membre.id}>
+                        <td>
+                          <div className="table-cell-name">
+                            <div className="name-avatar">
+                              {(membre.prenom?.[0] || '?').toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="name-primary">
+                                {membre.prenom || ''} {membre.nom || ''}
+                              </div>
+                              {membre.domaine && (
+                                <div className="name-secondary">{membre.domaine}</div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td>{membre.email || '—'}</td>
+                        <td>
+                          <span className="country-badge">{membre.pays || '—'}</span>
+                        </td>
+                        <td>
+                          <span className={`status-badge ${
+                            membre.status === 'approved' || membre.status === 'approuvé' ? 'approved' :
+                            membre.status === 'rejected' || membre.status === 'rejeté' ? 'rejected' :
+                            'pending'
+                          }`}>
+                            {membre.status === 'approved' || membre.status === 'approuvé' ? 'Approuvé' :
+                             membre.status === 'rejected' || membre.status === 'rejeté' ? 'Rejeté' :
+                             'En attente'}
+                          </span>
+                        </td>
+                        <td>
+                          {membre.created_at 
+                            ? new Date(membre.created_at).toLocaleDateString('fr-FR')
+                            : '—'}
+                        </td>
+                        <td>
+                          <div className="table-actions">
+                            <button
+                              onClick={() => handleEdit(membre)}
+                              className="action-btn view"
+                              title="Modifier"
+                            >
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => handleDelete(membre.id)}
+                              className="action-btn reject"
+                              title="Supprimer"
+                            >
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Edit Member Modal */}
+        {editingMember && createPortal(
+          <div className="modal-overlay" onClick={() => setEditingMember(null)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Modifier le membre</h2>
+                <button className="modal-close" onClick={() => setEditingMember(null)}>×</button>
+              </div>
+              <form className="modal-form" onSubmit={handleUpdate} style={{ maxHeight: '80vh', overflowY: 'auto' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
+                  <div className="form-group">
+                    <label>Prénom *</label>
+                    <input
+                      type="text"
+                      value={memberFormData.prenom}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, prenom: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Nom *</label>
+                    <input
+                      type="text"
+                      value={memberFormData.nom}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, nom: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Email *</label>
+                    <input
+                      type="email"
+                      value={memberFormData.email}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, email: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Téléphone</label>
+                    <input
+                      type="tel"
+                      value={memberFormData.telephone}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, telephone: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Date de naissance</label>
+                    <input
+                      type="date"
+                      value={memberFormData.date_naissance}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, date_naissance: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Date d'adhésion</label>
+                    <input
+                      type="date"
+                      value={memberFormData.date_adhesion}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, date_adhesion: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Statut *</label>
+                    <select
+                      value={memberFormData.status}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, status: e.target.value })}
+                      required
+                    >
+                      <option value="pending">En attente</option>
+                      <option value="approved">Approuvé</option>
+                      <option value="rejected">Rejeté</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>Statut professionnel</label>
+                    <input
+                      type="text"
+                      value={memberFormData.statut_pro}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, statut_pro: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Pays</label>
+                    <input
+                      type="text"
+                      value={memberFormData.pays}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, pays: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Ville</label>
+                    <input
+                      type="text"
+                      value={memberFormData.ville}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, ville: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                    <label>Adresse</label>
+                    <textarea
+                      value={memberFormData.adresse}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, adresse: e.target.value })}
+                      rows="2"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Université</label>
+                    <input
+                      type="text"
+                      value={memberFormData.universite}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, universite: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Niveau d'études</label>
+                    <input
+                      type="text"
+                      value={memberFormData.niveau_etudes}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, niveau_etudes: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Année universitaire</label>
+                    <input
+                      type="text"
+                      value={memberFormData.annee_universitaire}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, annee_universitaire: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Spécialité</label>
+                    <input
+                      type="text"
+                      value={memberFormData.specialite}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, specialite: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Domaine</label>
+                    <input
+                      type="text"
+                      value={memberFormData.domaine}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, domaine: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Intérêts (séparés par des virgules)</label>
+                    <input
+                      type="text"
+                      value={memberFormData.interets}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, interets: e.target.value })}
+                      placeholder="ex: SIG, télédétection, cartographie"
+                    />
+                  </div>
+                  <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                    <label>Motivation</label>
+                    <textarea
+                      value={memberFormData.motivation}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, motivation: e.target.value })}
+                      rows="3"
+                    />
+                  </div>
+                  <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                    <label>Compétences</label>
+                    <textarea
+                      value={memberFormData.competences}
+                      onChange={(e) => setMemberFormData({ ...memberFormData, competences: e.target.value })}
+                      rows="3"
+                    />
+                  </div>
+                  <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                    <label>Photo du membre</label>
+                    <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
+                      {/* Preview de la photo */}
+                      {(photoPreview || memberFormData.photo_url) && 
+                       !(photoPreview || memberFormData.photo_url)?.startsWith('file://') && (
+                        <div style={{ position: 'relative', width: '120px', height: '160px', borderRadius: '8px', overflow: 'hidden', border: '2px solid #e4e7ec' }}>
+                          <img
+                            src={photoPreview || memberFormData.photo_url}
+                            alt="Photo membre"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            onError={(e) => {
+                              e.target.style.display = 'none'
+                              e.target.parentElement.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; background: #f8fafc; color: #64748b; font-size: 12px;">Erreur image</div>'
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPhotoPreview(null)
+                              setMemberFormData({ ...memberFormData, photo_url: '' })
+                            }}
+                            style={{
+                              position: 'absolute',
+                              top: '4px',
+                              right: '4px',
+                              background: 'rgba(0, 0, 0, 0.6)',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '50%',
+                              width: '24px',
+                              height: '24px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '14px',
+                            }}
+                            title="Supprimer la photo"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      )}
+                      <div style={{ flex: 1 }}>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleMemberPhotoUpload}
+                          disabled={uploadingPhoto}
+                          style={{
+                            width: '100%',
+                            padding: '8px',
+                            border: '1px solid #e4e7ec',
+                            borderRadius: '6px',
+                            background: uploadingPhoto ? '#f8fafc' : '#ffffff',
+                            cursor: uploadingPhoto ? 'not-allowed' : 'pointer',
+                          }}
+                        />
+                        <div style={{ marginTop: '8px', fontSize: '12px', color: '#64748b' }}>
+                          {uploadingPhoto ? 'Upload en cours...' : 'Formats acceptés : JPG, PNG, GIF • Max 5MB'}
+                        </div>
+                        {memberFormData.photo_url && (
+                          <input
+                            type="text"
+                            value={memberFormData.photo_url}
+                            onChange={(e) => {
+                              const url = e.target.value
+                              if (url.startsWith('file://')) {
+                                alert('Les chemins de fichiers locaux ne sont pas supportés. Veuillez utiliser une URL publique ou uploader une image.')
+                                return
+                              }
+                              setMemberFormData({ ...memberFormData, photo_url: url })
+                              if (url) {
+                                setPhotoPreview(url)
+                              }
+                            }}
+                            placeholder="Ou entrez une URL de photo"
+                            style={{
+                              width: '100%',
+                              marginTop: '8px',
+                              padding: '8px',
+                              border: '1px solid #e4e7ec',
+                              borderRadius: '6px',
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <input
+                        type="checkbox"
+                        checked={memberFormData.is_newsletter_subscribed}
+                        onChange={(e) => setMemberFormData({ ...memberFormData, is_newsletter_subscribed: e.target.checked })}
+                      />
+                      Abonné à la newsletter
+                    </label>
+                  </div>
+                  <div className="form-group">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <input
+                        type="checkbox"
+                        checked={memberFormData.is_active}
+                        onChange={(e) => setMemberFormData({ ...memberFormData, is_active: e.target.checked })}
+                      />
+                      Membre actif
+                    </label>
+                  </div>
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setEditingMember(null)}>
+                    Annuler
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={submitting}>
+                    {submitting ? 'Enregistrement...' : 'Enregistrer'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
       </div>
     )
   }
@@ -2387,9 +4016,23 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     const [depensesData, setDepensesData] = useState([])
     const [historique, setHistorique] = useState([])
     const [relances, setRelances] = useState([])
+    const [cartesMembres, setCartesMembres] = useState([])
+    const [selectedCartes, setSelectedCartes] = useState([])
+    const [searchCartes, setSearchCartes] = useState('')
+    const [filterStatutPaiement, setFilterStatutPaiement] = useState('')
+    const [pageCotisations, setPageCotisations] = useState(1)
+    const [pagePaiements, setPagePaiements] = useState(1)
+    const [pageDepenses, setPageDepenses] = useState(1)
+    const [pageCartes, setPageCartes] = useState(1)
+    const [filterCotisationsMois, setFilterCotisationsMois] = useState('')
+    const [filterCotisationsAnnee, setFilterCotisationsAnnee] = useState('')
+    const [filterCotisationsStatut, setFilterCotisationsStatut] = useState('')
+    const [filterPaiementsType, setFilterPaiementsType] = useState('')
+    const [filterDepensesStatut, setFilterDepensesStatut] = useState('')
+    const [editingPaiement, setEditingPaiement] = useState(null)
+    const [editingDepense, setEditingDepense] = useState(null)
     const [loading, setLoading] = useState(true)
-    const [showModal, setShowModal] = useState(null) // 'cotisation', 'paiement', 'relance', 'carte'
-    const [editingPaiement, setEditingPaiement] = useState(null) // Paiement en cours d'édition
+    const [showModal, setShowModal] = useState(null) // 'cotisation', 'paiement', 'relance', 'achat_carte', 'depense'
     const [members, setMembers] = useState([])
     const [formData, setFormData] = useState({})
     const [submitting, setSubmitting] = useState(false)
@@ -2454,24 +4097,27 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     const loadData = useCallback(async () => {
       setLoading(true)
       try {
-        const [cotisationsResult, paiementsResult, depensesResult, historiqueData, relancesData] = await Promise.all([
+        const [cotisationsResult, paiementsResult, depensesResult, historiqueData, relancesData, cartesData] = await Promise.all([
           fetchAllPages(fetchCotisations, buildCotisationParams),
           fetchAllPages(fetchPaiements, buildPaiementParams),
           fetchAllPages(fetchDepenses, buildDepenseParams),
           fetchHistorique({ limit: 10 }),
           fetchRelances({ limit: 50 }),
+          listCartesMembres().catch(() => []),
         ])
         setCotisationsData(cotisationsResult)
         setPaiementsData(paiementsResult)
         setDepensesData(depensesResult)
         setHistorique(Array.isArray(historiqueData) ? historiqueData : [])
         setRelances(Array.isArray(relancesData) ? relancesData : [])
+        setCartesMembres(Array.isArray(cartesData) ? cartesData : [])
       } catch (err) {
         console.error('Erreur chargement trésorerie:', err)
         setCotisationsData([])
         setPaiementsData([])
         setDepensesData([])
         setHistorique([])
+        setCartesMembres([])
       } finally {
         setLoading(false)
       }
@@ -2588,9 +4234,137 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
       })
     }, [members, relanceSearch])
 
-    const cotisations = useMemo(() => filteredCotisations.slice(0, 10), [filteredCotisations])
-    const paiements = useMemo(() => filteredPaiements.slice(0, 10), [filteredPaiements])
-    const depenses = useMemo(() => filteredDepenses.slice(0, 10), [filteredDepenses])
+    // Pagination - 15 éléments par page
+    const ITEMS_PER_PAGE = 15
+    
+    // Filtrage supplémentaire pour les cotisations (par mois)
+    const filteredCotisationsByMonth = useMemo(() => {
+      let filtered = [...filteredCotisations]
+      
+      if (filterCotisationsMois) {
+        filtered = filtered.filter(cot => {
+          if (cot.periode_mois) {
+            return cot.periode_mois.toString() === filterCotisationsMois
+          }
+          if (cot.date_paiement) {
+            const date = new Date(cot.date_paiement)
+            return (date.getMonth() + 1).toString() === filterCotisationsMois
+          }
+          return false
+        })
+      }
+      
+      if (filterCotisationsAnnee) {
+        filtered = filtered.filter(cot => {
+          if (cot.periode_annee) {
+            return cot.periode_annee.toString() === filterCotisationsAnnee
+          }
+          if (cot.date_paiement) {
+            const date = new Date(cot.date_paiement)
+            return date.getFullYear().toString() === filterCotisationsAnnee
+          }
+          return false
+        })
+      }
+      
+      if (filterCotisationsStatut) {
+        filtered = filtered.filter(cot => {
+          if (filterCotisationsStatut === 'paye') {
+            return cot.statut_paiement === 'paye' || cot.statut_paiement === 'valide'
+          }
+          if (filterCotisationsStatut === 'non_paye') {
+            return cot.statut_paiement === 'pending' || cot.statut_paiement === 'en_attente' || !cot.statut_paiement
+          }
+          return true
+        })
+      }
+      
+      return filtered
+    }, [filteredCotisations, filterCotisationsMois, filterCotisationsAnnee, filterCotisationsStatut])
+    
+    // Filtrage supplémentaire pour les paiements (dons/subventions)
+    const filteredPaiementsByType = useMemo(() => {
+      let filtered = [...filteredPaiements]
+      
+      if (filterPaiementsType) {
+        filtered = filtered.filter(p => p.type_paiement === filterPaiementsType)
+      }
+      
+      return filtered
+    }, [filteredPaiements, filterPaiementsType])
+    
+    // Filtrage supplémentaire pour les dépenses
+    const filteredDepensesByStatut = useMemo(() => {
+      let filtered = [...filteredDepenses]
+      
+      if (filterDepensesStatut) {
+        filtered = filtered.filter(d => d.statut === filterDepensesStatut)
+      }
+      
+      return filtered
+    }, [filteredDepenses, filterDepensesStatut])
+    
+    // Pagination des cotisations
+    const totalPagesCotisations = Math.ceil(filteredCotisationsByMonth.length / ITEMS_PER_PAGE)
+    const cotisations = useMemo(() => {
+      const start = (pageCotisations - 1) * ITEMS_PER_PAGE
+      return filteredCotisationsByMonth.slice(start, start + ITEMS_PER_PAGE)
+    }, [filteredCotisationsByMonth, pageCotisations])
+    
+    // Pagination des paiements
+    const totalPagesPaiements = Math.ceil(filteredPaiementsByType.length / ITEMS_PER_PAGE)
+    const paiements = useMemo(() => {
+      const start = (pagePaiements - 1) * ITEMS_PER_PAGE
+      return filteredPaiementsByType.slice(start, start + ITEMS_PER_PAGE)
+    }, [filteredPaiementsByType, pagePaiements])
+    
+    // Pagination des dépenses
+    const totalPagesDepenses = Math.ceil(filteredDepensesByStatut.length / ITEMS_PER_PAGE)
+    const depenses = useMemo(() => {
+      const start = (pageDepenses - 1) * ITEMS_PER_PAGE
+      return filteredDepensesByStatut.slice(start, start + ITEMS_PER_PAGE)
+    }, [filteredDepensesByStatut, pageDepenses])
+    
+    // Filtrage des cartes membres
+    const filteredCartesMembres = useMemo(() => {
+      let filtered = [...cartesMembres]
+      
+      // Filtre par recherche (nom, prénom, numéro membre)
+      if (searchCartes.trim()) {
+        const searchLower = searchCartes.toLowerCase().trim()
+        filtered = filtered.filter(carte => {
+          const numeroMembre = (carte.numero_membre || '').toLowerCase()
+          const prenom = (carte.membre?.prenom || '').toLowerCase()
+          const nom = (carte.membre?.nom || '').toLowerCase()
+          const pays = (carte.pays || '').toLowerCase()
+          return numeroMembre.includes(searchLower) || 
+                 prenom.includes(searchLower) || 
+                 nom.includes(searchLower) ||
+                 pays.includes(searchLower) ||
+                 `${prenom} ${nom}`.includes(searchLower)
+        })
+      }
+      
+      // Filtre par statut de paiement
+      if (filterStatutPaiement) {
+        if (filterStatutPaiement === 'paye') {
+          filtered = filtered.filter(c => c.statut_paiement === 'oui')
+        } else if (filterStatutPaiement === 'non_paye') {
+          filtered = filtered.filter(c => c.statut_paiement === null || c.statut_paiement === '')
+        } else if (filterStatutPaiement === 'en_attente') {
+          filtered = filtered.filter(c => c.statut_paiement && c.statut_paiement !== 'oui' && c.statut_paiement !== null)
+        }
+      }
+      
+      return filtered
+    }, [cartesMembres, searchCartes, filterStatutPaiement])
+    
+    // Pagination des cartes membres
+    const totalPagesCartes = Math.ceil(filteredCartesMembres.length / ITEMS_PER_PAGE)
+    const cartesPaginated = useMemo(() => {
+      const start = (pageCartes - 1) * ITEMS_PER_PAGE
+      return filteredCartesMembres.slice(start, start + ITEMS_PER_PAGE)
+    }, [filteredCartesMembres, pageCartes])
 
     const analyticsData = useMemo(
       () => buildAnalyticsData(filteredCotisations, filteredPaiements, filteredDepenses),
@@ -2600,6 +4374,65 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
       () => computeKpis(filteredCotisations, filteredPaiements, filteredDepenses),
       [filteredCotisations, filteredPaiements, filteredDepenses]
     )
+    
+    // KPI pour les cartes membres
+    const cartesKpis = useMemo(() => {
+      const cartesPayees = cartesMembres.filter(c => c.statut_paiement === 'oui')
+      const cartesNonPayees = cartesMembres.filter(c => c.statut_paiement === null || c.statut_paiement === '')
+      const cartesEnAttente = cartesMembres.filter(c => c.statut_paiement && c.statut_paiement !== 'oui' && c.statut_paiement !== null)
+      
+      // Calculer les revenus des cartes
+      let revenusCartesEUR = 0
+      let revenusCartesFCFA = 0
+      
+      cartesPayees.forEach(carte => {
+        const pays = carte.pays || ''
+        if (pays.toLowerCase() === 'sénégal' || pays.toLowerCase() === 'senegal') {
+          revenusCartesFCFA += 2000
+        } else {
+          revenusCartesEUR += 10
+        }
+      })
+      
+      // Convertir FCFA en EUR (taux approximatif : 1 EUR = 655 FCFA)
+      const revenusCartesTotalEUR = revenusCartesEUR + (revenusCartesFCFA / 655)
+      
+      return {
+        total: cartesMembres.length,
+        payees: cartesPayees.length,
+        nonPayees: cartesNonPayees.length,
+        enAttente: cartesEnAttente.length,
+        revenusEUR: revenusCartesEUR,
+        revenusFCFA: revenusCartesFCFA,
+        revenusTotalEUR: revenusCartesTotalEUR,
+      }
+    }, [cartesMembres])
+    
+    // KPI solde total ASGF
+    const soldeTotal = useMemo(() => {
+      // Revenus : cotisations + dons/subventions + cartes membres
+      const revenusCotisations = kpis.montant_total_eur || 0
+      const revenusCartes = cartesKpis.revenusTotalEUR || 0
+      const revenusDons = kpis.total_paiements_dons_eur || 0 // Dons et subventions
+      const totalRevenus = revenusCotisations + revenusCartes + revenusDons
+      
+      // Dépenses
+      const totalDepenses = filteredDepenses
+        .filter(d => d.statut === 'valide')
+        .reduce((sum, d) => {
+          const montant = d.montant || 0
+          if (d.devise === 'FCFA') {
+            return sum + (montant / 655) // Convertir FCFA en EUR
+          }
+          return sum + montant
+        }, 0)
+      
+      return {
+        revenus: totalRevenus,
+        depenses: totalDepenses,
+        solde: totalRevenus - totalDepenses,
+      }
+    }, [kpis, cartesKpis, filteredDepenses])
     const senegalCotisations = useMemo(
       () => filteredCotisations.filter((cot) => categorizeCountry(cot.membre?.pays) === 'senegal').length,
       [filteredCotisations]
@@ -2826,12 +4659,16 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
             )
           )
           alert('Relances créées avec succès !')
-        } else if (showModal === 'carte') {
-          await createCarteMembre(formData)
-          alert('Carte membre créée avec succès !')
         } else if (showModal === 'depense') {
-          await createDepense(formData)
-          alert('Dépense créée avec succès !')
+          if (editingDepense) {
+            await updateDepense(editingDepense.id, formData)
+            alert('Dépense modifiée avec succès !')
+            setEditingDepense(null)
+            setFormData({})
+          } else {
+            await createDepense(formData)
+            alert('Dépense créée avec succès !')
+          }
         }
         setShowModal(null)
         setFormData({})
@@ -2877,8 +4714,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </svg>
             </div>
             <div className="kpi-content">
-              <p className="kpi-label">Cotisations totales</p>
+              <p className="kpi-label">Nombre total de cotisations</p>
               <p className="kpi-value">{kpis.total_cotisations}</p>
+              <p className="card-subtitle">Toutes les cotisations enregistrées</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -2890,6 +4728,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
             <div className="kpi-content">
               <p className="kpi-label">Cotisations payées</p>
               <p className="kpi-value">{kpis.cotisations_payees}</p>
+              <p className="card-subtitle">Membres à jour de cotisation</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -2899,8 +4738,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </svg>
             </div>
             <div className="kpi-content">
-              <p className="kpi-label">En attente</p>
+              <p className="kpi-label">Cotisations en attente</p>
               <p className="kpi-value">{kpis.cotisations_en_attente}</p>
+              <p className="card-subtitle">En attente de paiement</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -2910,8 +4750,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </svg>
             </div>
             <div className="kpi-content">
-              <p className="kpi-label">Montant total (EUR)</p>
+              <p className="kpi-label">Montant total cotisations</p>
               <p className="kpi-value">{kpis.montant_total_eur.toFixed(2)} €</p>
+              <p className="card-subtitle">Somme de toutes les cotisations</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -2921,9 +4762,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </svg>
             </div>
             <div className="kpi-content">
-              <p className="kpi-label">Cotisations Sénégal (EUR)</p>
+              <p className="kpi-label">Cotisations Sénégal</p>
               <p className="kpi-value">{kpis.montant_senegal_eur.toFixed(2)} €</p>
-              <p className="card-subtitle">{senegalCotisations} cotisations</p>
+              <p className="card-subtitle">{senegalCotisations} membres du Sénégal</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -2933,9 +4774,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </svg>
             </div>
             <div className="kpi-content">
-              <p className="kpi-label">Cotisations Internationales (EUR)</p>
+              <p className="kpi-label">Cotisations Internationales</p>
               <p className="kpi-value">{kpis.montant_international_eur.toFixed(2)} €</p>
-              <p className="card-subtitle">{internationalCotisations} cotisations</p>
+              <p className="card-subtitle">{internationalCotisations} membres internationaux</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -2945,9 +4786,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </svg>
             </div>
             <div className="kpi-content">
-              <p className="kpi-label">Dons & subventions (EUR)</p>
+              <p className="kpi-label">Dons & Subventions reçus</p>
               <p className="kpi-value">{kpis.total_paiements_dons_eur.toFixed(2)} €</p>
-              <p className="card-subtitle">{kpis.paiements_dons_count} paiements</p>
+              <p className="card-subtitle">{kpis.paiements_dons_count} dons/subventions</p>
             </div>
           </div>
           <div className="kpi-card">
@@ -2957,9 +4798,35 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </svg>
             </div>
             <div className="kpi-content">
-              <p className="kpi-label">Dépenses validées (EUR)</p>
+              <p className="kpi-label">Dépenses validées</p>
               <p className="kpi-value">{kpis.depenses_validees_eur.toFixed(2)} €</p>
-              <p className="card-subtitle">{kpis.depenses_validees} dépenses</p>
+              <p className="card-subtitle">{kpis.depenses_validees} dépenses approuvées</p>
+            </div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-icon blue">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Revenus cartes membres</p>
+              <p className="kpi-value">{cartesKpis.revenusTotalEUR.toFixed(2)} €</p>
+              <p className="card-subtitle">{cartesKpis.payees} cartes payées</p>
+            </div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-icon green">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+            </div>
+            <div className="kpi-content">
+              <p className="kpi-label">Solde total ASGF</p>
+              <p className="kpi-value" style={{ color: soldeTotal.solde >= 0 ? '#10b981' : '#ef4444' }}>
+                {soldeTotal.solde >= 0 ? '+' : ''}{soldeTotal.solde.toFixed(2)} €
+              </p>
+              <p className="card-subtitle">Revenus: {soldeTotal.revenus.toFixed(2)} € | Dépenses: {soldeTotal.depenses.toFixed(2)} €</p>
             </div>
           </div>
         </section>
@@ -2972,31 +4839,101 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         <TreasuryAnalytics trendsData={analyticsData.trends} distributionData={analyticsData.distribution} />
         <TreasuryTimeline ref={timelineRef} data={analyticsData.timeline} loading={loading} />
 
+        {/* Section Cotisations */}
         <section className="table-section">
           <div className="table-card">
             <div className="card-header">
               <div>
-                <h3 className="card-title">Cotisations récentes</h3>
-                <p className="card-subtitle">{cotisations.length} cotisation{cotisations.length !== 1 ? 's' : ''}</p>
+                <h3 className="card-title">Cotisations</h3>
+                <p className="card-subtitle">
+                  {filteredCotisationsByMonth.length} cotisation(s) • Page {pageCotisations}/{totalPagesCotisations || 1}
+                </p>
               </div>
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 <button className="btn-primary" onClick={() => setShowModal('cotisation')}>
                   + Ajouter Cotisation
                 </button>
-                <button className="btn-primary" onClick={() => setShowModal('paiement')}>
-                  + Ajouter don/subvention
-                </button>
-                <button className="btn-primary" onClick={() => setShowModal('relance')}>
-                  + Créer Relance
-                </button>
-                <button className="btn-primary" onClick={() => setShowModal('carte')}>
-                  + Créer Carte
-                </button>
-                <button className="btn-primary" onClick={() => setShowModal('depense')}>
-                  + Ajouter Dépense
-                </button>
               </div>
             </div>
+            
+            {/* Filtres cotisations */}
+            <div style={{ 
+              display: 'flex', 
+              gap: '12px', 
+              marginBottom: '20px', 
+              flexWrap: 'wrap',
+              padding: '16px',
+              background: '#f8fafc',
+              borderRadius: '8px',
+              border: '1px solid #e4e7ec'
+            }}>
+              <div style={{ minWidth: '150px' }}>
+                <select
+                  value={filterCotisationsMois}
+                  onChange={(e) => {
+                    setFilterCotisationsMois(e.target.value)
+                    setPageCotisations(1)
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    background: '#ffffff',
+                    color: '#0f172a'
+                  }}
+                >
+                  <option value="">Tous les mois</option>
+                  {MONTH_OPTIONS.map((mois, idx) => (
+                    <option key={idx} value={idx + 1}>{mois.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ minWidth: '120px' }}>
+                <input
+                  type="number"
+                  placeholder="Année (ex: 2025)"
+                  value={filterCotisationsAnnee}
+                  onChange={(e) => {
+                    setFilterCotisationsAnnee(e.target.value)
+                    setPageCotisations(1)
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    background: '#ffffff',
+                    color: '#0f172a'
+                  }}
+                />
+              </div>
+              <div style={{ minWidth: '150px' }}>
+                <select
+                  value={filterCotisationsStatut}
+                  onChange={(e) => {
+                    setFilterCotisationsStatut(e.target.value)
+                    setPageCotisations(1)
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    background: '#ffffff',
+                    color: '#0f172a'
+                  }}
+                >
+                  <option value="">Tous les statuts</option>
+                  <option value="paye">Payé</option>
+                  <option value="non_paye">Non payé</option>
+                </select>
+              </div>
+            </div>
+            
             {loading ? (
               <div className="loading-state">
                 <div className="spinner"></div>
@@ -3004,67 +4941,327 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </div>
             ) : cotisations.length === 0 ? (
               <div className="empty-state">
-                <p>Aucune cotisation</p>
+                <p>{filterCotisationsMois || filterCotisationsAnnee || filterCotisationsStatut ? 'Aucune cotisation ne correspond aux filtres' : 'Aucune cotisation'}</p>
               </div>
             ) : (
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Membre</th>
-                      <th>Période</th>
-                      <th>Montant</th>
-                      <th>Statut</th>
-                      <th>Date paiement</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cotisations.map((cot) => (
-                      <tr key={cot.id}>
-                        <td>{cot.membre?.prenom} {cot.membre?.nom}</td>
-                        <td>{formatPeriod(cot.periode_mois, cot.periode_annee, cot.date_paiement)}</td>
-                        <td>
-                          {cot.montant_eur ? `${cot.montant_eur.toFixed(2)} €` : `${cot.montant} ${cot.currencySymbol || '€'}`}
-                          {cot.currencySymbol && cot.currencySymbol !== '€' && cot.montant_eur ? (
-                            <span style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8' }}>
-                              ({cot.montant} {cot.currencySymbol})
-              </span>
-                          ) : null}
-                        </td>
-                        <td>
-                          <span className={`status-badge ${cot.statut_paiement === 'paye' ? 'approved' : 'pending'}`}>
-                            {cot.statut_paiement || 'en_attente'}
-                          </span>
-                        </td>
-                        <td>{cot.date_paiement ? new Date(cot.date_paiement).toLocaleDateString('fr-FR') : '—'}</td>
-                        <td>
-                          <div className="table-actions">
-                            {cot.statut_paiement !== 'paye' && (
-                              <button type="button" className="btn-link" onClick={() => handleCotisationAction(cot, 'validate')}>
-                                Valider
-                              </button>
-                            )}
-                            {cot.statut_paiement === 'paye' && (
-                              <button type="button" className="btn-link" onClick={() => handleCotisationAction(cot, 'reset')}>
-                                Repasser en attente
-                              </button>
-                            )}
-                            <button type="button" className="btn-link danger" onClick={() => handleCotisationAction(cot, 'delete')}>
-                              Supprimer
-                            </button>
-          </div>
-                        </td>
+              <>
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Membre</th>
+                        <th>Période</th>
+                        <th>Montant</th>
+                        <th>Statut</th>
+                        <th>Date paiement</th>
+                        <th>Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-          </div>
+                    </thead>
+                    <tbody>
+                      {cotisations.map((cot) => {
+                        const isNonPaye = cot.statut_paiement !== 'paye' && cot.statut_paiement !== 'valide'
+                        return (
+                          <tr key={cot.id}>
+                            <td>{cot.membre?.prenom || '—'} {cot.membre?.nom || '—'}</td>
+                            <td>{formatPeriod(cot.periode_mois, cot.periode_annee, cot.date_paiement)}</td>
+                            <td>
+                              {cot.montant_eur ? `${cot.montant_eur.toFixed(2)} €` : `${cot.montant} ${cot.currencySymbol || '€'}`}
+                              {cot.currencySymbol && cot.currencySymbol !== '€' && cot.montant_eur ? (
+                                <span style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8' }}>
+                                  ({cot.montant} {cot.currencySymbol})
+                                </span>
+                              ) : null}
+                            </td>
+                            <td>
+                              <span className={`status-badge ${cot.statut_paiement === 'paye' || cot.statut_paiement === 'valide' ? 'approved' : 'pending'}`}>
+                                {cot.statut_paiement === 'paye' || cot.statut_paiement === 'valide' ? 'Payé' : 'En attente'}
+                              </span>
+                            </td>
+                            <td>{cot.date_paiement ? new Date(cot.date_paiement).toLocaleDateString('fr-FR') : '—'}</td>
+                            <td>
+                              <div className="table-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                {isNonPaye && (
+                                  <button 
+                                    type="button" 
+                                    className="btn-link" 
+                                    onClick={async () => {
+                                      try {
+                                        await createRelance({
+                                          membre_id: cot.membre_id,
+                                          type: 'cotisation',
+                                          message: `Rappel: Votre cotisation pour ${formatPeriod(cot.periode_mois, cot.periode_annee, cot.date_paiement)} est en attente de paiement.`,
+                                        })
+                                        alert('Relance envoyée avec succès !')
+                                      } catch (err) {
+                                        alert('Erreur : ' + err.message)
+                                      }
+                                    }}
+                                    style={{ color: '#f59e0b', fontSize: '12px' }}
+                                  >
+                                    📧 Relancer
+                                  </button>
+                                )}
+                                {cot.statut_paiement !== 'paye' && cot.statut_paiement !== 'valide' && (
+                                  <button type="button" className="btn-link" onClick={() => handleCotisationAction(cot, 'validate')}>
+                                    Valider
+                                  </button>
+                                )}
+                                {(cot.statut_paiement === 'paye' || cot.statut_paiement === 'valide') && (
+                                  <button type="button" className="btn-link" onClick={() => handleCotisationAction(cot, 'reset')}>
+                                    Repasser en attente
+                                  </button>
+                                )}
+                                <button type="button" className="btn-link danger" onClick={() => handleCotisationAction(cot, 'delete')}>
+                                  Supprimer
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Pagination */}
+                {totalPagesCotisations > 1 && (
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    marginTop: '20px',
+                    padding: '16px',
+                    borderTop: '1px solid #e4e7ec'
+                  }}>
+                    <div style={{ fontSize: '14px', color: '#64748b' }}>
+                      Page {pageCotisations} sur {totalPagesCotisations}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => setPageCotisations(p => Math.max(1, p - 1))}
+                        disabled={pageCotisations === 1}
+                        className="btn-secondary"
+                        style={{ 
+                          padding: '8px 16px',
+                          opacity: pageCotisations === 1 ? 0.5 : 1,
+                          cursor: pageCotisations === 1 ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        ← Précédent
+                      </button>
+                      <button
+                        onClick={() => setPageCotisations(p => Math.min(totalPagesCotisations, p + 1))}
+                        disabled={pageCotisations >= totalPagesCotisations}
+                        className="btn-primary"
+                        style={{ 
+                          padding: '8px 16px',
+                          opacity: pageCotisations >= totalPagesCotisations ? 0.5 : 1,
+                          cursor: pageCotisations >= totalPagesCotisations ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        Suivant →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </section>
 
-        {/* Modal pour créer Cotisation/Paiement/Relance/Carte */}
+        {/* Section Dons & Subventions */}
+        <section className="table-section" style={{ marginTop: '2rem' }}>
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Dons & Subventions</h3>
+                <p className="card-subtitle">
+                  {filteredPaiementsByType.length} don(s)/subvention(s) • Page {pagePaiements}/{totalPagesPaiements || 1}
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button className="btn-primary" onClick={() => {
+                  setEditingPaiement(null)
+                  setFormData({})
+                  setShowModal('paiement')
+                }}>
+                  + Ajouter don/subvention
+                </button>
+              </div>
+            </div>
+            
+            {/* Filtres dons/subventions */}
+            <div style={{ 
+              display: 'flex', 
+              gap: '12px', 
+              marginBottom: '20px', 
+              flexWrap: 'wrap',
+              padding: '16px',
+              background: '#f8fafc',
+              borderRadius: '8px',
+              border: '1px solid #e4e7ec'
+            }}>
+              <div style={{ minWidth: '180px' }}>
+                <select
+                  value={filterPaiementsType}
+                  onChange={(e) => {
+                    setFilterPaiementsType(e.target.value)
+                    setPagePaiements(1)
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    background: '#ffffff',
+                    color: '#0f172a'
+                  }}
+                >
+                  <option value="">Tous les types</option>
+                  <option value="don">Don</option>
+                  <option value="subvention">Subvention</option>
+                  <option value="autre">Autre</option>
+                </select>
+              </div>
+            </div>
+            
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Chargement des données...</p>
+              </div>
+            ) : paiements.length === 0 ? (
+              <div className="empty-state">
+                <p>{filterPaiementsType ? 'Aucun don/subvention ne correspond aux filtres' : 'Aucun don/subvention'}</p>
+              </div>
+            ) : (
+              <>
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Période</th>
+                        <th>Montant</th>
+                        <th>Description</th>
+                        <th>Date paiement</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paiements.map((pai) => (
+                        <tr key={pai.id}>
+                          <td>
+                            <span style={{ 
+                              padding: '4px 8px', 
+                              borderRadius: '4px', 
+                              background: pai.type_paiement === 'don' ? '#dbeafe' : pai.type_paiement === 'subvention' ? '#fef3c7' : '#f3e8ff',
+                              color: pai.type_paiement === 'don' ? '#1e40af' : pai.type_paiement === 'subvention' ? '#92400e' : '#6b21a8',
+                              fontWeight: '600',
+                              fontSize: '12px'
+                            }}>
+                              {pai.type_paiement === 'don' ? 'Don' : pai.type_paiement === 'subvention' ? 'Subvention' : 'Autre'}
+                            </span>
+                          </td>
+                          <td>{formatPeriod(pai.periode_mois, pai.periode_annee, pai.date_paiement)}</td>
+                          <td>
+                            {pai.montant_eur ? `${pai.montant_eur.toFixed(2)} €` : `${pai.montant || 0} ${pai.currencySymbol || '€'}`}
+                          </td>
+                          <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {pai.description || '—'}
+                          </td>
+                          <td>{pai.date_paiement ? new Date(pai.date_paiement).toLocaleDateString('fr-FR') : '—'}</td>
+                          <td>
+                            <div className="table-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              <button 
+                                type="button" 
+                                className="btn-link" 
+                                onClick={() => {
+                                  setEditingPaiement(pai)
+                                  setFormData({
+                                    periode_mois: pai.periode_mois,
+                                    periode_annee: pai.periode_annee,
+                                    type_paiement: pai.type_paiement,
+                                    montant: pai.montant,
+                                    mode_paiement: pai.mode_paiement,
+                                    date_paiement: pai.date_paiement ? new Date(pai.date_paiement).toISOString().split('T')[0] : '',
+                                    description: pai.description,
+                                  })
+                                  setShowModal('paiement')
+                                }}
+                              >
+                                Modifier
+                              </button>
+                              <button 
+                                type="button" 
+                                className="btn-link danger" 
+                                onClick={async () => {
+                                  if (!window.confirm('Supprimer définitivement ce don/subvention ?')) return
+                                  try {
+                                    await deletePaiement(pai.id)
+                                    alert('Don/subvention supprimé avec succès !')
+                                    await loadData()
+                                  } catch (err) {
+                                    alert('Erreur : ' + err.message)
+                                  }
+                                }}
+                              >
+                                Supprimer
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Pagination */}
+                {totalPagesPaiements > 1 && (
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    marginTop: '20px',
+                    padding: '16px',
+                    borderTop: '1px solid #e4e7ec'
+                  }}>
+                    <div style={{ fontSize: '14px', color: '#64748b' }}>
+                      Page {pagePaiements} sur {totalPagesPaiements}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => setPagePaiements(p => Math.max(1, p - 1))}
+                        disabled={pagePaiements === 1}
+                        className="btn-secondary"
+                        style={{ 
+                          padding: '8px 16px',
+                          opacity: pagePaiements === 1 ? 0.5 : 1,
+                          cursor: pagePaiements === 1 ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        ← Précédent
+                      </button>
+                      <button
+                        onClick={() => setPagePaiements(p => Math.min(totalPagesPaiements, p + 1))}
+                        disabled={pagePaiements >= totalPagesPaiements}
+                        className="btn-primary"
+                        style={{ 
+                          padding: '8px 16px',
+                          opacity: pagePaiements >= totalPagesPaiements ? 0.5 : 1,
+                          cursor: pagePaiements >= totalPagesPaiements ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        Suivant →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </section>
+
+        {/* Modal pour créer Cotisation/Paiement/Relance */}
         {showModal && typeof document !== 'undefined' && createPortal(
           <div className="modal-overlay" onClick={() => setShowModal(null)}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -3073,7 +5270,6 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                   {showModal === 'cotisation' && 'Ajouter une Cotisation'}
                   {showModal === 'paiement' && (editingPaiement ? 'Modifier don/subvention' : 'Ajouter don/subvention')}
                   {showModal === 'relance' && 'Créer une Relance'}
-                  {showModal === 'carte' && 'Créer une Carte Membre'}
                 </h2>
                 <button className="modal-close" onClick={() => setShowModal(null)}>×</button>
               </div>
@@ -3342,81 +5538,6 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                   </>
                 )}
 
-                {showModal === 'carte' && (
-                  <>
-                    <div className="form-group">
-                      <label>Membre *</label>
-                      <select
-                        required
-                        value={formData.membre_id || ''}
-                        onChange={(e) => handleCarteMemberChange(e.target.value)}
-                      >
-                        <option value="">Sélectionner un membre</option>
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.prenom} {m.nom} ({m.numero_membre})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="form-group">
-                      <label>Numéro de membre *</label>
-                      <input
-                        type="text"
-                        required
-                        value={formData.numero_membre || ''}
-                        onChange={(e) => setFormData({ ...formData, numero_membre: e.target.value })}
-                        placeholder="Ex: ASGF-2025-001"
-                      />
-                    </div>
-                    <p style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-                      Tarif carte membre : {carteTarif.amount ? `${carteTarif.amount} ${carteTarif.currency}` : 'Sélectionnez un membre'}
-                      {' '} (2000 FCFA au Sénégal · 10 € ailleurs)
-                    </p>
-                    <div className="form-group">
-                      <label>Date d'émission</label>
-                      <input
-                        type="date"
-                        value={formData.date_emission || ''}
-                        onChange={(e) => setFormData({ ...formData, date_emission: e.target.value })}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Date de validité</label>
-                      <input
-                        type="date"
-                        value={formData.date_validite || ''}
-                        onChange={(e) => setFormData({ ...formData, date_validite: e.target.value })}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Pays</label>
-                      <input
-                        type="text"
-                        value={formData.pays || ''}
-                        onChange={(e) => {
-                          const value = e.target.value
-                          setFormData({ ...formData, pays: value })
-                          setCarteTarif(determineTarifForCountry(value))
-                        }}
-                        placeholder="Ex: France"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Statut de la carte</label>
-                      <select
-                        value={formData.statut_carte || ''}
-                        onChange={(e) => setFormData({ ...formData, statut_carte: e.target.value })}
-                      >
-                        <option value="">Sélectionner</option>
-                        <option value="active">Active</option>
-                        <option value="expiree">Expirée</option>
-                        <option value="annulee">Annulée</option>
-                      </select>
-                    </div>
-                  </>
-                )}
-
                 {showModal === 'depense' && (
                   <>
                     <div className="form-group">
@@ -3500,12 +5621,101 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                   </>
                 )}
 
+                {showModal === 'achat_carte' && (
+                  <>
+                    <div className="form-group">
+                      <label>Carte membre *</label>
+                      <select
+                        required
+                        value={formData.carte_id || ''}
+                        onChange={(e) => {
+                          const carteId = e.target.value
+                          const carte = cartesMembres.find(c => c.id === carteId)
+                          setFormData({ 
+                            ...formData, 
+                            carte_id: carteId,
+                            numero_membre: carte?.numero_membre || '',
+                            prenom: carte?.membre?.prenom || '',
+                            nom: carte?.membre?.nom || '',
+                          })
+                        }}
+                      >
+                        <option value="">Sélectionner une carte</option>
+                        {cartesMembres.map((carte) => {
+                          const membreNom = carte.membre ? `${carte.membre.prenom || ''} ${carte.membre.nom || ''}`.trim() : ''
+                          const membreDisplay = membreNom || 'Membre non trouvé'
+                          const statutPaiement = carte.statut_paiement === 'oui' ? 'Payé' : carte.statut_paiement === null ? 'Non payé' : 'En attente'
+                          return (
+                            <option key={carte.id} value={carte.id}>
+                              {carte.numero_membre} - {membreDisplay} - {carte.pays || 'N/A'} - {statutPaiement}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </div>
+                    {formData.numero_membre && (
+                      <>
+                        <div className="form-group">
+                          <label>Prénom</label>
+                          <input
+                            type="text"
+                            value={formData.prenom || ''}
+                            readOnly
+                            style={{ background: '#f8fafc', color: '#64748b' }}
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label>Nom</label>
+                          <input
+                            type="text"
+                            value={formData.nom || ''}
+                            readOnly
+                            style={{ background: '#f8fafc', color: '#64748b' }}
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label>Numéro de membre</label>
+                          <input
+                            type="text"
+                            value={formData.numero_membre}
+                            readOnly
+                            style={{ background: '#f8fafc', color: '#64748b' }}
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div className="form-group">
+                      <label>Statut de paiement *</label>
+                      <select
+                        required
+                        value={formData.statut_paiement || ''}
+                        onChange={(e) => setFormData({ ...formData, statut_paiement: e.target.value || null })}
+                      >
+                        <option value="">Non payé</option>
+                        <option value="oui">Payé</option>
+                      </select>
+                    </div>
+                    <div style={{ padding: '12px', background: '#f0f9ff', borderRadius: '6px', fontSize: '14px', color: '#0369a1' }}>
+                      💡 <strong>Tarif carte membre :</strong> {formData.numero_membre ? (
+                        (() => {
+                          const carte = cartesMembres.find(c => c.numero_membre === formData.numero_membre)
+                          const pays = carte?.pays || ''
+                          if (pays.toLowerCase() === 'sénégal' || pays.toLowerCase() === 'senegal') {
+                            return '2000 FCFA'
+                          }
+                          return '10 €'
+                        })()
+                      ) : 'Sélectionnez une carte'}
+                    </div>
+                  </>
+                )}
+
                 <div className="modal-actions">
                   <button type="button" className="btn-secondary" onClick={() => setShowModal(null)}>
                     Annuler
                   </button>
                   <button type="submit" className="btn-primary" disabled={submitting}>
-                    {submitting ? 'En cours...' : 'Créer'}
+                    {submitting ? 'En cours...' : showModal === 'achat_carte' ? 'Enregistrer' : 'Créer'}
                   </button>
                 </div>
               </form>
@@ -3513,6 +5723,555 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </div>,
           document.body
         )}
+
+        {/* Section Dépenses */}
+        <section className="table-section" style={{ marginTop: '2rem' }}>
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Dépenses</h3>
+                <p className="card-subtitle">
+                  {filteredDepensesByStatut.length} dépense(s) • Page {pageDepenses}/{totalPagesDepenses || 1}
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button className="btn-primary" onClick={() => {
+                  setEditingDepense(null)
+                  setFormData({})
+                  setShowModal('depense')
+                }}>
+                  + Ajouter Dépense
+                </button>
+              </div>
+            </div>
+            
+            {/* Filtres dépenses */}
+            <div style={{ 
+              display: 'flex', 
+              gap: '12px', 
+              marginBottom: '20px', 
+              flexWrap: 'wrap',
+              padding: '16px',
+              background: '#f8fafc',
+              borderRadius: '8px',
+              border: '1px solid #e4e7ec'
+            }}>
+              <div style={{ minWidth: '180px' }}>
+                <select
+                  value={filterDepensesStatut}
+                  onChange={(e) => {
+                    setFilterDepensesStatut(e.target.value)
+                    setPageDepenses(1)
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    background: '#ffffff',
+                    color: '#0f172a'
+                  }}
+                >
+                  <option value="">Tous les statuts</option>
+                  <option value="planifie">Planifiée</option>
+                  <option value="valide">Validée</option>
+                  <option value="rejete">Rejetée</option>
+                </select>
+              </div>
+            </div>
+            
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Chargement des données...</p>
+              </div>
+            ) : depenses.length === 0 ? (
+              <div className="empty-state">
+                <p>{filterDepensesStatut ? 'Aucune dépense ne correspond aux filtres' : 'Aucune dépense'}</p>
+              </div>
+            ) : (
+              <>
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Catégorie</th>
+                        <th>Montant</th>
+                        <th>Date</th>
+                        <th>Statut</th>
+                        <th>Description</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {depenses.map((dep) => {
+                        const montantEUR = dep.devise === 'FCFA' ? (dep.montant / 655) : dep.montant
+                        return (
+                          <tr key={dep.id}>
+                            <td>{dep.categorie || '—'}</td>
+                            <td>
+                              {montantEUR.toFixed(2)} €
+                              {dep.devise === 'FCFA' && (
+                                <span style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8' }}>
+                                  ({dep.montant} FCFA)
+                                </span>
+                              )}
+                            </td>
+                            <td>{dep.date_depense ? new Date(dep.date_depense).toLocaleDateString('fr-FR') : '—'}</td>
+                            <td>
+                              <span style={{ 
+                                padding: '4px 8px', 
+                                borderRadius: '4px', 
+                                background: dep.statut === 'valide' ? '#d1fae5' : dep.statut === 'rejete' ? '#fee2e2' : '#fef3c7',
+                                color: dep.statut === 'valide' ? '#065f46' : dep.statut === 'rejete' ? '#991b1b' : '#92400e',
+                                fontWeight: '600',
+                                fontSize: '12px'
+                              }}>
+                                {dep.statut === 'valide' ? 'Validée' : dep.statut === 'rejete' ? 'Rejetée' : 'Planifiée'}
+                              </span>
+                            </td>
+                            <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {dep.description || '—'}
+                            </td>
+                            <td>
+                              <div className="table-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                {dep.statut !== 'valide' && (
+                                  <button 
+                                    type="button" 
+                                    className="btn-link" 
+                                    onClick={async () => {
+                                      try {
+                                        await updateDepense(dep.id, { statut: 'valide' })
+                                        alert('Dépense validée avec succès !')
+                                        await loadData()
+                                      } catch (err) {
+                                        alert('Erreur : ' + err.message)
+                                      }
+                                    }}
+                                    style={{ color: '#10b981', fontSize: '12px' }}
+                                  >
+                                    ✓ Valider
+                                  </button>
+                                )}
+                                <button 
+                                  type="button" 
+                                  className="btn-link" 
+                                  onClick={() => {
+                                    setEditingDepense(dep)
+                                    setFormData({
+                                      categorie: dep.categorie,
+                                      montant: dep.montant,
+                                      devise: dep.devise,
+                                      date_depense: dep.date_depense ? new Date(dep.date_depense).toISOString().split('T')[0] : '',
+                                      statut: dep.statut,
+                                      justificatif_url: dep.justificatif_url,
+                                      description: dep.description,
+                                    })
+                                    setShowModal('depense')
+                                  }}
+                                >
+                                  Modifier
+                                </button>
+                                <button 
+                                  type="button" 
+                                  className="btn-link danger" 
+                                  onClick={async () => {
+                                    if (!window.confirm('Supprimer définitivement cette dépense ?')) return
+                                    try {
+                                      await deleteDepense(dep.id)
+                                      alert('Dépense supprimée avec succès !')
+                                      await loadData()
+                                    } catch (err) {
+                                      alert('Erreur : ' + err.message)
+                                    }
+                                  }}
+                                >
+                                  Supprimer
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Pagination */}
+                {totalPagesDepenses > 1 && (
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    marginTop: '20px',
+                    padding: '16px',
+                    borderTop: '1px solid #e4e7ec'
+                  }}>
+                    <div style={{ fontSize: '14px', color: '#64748b' }}>
+                      Page {pageDepenses} sur {totalPagesDepenses}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => setPageDepenses(p => Math.max(1, p - 1))}
+                        disabled={pageDepenses === 1}
+                        className="btn-secondary"
+                        style={{ 
+                          padding: '8px 16px',
+                          opacity: pageDepenses === 1 ? 0.5 : 1,
+                          cursor: pageDepenses === 1 ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        ← Précédent
+                      </button>
+                      <button
+                        onClick={() => setPageDepenses(p => Math.min(totalPagesDepenses, p + 1))}
+                        disabled={pageDepenses >= totalPagesDepenses}
+                        className="btn-primary"
+                        style={{ 
+                          padding: '8px 16px',
+                          opacity: pageDepenses >= totalPagesDepenses ? 0.5 : 1,
+                          cursor: pageDepenses >= totalPagesDepenses ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        Suivant →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </section>
+
+        {/* Liste des cartes membres */}
+        <section className="table-section" style={{ marginTop: '2rem' }}>
+          <div className="table-card">
+            <div className="card-header">
+              <div>
+                <h3 className="card-title">Cartes membres</h3>
+                <p className="card-subtitle">
+                  {cartesKpis.payees} payées • {cartesKpis.nonPayees} non payées • {cartesKpis.enAttente} en attente
+                </p>
+              </div>
+            </div>
+            
+            {/* Barre de recherche et filtres */}
+            <div style={{ 
+              display: 'flex', 
+              gap: '12px', 
+              marginBottom: '20px', 
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              padding: '16px',
+              background: '#f8fafc',
+              borderRadius: '8px',
+              border: '1px solid #e4e7ec'
+            }}>
+              <div style={{ flex: '1', minWidth: '200px' }}>
+                <input
+                  type="text"
+                  placeholder="Rechercher par nom, prénom, numéro membre ou pays..."
+                  value={searchCartes}
+                  onChange={(e) => setSearchCartes(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    background: '#ffffff',
+                    color: '#0f172a'
+                  }}
+                />
+              </div>
+              <div style={{ minWidth: '180px' }}>
+                <select
+                  value={filterStatutPaiement}
+                  onChange={(e) => setFilterStatutPaiement(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    background: '#ffffff',
+                    color: '#0f172a'
+                  }}
+                >
+                  <option value="">Tous les statuts</option>
+                  <option value="paye">Payé</option>
+                  <option value="non_paye">Non payé</option>
+                  <option value="en_attente">En attente</option>
+                </select>
+              </div>
+              {selectedCartes.length > 0 && (
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '14px', color: '#475467', fontWeight: '600' }}>
+                    {selectedCartes.length} sélectionnée(s)
+                  </span>
+                  <button
+                    className="btn-primary"
+                    onClick={async () => {
+                      if (!window.confirm(`Marquer ${selectedCartes.length} carte(s) comme payée(s) ?`)) return
+                      try {
+                        setSubmitting(true)
+                        await Promise.all(
+                          selectedCartes.map(carteId => 
+                            updateCarteMembre(carteId, { statut_paiement: 'oui' })
+                          )
+                        )
+                        alert(`${selectedCartes.length} carte(s) marquée(s) comme payée(s) !`)
+                        setSelectedCartes([])
+                        await loadData()
+                      } catch (err) {
+                        alert('Erreur : ' + err.message)
+                      } finally {
+                        setSubmitting(false)
+                      }
+                    }}
+                    disabled={submitting}
+                    style={{ 
+                      padding: '8px 16px', 
+                      fontSize: '14px',
+                      background: '#10b981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: submitting ? 'not-allowed' : 'pointer',
+                      fontWeight: '600'
+                    }}
+                  >
+                    ✓ Marquer payé
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={async () => {
+                      if (!window.confirm(`Marquer ${selectedCartes.length} carte(s) comme non payée(s) ?`)) return
+                      try {
+                        setSubmitting(true)
+                        await Promise.all(
+                          selectedCartes.map(carteId => 
+                            updateCarteMembre(carteId, { statut_paiement: null })
+                          )
+                        )
+                        alert(`${selectedCartes.length} carte(s) marquée(s) comme non payée(s) !`)
+                        setSelectedCartes([])
+                        await loadData()
+                      } catch (err) {
+                        alert('Erreur : ' + err.message)
+                      } finally {
+                        setSubmitting(false)
+                      }
+                    }}
+                    disabled={submitting}
+                    style={{ 
+                      padding: '8px 16px', 
+                      fontSize: '14px',
+                      background: '#ef4444',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: submitting ? 'not-allowed' : 'pointer',
+                      fontWeight: '600'
+                    }}
+                  >
+                    ✗ Marquer non payé
+                  </button>
+                  <button
+                    onClick={() => setSelectedCartes([])}
+                    style={{ 
+                      padding: '8px 16px', 
+                      fontSize: '14px',
+                      background: '#f8fafc',
+                      color: '#475467',
+                      border: '1px solid #e4e7ec',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontWeight: '600'
+                    }}
+                  >
+                    Annuler sélection
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Chargement des cartes...</p>
+              </div>
+            ) : cartesPaginated.length === 0 ? (
+              <div className="empty-state">
+                <p>{searchCartes || filterStatutPaiement ? 'Aucune carte ne correspond aux filtres' : 'Aucune carte membre'}</p>
+              </div>
+            ) : (
+              <>
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '40px' }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedCartes.length === cartesPaginated.length && cartesPaginated.length > 0}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedCartes(cartesPaginated.map(c => c.id))
+                            } else {
+                              setSelectedCartes([])
+                            }
+                          }}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      </th>
+                      <th>Prénom</th>
+                      <th>Nom</th>
+                      <th>Numéro membre</th>
+                      <th>Pays</th>
+                      <th>Date émission</th>
+                      <th>Date validité</th>
+                      <th>Statut carte</th>
+                      <th>Statut paiement</th>
+                      <th>Tarif</th>
+                        <th>PDF / Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cartesPaginated.map((carte) => {
+                      const tarif = carte.pays && (carte.pays.toLowerCase() === 'sénégal' || carte.pays.toLowerCase() === 'senegal') ? '2000 FCFA' : '10 €'
+                      const statutPaiement = carte.statut_paiement === 'oui' ? 'Payé' : carte.statut_paiement === null ? 'Non payé' : 'En attente'
+                      const statutPaiementColor = carte.statut_paiement === 'oui' ? '#10b981' : carte.statut_paiement === null ? '#ef4444' : '#f59e0b'
+                      const isSelected = selectedCartes.includes(carte.id)
+                      const isNonPaye = carte.statut_paiement !== 'oui'
+                      
+                      return (
+                        <tr key={carte.id} style={{ background: isSelected ? '#f0f9ff' : 'transparent' }}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedCartes([...selectedCartes, carte.id])
+                                } else {
+                                  setSelectedCartes(selectedCartes.filter(id => id !== carte.id))
+                                }
+                              }}
+                              style={{ cursor: 'pointer' }}
+                            />
+                          </td>
+                          <td>{carte.membre?.prenom || '—'}</td>
+                          <td>{carte.membre?.nom || '—'}</td>
+                          <td>{carte.numero_membre || '—'}</td>
+                          <td>{carte.pays || '—'}</td>
+                          <td>{carte.date_emission ? new Date(carte.date_emission).toLocaleDateString('fr-FR') : '—'}</td>
+                          <td>{carte.date_validite ? new Date(carte.date_validite).toLocaleDateString('fr-FR') : '—'}</td>
+                          <td>{carte.statut_carte || '—'}</td>
+                          <td>
+                            <span style={{ 
+                              padding: '4px 8px', 
+                              borderRadius: '4px', 
+                              background: statutPaiementColor + '20',
+                              color: statutPaiementColor,
+                              fontWeight: '600',
+                              fontSize: '12px'
+                            }}>
+                              {statutPaiement}
+                            </span>
+                          </td>
+                          <td>{tarif}</td>
+                          <td>
+                            {carte.lien_pdf ? (
+                              <a 
+                                href={carte.lien_pdf} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                style={{ color: '#2563eb', textDecoration: 'underline' }}
+                              >
+                                Voir PDF
+                              </a>
+                            ) : (
+                              <span style={{ color: '#94a3b8' }}>—</span>
+                            )}
+                            {isNonPaye && (
+                              <button 
+                                type="button" 
+                                className="btn-link" 
+                                onClick={async () => {
+                                  try {
+                                    await createRelance({
+                                      membre_id: carte.membre?.id || null,
+                                      type: 'carte_membre',
+                                      message: `Rappel: Votre carte membre ${carte.numero_membre} est en attente de paiement (${tarif}).`,
+                                    })
+                                    alert('Relance envoyée avec succès !')
+                                  } catch (err) {
+                                    alert('Erreur : ' + err.message)
+                                  }
+                                }}
+                                style={{ 
+                                  color: '#f59e0b', 
+                                  fontSize: '12px',
+                                  display: 'block',
+                                  marginTop: '4px'
+                                }}
+                              >
+                                📧 Relancer
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {/* Pagination */}
+              {totalPagesCartes > 1 && (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center', 
+                  marginTop: '20px',
+                  padding: '16px',
+                  borderTop: '1px solid #e4e7ec'
+                }}>
+                  <div style={{ fontSize: '14px', color: '#64748b' }}>
+                    Page {pageCartes} sur {totalPagesCartes}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => setPageCartes(p => Math.max(1, p - 1))}
+                      disabled={pageCartes === 1}
+                      className="btn-secondary"
+                      style={{ 
+                        padding: '8px 16px',
+                        opacity: pageCartes === 1 ? 0.5 : 1,
+                        cursor: pageCartes === 1 ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      ← Précédent
+                    </button>
+                    <button
+                      onClick={() => setPageCartes(p => Math.min(totalPagesCartes, p + 1))}
+                      disabled={pageCartes >= totalPagesCartes}
+                      className="btn-primary"
+                      style={{ 
+                        padding: '8px 16px',
+                        opacity: pageCartes >= totalPagesCartes ? 0.5 : 1,
+                        cursor: pageCartes >= totalPagesCartes ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      Suivant →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+            )}
+          </div>
+        </section>
       </div>
     )
   }
@@ -4010,6 +6769,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     const [formateurSearch, setFormateurSearch] = useState('') // Recherche de formateurs
     const [activeTab, setActiveTab] = useState('formations') // 'formations', 'sessions', 'inscriptions', 'formateurs'
     const [exporting, setExporting] = useState(false)
+    const [selectedInscriptionIds, setSelectedInscriptionIds] = useState([])
 
     const loadData = useCallback(async () => {
       setLoading(true)
@@ -4264,6 +7024,124 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         await loadData()
       } catch (err) {
         alert(err.message || 'Erreur lors du rejet')
+      }
+    }
+
+    const handleSendInvitation = async (id) => {
+      const accessLink = window.prompt(
+        "Lien d'accès au cours (Zoom, Teams, Meet...) :",
+        ''
+      )
+      if (!accessLink) return
+      try {
+        await sendInscriptionInvitation(id, accessLink)
+        alert("Invitation envoyée avec succès à l'inscrit.")
+      } catch (err) {
+        alert(err.message || "Erreur lors de l'envoi de l'invitation")
+      }
+    }
+
+    const filteredInscriptions = useMemo(() => {
+      return inscriptions.filter((i) => {
+        if (!filters.search) return true
+        const search = filters.search.toLowerCase()
+        const formationTitle =
+          formations.find((f) => f.id === i.formation_id)?.titre?.toLowerCase() || ''
+        return (
+          i.prenom?.toLowerCase().includes(search) ||
+          i.nom?.toLowerCase().includes(search) ||
+          i.email?.toLowerCase().includes(search) ||
+          formationTitle.includes(search)
+        )
+      })
+    }, [inscriptions, formations, filters.search])
+
+    const allVisibleSelected =
+      filteredInscriptions.length > 0 &&
+      filteredInscriptions.every((i) => selectedInscriptionIds.includes(i.id))
+
+    const toggleSelectInscription = (id) => {
+      setSelectedInscriptionIds((prev) =>
+        prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+      )
+    }
+
+    const toggleSelectAllVisible = () => {
+      if (allVisibleSelected) {
+        // Désélectionner seulement les visibles
+        setSelectedInscriptionIds((prev) =>
+          prev.filter((id) => !filteredInscriptions.some((i) => i.id === id))
+        )
+      } else {
+        // Ajouter toutes les visibles
+        setSelectedInscriptionIds((prev) => {
+          const allIds = [...prev, ...filteredInscriptions.map((i) => i.id)]
+          return Array.from(new Set(allIds))
+        })
+      }
+    }
+
+    const handleBulkInscriptionsAction = async (action) => {
+      if (selectedInscriptionIds.length === 0) {
+        alert('Sélectionnez au moins une inscription.')
+        return
+      }
+
+      if (
+        action === 'delete' &&
+        !window.confirm(
+          `Supprimer définitivement ${selectedInscriptionIds.length} inscription(s) ?`
+        )
+      ) {
+        return
+      }
+
+      try {
+        let accessLink = ''
+        if (action === 'invite') {
+          // Ne garder que les inscriptions confirmées
+          const confirmedIds = selectedInscriptionIds.filter((id) => {
+            const ins = inscriptions.find((i) => i.id === id)
+            return ins && ins.status === 'confirmed'
+          })
+
+          if (confirmedIds.length === 0) {
+            alert('Aucune des inscriptions sélectionnées n’est confirmée.')
+            return
+          }
+
+          accessLink = window.prompt(
+            "Lien d'accès (Zoom, Teams, etc.) à envoyer à tous les participants confirmés :",
+            ''
+          )
+          if (!accessLink) return
+
+          for (const id of confirmedIds) {
+            await sendInscriptionInvitation(id, accessLink)
+          }
+
+          alert('Invitations envoyées avec succès aux inscriptions confirmées sélectionnées.')
+          return
+        }
+
+        for (const id of selectedInscriptionIds) {
+          if (action === 'confirm') await confirmInscription(id)
+          else if (action === 'reject') await rejectInscription(id)
+          else if (action === 'delete') await deleteInscription(id)
+        }
+
+        const message =
+          action === 'confirm'
+            ? 'Inscriptions confirmées avec succès !'
+            : action === 'reject'
+            ? 'Inscriptions rejetées avec succès !'
+            : 'Inscriptions supprimées avec succès !'
+
+        alert(message)
+        setSelectedInscriptionIds([])
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors du traitement des inscriptions sélectionnées')
       }
     }
 
@@ -4951,6 +7829,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                   <h3 className="card-title">📅 Sessions</h3>
                   <p className="card-subtitle">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</p>
                 </div>
+                <div style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+                  Vous pouvez envoyer un rappel 48h ou 2h avant le début à tous les inscrits confirmés.
+                </div>
               </div>
               <div className="table-container">
                 <table className="data-table">
@@ -4993,6 +7874,52 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                                 <button type="button" className="btn-link danger" onClick={() => handleDelete('session', session.id)}>
                                   Supprimer
                                 </button>
+                                {session.statut === 'ouverte' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn-link"
+                                      onClick={async () => {
+                                        const accessLink = window.prompt(
+                                          "Lien d'accès (facultatif, laisser vide si déjà envoyé dans un mail précédent) :",
+                                          ''
+                                        )
+                                        try {
+                                          await sendSessionReminder(session.id, {
+                                            kind: '48h',
+                                            accessLink,
+                                          })
+                                          alert('Rappel 48h envoyé aux participants confirmés.')
+                                        } catch (err) {
+                                          alert(err.message || 'Erreur lors de l\'envoi du rappel 48h')
+                                        }
+                                      }}
+                                    >
+                                      Rappel 48h
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-link"
+                                      onClick={async () => {
+                                        const accessLink = window.prompt(
+                                          "Lien d'accès (facultatif, laisser vide si déjà envoyé dans un mail précédent) :",
+                                          ''
+                                        )
+                                        try {
+                                          await sendSessionReminder(session.id, {
+                                            kind: '2h',
+                                            accessLink,
+                                          })
+                                          alert('Rappel 2h envoyé aux participants confirmés.')
+                                        } catch (err) {
+                                          alert(err.message || 'Erreur lors de l\'envoi du rappel 2h')
+                                        }
+                                      }}
+                                    >
+                                      Rappel 2h
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -5012,9 +7939,15 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               <div className="card-header">
                 <div>
                   <h3 className="card-title">👥 Inscriptions</h3>
-                  <p className="card-subtitle">{inscriptions.length} inscription{inscriptions.length !== 1 ? 's' : ''}</p>
+                  <p className="card-subtitle">
+                    {inscriptions.length} inscription{inscriptions.length !== 1 ? 's' : ''}
+                    {selectedInscriptionIds.length > 0 &&
+                      ` • ${selectedInscriptionIds.length} sélectionnée${
+                        selectedInscriptionIds.length > 1 ? 's' : ''
+                      }`}
+                  </p>
                 </div>
-                <div>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
                   <input
                     type="text"
                     placeholder="🔍 Rechercher..."
@@ -5028,15 +7961,71 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                       background: 'white',
                       color: '#212529',
                       fontWeight: '500',
-                      minWidth: '200px'
+                      minWidth: '200px',
                     }}
                   />
+                  {selectedInscriptionIds.length > 0 && (
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+                        onClick={() => handleBulkInscriptionsAction('confirm')}
+                      >
+                        Confirmer la sélection
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{
+                          padding: '0.4rem 0.75rem',
+                          fontSize: '0.8rem',
+                          backgroundColor: '#f97316',
+                          borderColor: '#f97316',
+                        }}
+                        onClick={() => handleBulkInscriptionsAction('reject')}
+                      >
+                        Rejeter la sélection
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{
+                          padding: '0.4rem 0.75rem',
+                          fontSize: '0.8rem',
+                          backgroundColor: '#dc2626',
+                          borderColor: '#dc2626',
+                        }}
+                        onClick={() => handleBulkInscriptionsAction('delete')}
+                      >
+                        Supprimer la sélection
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{
+                          padding: '0.4rem 0.75rem',
+                          fontSize: '0.8rem',
+                        }}
+                        onClick={() => handleBulkInscriptionsAction('invite')}
+                      >
+                        Envoyer les invitations
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="table-container">
                 <table className="data-table">
                   <thead>
                     <tr>
+                      <th>
+                        <input
+                          type="checkbox"
+                          checked={allVisibleSelected}
+                          onChange={toggleSelectAllVisible}
+                        />
+                      </th>
                       <th>Nom</th>
                       <th>Email</th>
                       <th>Formation</th>
@@ -5048,81 +8037,120 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {inscriptions
-                      .filter(i => {
-                        if (!filters.search) return true
-                        const search = filters.search.toLowerCase()
-                        return i.prenom?.toLowerCase().includes(search) ||
-                          i.nom?.toLowerCase().includes(search) ||
-                          i.email?.toLowerCase().includes(search) ||
-                          formations.find(f => f.id === i.formation_id)?.titre?.toLowerCase().includes(search)
-                      })
-                      .length === 0 ? (
+                    {filteredInscriptions.length === 0 ? (
                       <tr>
-                        <td colSpan="8" style={{ textAlign: 'center', padding: '2rem' }}>Aucune inscription</td>
+                        <td colSpan="9" style={{ textAlign: 'center', padding: '2rem' }}>
+                          Aucune inscription
+                        </td>
                       </tr>
                     ) : (
-                      inscriptions
-                        .filter(i => {
-                          if (!filters.search) return true
-                          const search = filters.search.toLowerCase()
-                          return i.prenom?.toLowerCase().includes(search) ||
-                            i.nom?.toLowerCase().includes(search) ||
-                            i.email?.toLowerCase().includes(search) ||
-                            formations.find(f => f.id === i.formation_id)?.titre?.toLowerCase().includes(search)
-                        })
-                        .map((inscription) => {
-                          const formation = formations.find(f => f.id === inscription.formation_id)
-                          return (
-                            <tr key={inscription.id}>
-                              <td style={{ fontWeight: '600' }}>{inscription.prenom} {inscription.nom}</td>
-                              <td>{inscription.email || '—'}</td>
-                              <td>{formation?.titre || '—'}</td>
-                              <td>{inscription.niveau || '—'}</td>
-                              <td>
-                                <span className={`status-badge ${
-                                  inscription.status === 'confirmed' ? 'approved' : 
-                                  inscription.status === 'pending' ? 'pending' : 
-                                  'rejected'
-                                }`}>
-                                  {inscription.status === 'confirmed' ? 'Confirmée' : 
-                                   inscription.status === 'pending' ? 'En attente' : 
-                                   'Annulée'}
-                                </span>
-                              </td>
-                              <td>
-                                <span className={`status-badge ${
-                                  inscription.paiement_status === 'payé' ? 'approved' : 
-                                  inscription.paiement_status === 'en attente' ? 'pending' : 
-                                  'rejected'
-                                }`}>
-                                  {inscription.paiement_status || 'non payé'}
-                                </span>
-                              </td>
-                              <td>{inscription.created_at ? new Date(inscription.created_at).toLocaleDateString('fr-FR') : '—'}</td>
-                              <td>
-                                <div className="table-actions">
-                                  {inscription.status === 'pending' && (
-                                    <>
-                                      <button type="button" className="btn-link" onClick={() => handleConfirmInscription(inscription.id)}>
-                                        Confirmer
-                                      </button>
-                                      <button type="button" className="btn-link danger" onClick={() => handleRejectInscription(inscription.id)}>
-                                        Rejeter
-                                      </button>
-                                    </>
-                                  )}
-                                  <button type="button" className="btn-link" onClick={() => { setShowModal('inscription'); setEditingId(inscription.id); setFormData(inscription) }}>
-                                    Modifier
+                      filteredInscriptions.map((inscription) => {
+                        const formation = formations.find(
+                          (f) => f.id === inscription.formation_id
+                        )
+                        const isSelected = selectedInscriptionIds.includes(inscription.id)
+                        return (
+                          <tr key={inscription.id}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleSelectInscription(inscription.id)}
+                              />
+                            </td>
+                            <td style={{ fontWeight: '600' }}>
+                              {inscription.prenom} {inscription.nom}
+                            </td>
+                            <td>{inscription.email || '—'}</td>
+                            <td>{formation?.titre || '—'}</td>
+                            <td>{inscription.niveau || '—'}</td>
+                            <td>
+                              <span
+                                className={`status-badge ${
+                                  inscription.status === 'confirmed'
+                                    ? 'approved'
+                                    : inscription.status === 'pending'
+                                    ? 'pending'
+                                    : 'rejected'
+                                }`}
+                              >
+                                {inscription.status === 'confirmed'
+                                  ? 'Confirmée'
+                                  : inscription.status === 'pending'
+                                  ? 'En attente'
+                                  : 'Annulée'}
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                className={`status-badge ${
+                                  inscription.paiement_status === 'payé'
+                                    ? 'approved'
+                                    : inscription.paiement_status === 'en attente'
+                                    ? 'pending'
+                                    : 'rejected'
+                                }`}
+                              >
+                                {inscription.paiement_status || 'non payé'}
+                              </span>
+                            </td>
+                            <td>
+                              {inscription.created_at
+                                ? new Date(inscription.created_at).toLocaleDateString('fr-FR')
+                                : '—'}
+                            </td>
+                            <td>
+                              <div className="table-actions">
+                                {inscription.status === 'pending' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn-link"
+                                      onClick={() => handleConfirmInscription(inscription.id)}
+                                    >
+                                      Confirmer
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-link danger"
+                                      onClick={() => handleRejectInscription(inscription.id)}
+                                    >
+                                      Rejeter
+                                    </button>
+                                  </>
+                                )}
+                                {inscription.status === 'confirmed' && (
+                                  <button
+                                    type="button"
+                                    className="btn-link"
+                                    onClick={() => handleSendInvitation(inscription.id)}
+                                  >
+                                    Envoyer invitation
                                   </button>
-                                  <button type="button" className="btn-link danger" onClick={() => handleDelete('inscription', inscription.id)}>
-                                    Supprimer
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          )
-                        })
+                                )}
+                                <button
+                                  type="button"
+                                  className="btn-link"
+                                  onClick={() => {
+                                    setShowModal('inscription')
+                                    setEditingId(inscription.id)
+                                    setFormData(inscription)
+                                  }}
+                                >
+                                  Modifier
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-link danger"
+                                  onClick={() => handleDelete('inscription', inscription.id)}
+                                >
+                                  Supprimer
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })
                     )}
                   </tbody>
                 </table>
@@ -6132,6 +9160,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     const [uploadingPhoto, setUploadingPhoto] = useState(false)
     const [photoPreview, setPhotoPreview] = useState(null)
     const [activeTab, setActiveTab] = useState('webinaires') // 'webinaires', 'inscriptions', 'presentateurs'
+    const [selectedInscriptionIds, setSelectedInscriptionIds] = useState([])
 
     const loadData = useCallback(async () => {
       setLoading(true)
@@ -6214,6 +9243,16 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         alert(err.message || 'Erreur lors de l\'opération')
       } finally {
         setSubmitting(false)
+      }
+    }
+
+    const handleValidateWebinaireInscription = async (inscriptionId) => {
+      try {
+        await updateWebinaireInscription(inscriptionId, { statut: 'confirmed' })
+        alert('Inscription validée avec succès.')
+        await loadData()
+      } catch (err) {
+        alert(err.message || "Erreur lors de la validation de l'inscription")
       }
     }
 
@@ -6354,6 +9393,144 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         setPhotoPreview(null)
       }
     }, [showModal])
+
+    const handleSendWebinaireInvitation = async (inscription) => {
+      if (inscription.statut !== 'confirmed') {
+        alert("Vous ne pouvez envoyer l'invitation qu'aux inscriptions confirmées.")
+        return
+      }
+      const accessLink = window.prompt(
+        "Lien d'accès (Zoom, Teams, etc.) pour ce webinaire :",
+        ''
+      )
+      if (!accessLink) return
+      try {
+        await sendWebinaireInscriptionInvitation(inscription.id, accessLink)
+        alert('Invitation webinaire envoyée avec succès.')
+      } catch (err) {
+        alert(err.message || "Erreur lors de l'envoi de l'invitation webinaire")
+      }
+    }
+
+    const handleSendWebinaireReminder = async (webinaire, kind) => {
+      const accessLink = window.prompt(
+        "Lien d'accès (Zoom, Teams, etc.) à rappeler aux participants :",
+        webinaire.lien_webinaire || ''
+      )
+      if (!accessLink) return
+      try {
+        await sendWebinaireReminder(webinaire.id, { kind, accessLink })
+        alert('Rappel webinaire envoyé avec succès.')
+      } catch (err) {
+        alert(err.message || 'Erreur lors de lenvoi du rappel webinaire')
+      }
+    }
+
+    const filteredInscriptions = useMemo(
+      () =>
+        inscriptions.filter((i) => {
+          if (!filters.search) return true
+          const search = filters.search.toLowerCase()
+          const webinaireTitle =
+            webinaires.find((w) => w.id === i.webinaire_id)?.titre?.toLowerCase() || ''
+          return (
+            i.prenom?.toLowerCase().includes(search) ||
+            i.nom?.toLowerCase().includes(search) ||
+            i.email?.toLowerCase().includes(search) ||
+            webinaireTitle.includes(search)
+          )
+        }),
+      [inscriptions, filters.search, webinaires]
+    )
+
+    const allWebinaireInscriptionsSelected =
+      filteredInscriptions.length > 0 &&
+      filteredInscriptions.every((i) => selectedInscriptionIds.includes(i.id))
+
+    const toggleSelectWebinaireInscription = (id) => {
+      setSelectedInscriptionIds((prev) =>
+        prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+      )
+    }
+
+    const toggleSelectAllWebinaireInscriptions = () => {
+      if (allWebinaireInscriptionsSelected) {
+        // Désélectionner seulement les visibles
+        setSelectedInscriptionIds((prev) =>
+          prev.filter((id) => !filteredInscriptions.some((i) => i.id === id))
+        )
+      } else {
+        // Ajouter toutes les visibles
+        setSelectedInscriptionIds((prev) => {
+          const allIds = [...prev, ...filteredInscriptions.map((i) => i.id)]
+          return Array.from(new Set(allIds))
+        })
+      }
+    }
+
+    const handleBulkWebinaireInscriptionsAction = async (action) => {
+      if (selectedInscriptionIds.length === 0) {
+        alert('Sélectionnez au moins une inscription.')
+        return
+      }
+
+      if (
+        action === 'delete' &&
+        !window.confirm(
+          `Supprimer définitivement ${selectedInscriptionIds.length} inscription(s) ?`
+        )
+      ) {
+        return
+      }
+
+      try {
+        if (action === 'invite') {
+          const confirmedIds = selectedInscriptionIds.filter((id) => {
+            const ins = inscriptions.find((i) => i.id === id)
+            return ins && ins.statut === 'confirmed'
+          })
+
+          if (confirmedIds.length === 0) {
+            alert("Aucune des inscriptions sélectionnées n'est confirmée.")
+            return
+          }
+
+          const accessLink = window.prompt(
+            "Lien d'accès (Zoom, Teams, etc.) à envoyer aux participants confirmés :",
+            ''
+          )
+          if (!accessLink) return
+
+          for (const id of confirmedIds) {
+            await sendWebinaireInscriptionInvitation(id, accessLink)
+          }
+
+          alert('Invitations webinaire envoyées avec succès aux inscriptions confirmées sélectionnées.')
+          setSelectedInscriptionIds([])
+          await loadData()
+          return
+        }
+
+        for (const id of selectedInscriptionIds) {
+          if (action === 'confirm') {
+            await updateWebinaireInscription(id, { statut: 'confirmed' })
+          } else if (action === 'delete') {
+            await deleteWebinaireInscription(id)
+          }
+        }
+
+        const message =
+          action === 'confirm'
+            ? 'Inscriptions validées avec succès !'
+            : 'Inscriptions supprimées avec succès !'
+
+        alert(message)
+        setSelectedInscriptionIds([])
+        await loadData()
+      } catch (err) {
+        alert(err.message || 'Erreur lors du traitement des inscriptions sélectionnées')
+      }
+    }
 
     if (loading) {
       return <div className="module-content"><p>Chargement...</p></div>
@@ -6680,6 +9857,20 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                                   }}>
                                     Présentateurs
                                   </button>
+                                  <button
+                                    type="button"
+                                    className="btn-link"
+                                    onClick={() => handleSendWebinaireReminder(webinaire, '48h')}
+                                  >
+                                    Rappel 48h
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-link"
+                                    onClick={() => handleSendWebinaireReminder(webinaire, '2h')}
+                                  >
+                                    Rappel 2h
+                                  </button>
                                   <button type="button" className="btn-link" onClick={() => { setShowModal('webinaire'); setEditingId(webinaire.id); setFormData(webinaire) }}>
                                     Modifier
                                   </button>
@@ -6705,9 +9896,19 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               <div className="card-header">
                 <div>
                   <h3 className="card-title">👥 Inscriptions</h3>
-                  <p className="card-subtitle">{inscriptions.length} inscription{inscriptions.length !== 1 ? 's' : ''}</p>
+                  <p className="card-subtitle">
+                    {inscriptions.length} inscription
+                    {inscriptions.length !== 1 ? 's' : ''} •{' '}
+                    <span style={{ color: '#16a34a', fontWeight: 600 }}>
+                      {inscriptions.filter((i) => i.statut === 'confirmed').length} validée(s)
+                    </span>{' '}
+                    •{' '}
+                    <span style={{ color: '#f97316', fontWeight: 600 }}>
+                      {inscriptions.filter((i) => i.statut === 'pending').length} en attente
+                    </span>
+                  </p>
                 </div>
-                <div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'flex-end' }}>
                   <input
                     type="text"
                     placeholder="🔍 Rechercher..."
@@ -6716,20 +9917,63 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     style={{
                       padding: '0.5rem 0.75rem',
                       border: '2px solid #0066CC',
-                      borderRadius: '5px',
+                      borderRadius: '999px',
                       fontSize: '0.9rem',
                       background: 'white',
                       color: '#212529',
                       fontWeight: '500',
-                      minWidth: '200px'
+                      minWidth: '220px',
                     }}
                   />
+                  {selectedInscriptionIds.length > 0 && (
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        style={{ padding: '0.35rem 0.7rem', fontSize: '0.8rem' }}
+                        onClick={() => handleBulkWebinaireInscriptionsAction('confirm')}
+                      >
+                        Valider la sélection
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{
+                          padding: '0.35rem 0.7rem',
+                          fontSize: '0.8rem',
+                        }}
+                        onClick={() => handleBulkWebinaireInscriptionsAction('invite')}
+                      >
+                        Envoyer les invitations
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{
+                          padding: '0.35rem 0.7rem',
+                          fontSize: '0.8rem',
+                          backgroundColor: '#dc2626',
+                          borderColor: '#dc2626',
+                        }}
+                        onClick={() => handleBulkWebinaireInscriptionsAction('delete')}
+                      >
+                        Supprimer la sélection
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="table-container">
                 <table className="data-table">
                   <thead>
                     <tr>
+                      <th>
+                        <input
+                          type="checkbox"
+                          checked={allWebinaireInscriptionsSelected}
+                          onChange={toggleSelectAllWebinaireInscriptions}
+                        />
+                      </th>
                       <th>Nom</th>
                       <th>Email</th>
                       <th>Pays</th>
@@ -6742,33 +9986,22 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {inscriptions
-                      .filter(i => {
-                        if (!filters.search) return true
-                        const search = filters.search.toLowerCase()
-                        return i.prenom?.toLowerCase().includes(search) ||
-                          i.nom?.toLowerCase().includes(search) ||
-                          i.email?.toLowerCase().includes(search) ||
-                          webinaires.find(w => w.id === i.webinaire_id)?.titre?.toLowerCase().includes(search)
-                      })
-                      .length === 0 ? (
+                    {filteredInscriptions.length === 0 ? (
                       <tr>
-                        <td colSpan="9" style={{ textAlign: 'center', padding: '2rem' }}>Aucune inscription</td>
+                        <td colSpan="10" style={{ textAlign: 'center', padding: '2rem' }}>Aucune inscription</td>
                       </tr>
                     ) : (
-                      inscriptions
-                        .filter(i => {
-                          if (!filters.search) return true
-                          const search = filters.search.toLowerCase()
-                          return i.prenom?.toLowerCase().includes(search) ||
-                            i.nom?.toLowerCase().includes(search) ||
-                            i.email?.toLowerCase().includes(search) ||
-                            webinaires.find(w => w.id === i.webinaire_id)?.titre?.toLowerCase().includes(search)
-                        })
-                        .map((inscription) => {
+                      filteredInscriptions.map((inscription) => {
                           const webinaire = webinaires.find(w => w.id === inscription.webinaire_id)
                           return (
                             <tr key={inscription.id}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedInscriptionIds.includes(inscription.id)}
+                                  onChange={() => toggleSelectWebinaireInscription(inscription.id)}
+                                />
+                              </td>
                               <td style={{ fontWeight: '600' }}>{inscription.prenom} {inscription.nom}</td>
                               <td>{inscription.email || '—'}</td>
                               <td>{inscription.pays || '—'}</td>
@@ -6805,6 +10038,23 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                                 <div className="table-actions">
                                   <button type="button" className="btn-link" onClick={() => { setShowModal('inscription'); setEditingId(inscription.id); setFormData(inscription) }}>
                                     Modifier
+                                  </button>
+                                  {inscription.statut === 'pending' && (
+                                    <button
+                                      type="button"
+                                      className="btn-link"
+                                      onClick={() => handleValidateWebinaireInscription(inscription.id)}
+                                      style={{ color: '#16a34a' }}
+                                    >
+                                      Valider
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="btn-link"
+                                    onClick={() => handleSendWebinaireInvitation(inscription)}
+                                  >
+                                    Envoyer l'invitation
                                   </button>
                                   <button type="button" className="btn-link danger" onClick={() => handleDelete('inscription', inscription.id)}>
                                     Supprimer
@@ -7432,14 +10682,41 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
       {/* Sidebar */}
       <aside className={`admin-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
         <div className="sidebar-header">
-          <img src={logoASGF} alt="ASGF" className="sidebar-logo" />
-          <h2 className="sidebar-title">ASGF Admin</h2>
+          <div className="sidebar-brand">
+            <img src={logoASGF} alt="ASGF" className="sidebar-logo" />
+            <div>
+              <p className="sidebar-title">ASGF Admin</p>
+              <span className="sidebar-subtitle">Gestion centrale</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            aria-label="Fermer le menu"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="sidebar-profile">
+          <div className="sidebar-avatar">{getInitials(admin)}</div>
+          <div className="sidebar-profile-info">
+            <p className="sidebar-name">{adminDisplayName}</p>
+            <span className="sidebar-role">{adminRoleLabel}</span>
+          </div>
+        </div>
+
+        <div className="sidebar-menu-heading">
+          <span>Navigation</span>
         </div>
 
         <nav className="sidebar-nav">
           <button
             className={`nav-item ${activeModule === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setActiveModule('dashboard')}
+            onClick={() => handleModuleSelect('dashboard')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
@@ -7448,8 +10725,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'adhesions' ? 'active' : ''}`}
-            onClick={() => setActiveModule('adhesions')}
+            className={`nav-item ${activeModule === 'adhesions' ? 'active' : ''} ${!canAccessModule('adhesions') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('adhesions')}
+            aria-disabled={!canAccessModule('adhesions')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -7458,8 +10736,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'members' ? 'active' : ''}`}
-            onClick={() => setActiveModule('members')}
+            className={`nav-item ${activeModule === 'members' ? 'active' : ''} ${!canAccessModule('members') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('members')}
+            aria-disabled={!canAccessModule('members')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
@@ -7468,8 +10747,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'formations' ? 'active' : ''}`}
-            onClick={() => setActiveModule('formations')}
+            className={`nav-item ${activeModule === 'formations' ? 'active' : ''} ${!canAccessModule('formations') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('formations')}
+            aria-disabled={!canAccessModule('formations')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
@@ -7478,8 +10758,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'webinaires' ? 'active' : ''}`}
-            onClick={() => setActiveModule('webinaires')}
+            className={`nav-item ${activeModule === 'webinaires' ? 'active' : ''} ${!canAccessModule('webinaires') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('webinaires')}
+            aria-disabled={!canAccessModule('webinaires')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -7488,8 +10769,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'studio' ? 'active' : ''}`}
-            onClick={() => setActiveModule('studio')}
+            className={`nav-item ${activeModule === 'studio' ? 'active' : ''} ${!canAccessModule('studio') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('studio')}
+            aria-disabled={!canAccessModule('studio')}
             style={{
               background: activeModule === 'studio' ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : 'transparent',
               color: activeModule === 'studio' ? 'white' : '#666',
@@ -7503,8 +10785,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'tresorerie' ? 'active' : ''}`}
-            onClick={() => setActiveModule('tresorerie')}
+            className={`nav-item ${activeModule === 'tresorerie' ? 'active' : ''} ${!canAccessModule('tresorerie') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('tresorerie')}
+            aria-disabled={!canAccessModule('tresorerie')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -7513,8 +10796,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'secretariat' ? 'active' : ''}`}
-            onClick={() => setActiveModule('secretariat')}
+            className={`nav-item ${activeModule === 'secretariat' ? 'active' : ''} ${!canAccessModule('secretariat') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('secretariat')}
+            aria-disabled={!canAccessModule('secretariat')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -7523,8 +10807,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'mentorat' ? 'active' : ''}`}
-            onClick={() => setActiveModule('mentorat')}
+            className={`nav-item ${activeModule === 'mentorat' ? 'active' : ''} ${!canAccessModule('mentorat') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('mentorat')}
+            aria-disabled={!canAccessModule('mentorat')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
@@ -7533,8 +10818,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'recrutement' ? 'active' : ''}`}
-            onClick={() => setActiveModule('recrutement')}
+            className={`nav-item ${activeModule === 'recrutement' ? 'active' : ''} ${!canAccessModule('recrutement') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('recrutement')}
+            aria-disabled={!canAccessModule('recrutement')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -7543,8 +10829,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </button>
 
           <button
-            className={`nav-item ${activeModule === 'settings' ? 'active' : ''}`}
-            onClick={() => setActiveModule('settings')}
+            className={`nav-item ${activeModule === 'settings' ? 'active' : ''} ${!canAccessModule('settings') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('settings')}
+            aria-disabled={!canAccessModule('settings')}
           >
             <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -7562,6 +10849,12 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         </button>
       </aside>
 
+      <div
+        className={`sidebar-backdrop ${sidebarOpen ? 'visible' : ''}`}
+        onClick={() => setSidebarOpen(false)}
+        aria-hidden={sidebarOpen ? 'false' : 'true'}
+      />
+
       {/* Main Content */}
       <div className="admin-main-content">
         {/* Topbar */}
@@ -7570,6 +10863,8 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
             <button 
               className="mobile-menu-btn"
               onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-label="Ouvrir le menu"
+              aria-pressed={sidebarOpen}
             >
               <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
@@ -7583,10 +10878,8 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           <div className="topbar-right">
             <div className="admin-info">
               <div className="admin-details">
-                <span className="admin-name">{admin?.numero_membre || 'Admin'}</span>
-                <span className="admin-role">
-                  {admin?.is_master ? 'Superadmin' : admin?.role_global || 'Admin'}
-                </span>
+                <span className="admin-name">{adminDisplayName}</span>
+                <span className="admin-role">{adminRoleLabel}</span>
               </div>
               <div className="admin-avatar">
                 {getInitials(admin)}
@@ -7596,7 +10889,23 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
         </header>
 
         {/* Main Content Area */}
-        <main className="admin-content">
+        <main className="admin-content page-transition">
+          {accessDeniedInfo && !hasAccessToActiveModule && (
+            <div className="access-denied-overlay">
+              <div className="access-denied-card">
+                <h3>Accès refusé</h3>
+                <p>
+                  Vous n'avez pas les autorisations nécessaires pour consulter <strong>{accessDeniedInfo.label}</strong>.
+                </p>
+                <p>Désolé, veuillez contacter le Président Serigne Omar.</p>
+                <div className="access-denied-actions">
+                  <button className="btn-primary" onClick={() => handleModuleSelect('dashboard')}>
+                    Retour au tableau de bord
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {activeModule === 'members' && <MembersContent />}
           {activeModule === 'adhesions' && <AdhesionContent />}
           {activeModule === 'formations' && <FormationsContent />}
@@ -7606,6 +10915,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           {activeModule === 'recrutement' && <RecrutementContent />}
           {activeModule === 'tresorerie' && <TresorerieContent />}
           {activeModule === 'secretariat' && <SecretariatContent />}
+          {activeModule === 'settings' && <AdminSettingsPanel currentAdmin={admin} />}
           {activeModule === 'dashboard' && (
             <>
               {/* KPI Cards */}

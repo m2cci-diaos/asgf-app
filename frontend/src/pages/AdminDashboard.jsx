@@ -5129,7 +5129,11 @@ function AdminDashboard({ admin, onLogout }) {
               <div className="admin-details">
                 <span className="admin-name">{admin?.numero_membre || 'Admin'}</span>
                 <span className="admin-role">
-                  {admin?.is_master ? 'Superadmin' : admin?.role_global || 'Admin'}
+                  {admin?.is_master
+                    ? 'Superadmin global'
+                    : admin?.role_type === 'superadmin'
+                      ? 'Superadmin'
+                      : 'Admin'}
                 </span>
               </div>
               <div className="admin-avatar">

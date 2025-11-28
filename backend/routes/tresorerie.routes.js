@@ -26,6 +26,9 @@ import {
   createCarte,
   updateCarte,
   getCarteByNumero,
+  generateCartePDF,
+  generateMissingPDFs,
+  updateCartePDFLink,
   listHistorique,
   createHistorique,
   getStats,
@@ -79,6 +82,9 @@ router.get('/cartes', listCartes)
 router.get('/cartes/numero/:numero', getCarteByNumero)
 router.post('/cartes', createCarte)
 router.put('/cartes/:id', updateCarte)
+router.post('/cartes/:id/generate-pdf', generateCartePDF)
+router.post('/cartes/generate-missing-pdfs', generateMissingPDFs)
+router.post('/cartes/numero/:numero/update-pdf-link', updateCartePDFLink)
 
 // Routes pour l'historique
 router.get('/historique', listHistorique)

@@ -15,6 +15,8 @@ import {
   updatePresentateurController,
   deletePresentateurController,
   getStats,
+  sendWebinaireInvitationController,
+  sendWebinaireReminderController,
 } from '../controllers/webinaire.controller.js'
 import { requireAuth, requireModule } from '../middlewares/auth.js'
 import { MODULES } from '../config/constants.js'
@@ -39,6 +41,7 @@ router.get('/inscriptions', listInscriptions)
 router.post('/inscriptions', createInscriptionController)
 router.put('/inscriptions/:id', updateInscriptionController)
 router.delete('/inscriptions/:id', deleteInscriptionController)
+router.post('/inscriptions/:id/invitation', sendWebinaireInvitationController)
 
 // Routes pour les présentateurs
 router.get('/webinaires/:id/presentateurs', getPresentateurs)
@@ -48,5 +51,8 @@ router.delete('/presentateurs/:id', deletePresentateurController)
 
 // Route pour les statistiques
 router.get('/stats', getStats)
+
+// Rappel pour un webinaire (toutes les inscriptions confirmées)
+router.post('/webinaires/:id/reminder', sendWebinaireReminderController)
 
 export default router

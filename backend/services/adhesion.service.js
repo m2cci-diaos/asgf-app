@@ -5,28 +5,33 @@ import { logError, logInfo } from '../utils/logger.js'
 /**
  * Récupère tous les membres avec pagination et filtres
  */
-export async function getAllMembers({ page = 1, limit = 20, search = '', status = '' }) {
+export async function getAllMembers({ page = 1, limit = 20, search = '', status = '', ids = null }) {
   try {
-    logInfo('getAllMembers: Requête initiale', { page, limit, search, status })
+    logInfo('getAllMembers: Requête initiale', { page, limit, search, status, ids: ids?.length || 0 })
     let query = supabaseAdhesion
       .from('members')
       .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
 
-    // Recherche par nom, prénom, email ou numéro de membre
-    if (search) {
-      query = query.or(`prenom.ilike.%${search}%,nom.ilike.%${search}%,email.ilike.%${search}%,numero_membre.ilike.%${search}%`)
-    }
+    // Filtre par IDs (prioritaire si fourni)
+    if (ids && Array.isArray(ids) && ids.length > 0) {
+      query = query.in('id', ids)
+    } else {
+      // Recherche par nom, prénom, email ou numéro de membre (seulement si pas de filtrage par IDs)
+      if (search) {
+        query = query.or(`prenom.ilike.%${search}%,nom.ilike.%${search}%,email.ilike.%${search}%,numero_membre.ilike.%${search}%`)
+      }
 
-    // Filtre par statut
-    if (status) {
-      query = query.eq('status', status)
-    }
+      // Filtre par statut
+      if (status) {
+        query = query.eq('status', status)
+      }
 
-    // Pagination
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-    query = query.range(from, to)
+      // Pagination (seulement si pas de filtrage par IDs)
+      const from = (page - 1) * limit
+      const to = from + limit - 1
+      query = query.range(from, to)
+    }
 
     const { data, error, count } = await query
 
@@ -35,7 +40,7 @@ export async function getAllMembers({ page = 1, limit = 20, search = '', status 
       throw new Error('Erreur lors de la récupération des membres')
     }
 
-    logInfo('getAllMembers: Membres récupérés', { count: data?.length || 0, total: count || 0 })
+    logInfo('getAllMembers: Membres récupérés', { count: data?.length || 0, total: count || 0, ids: ids?.length || 0 })
 
     return {
       members: data || [],
@@ -298,6 +303,148 @@ export async function getAdhesionStats() {
     }
   } catch (err) {
     logError('getAdhesionStats exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour un membre
+ */
+export async function updateMember(memberId, memberData) {
+  try {
+    // Liste des colonnes autorisées dans la table members (selon le schéma)
+    const allowedColumns = [
+      'prenom', 'nom', 'email', 'telephone', 'date_naissance',
+      'universite', 'niveau_etudes', 'annee_universitaire', 'specialite',
+      'interets', 'motivation', 'competences',
+      'is_newsletter_subscribed', 'is_active',
+      'adresse', 'ville', 'pays',
+      'status', 'statut_pro', 'domaine', 'date_adhesion'
+    ]
+
+    // Préparer les données à mettre à jour (uniquement les colonnes autorisées)
+    const rawData = {
+      prenom: memberData.prenom,
+      nom: memberData.nom,
+      email: memberData.email,
+      telephone: memberData.telephone,
+      date_naissance: memberData.date_naissance,
+      universite: memberData.universite,
+      niveau_etudes: memberData.niveau_etudes,
+      annee_universitaire: memberData.annee_universitaire,
+      specialite: memberData.specialite,
+      interets: memberData.interets,
+      motivation: memberData.motivation,
+      competences: memberData.competences,
+      is_newsletter_subscribed: memberData.is_newsletter_subscribed,
+      is_active: memberData.is_active,
+      adresse: memberData.adresse,
+      ville: memberData.ville,
+      pays: memberData.pays,
+      status: memberData.status,
+      statut_pro: memberData.statut_pro,
+      domaine: memberData.domaine,
+      date_adhesion: memberData.date_adhesion,
+    }
+
+    // Filtrer uniquement les colonnes autorisées et nettoyer les valeurs
+    const updateData = {}
+    allowedColumns.forEach(key => {
+      if (rawData[key] !== undefined) {
+        // Gérer les intérêts (convertir string en tableau)
+        if (key === 'interets') {
+          if (!rawData[key] || rawData[key] === '') {
+            updateData[key] = null
+          } else if (Array.isArray(rawData[key])) {
+            updateData[key] = rawData[key].length > 0 ? rawData[key] : null
+          } else if (typeof rawData[key] === 'string') {
+            const interests = rawData[key].split(',').map(i => i.trim()).filter(i => i)
+            updateData[key] = interests.length > 0 ? interests : null
+          } else {
+            updateData[key] = null
+          }
+        }
+        // Gérer les booléens
+        else if (key === 'is_newsletter_subscribed' || key === 'is_active') {
+          updateData[key] = Boolean(rawData[key])
+        }
+        // Gérer les dates (chaînes vides → null)
+        else if (key === 'date_naissance' || key === 'date_adhesion') {
+          updateData[key] = rawData[key] && rawData[key] !== '' ? rawData[key] : null
+        }
+        // Gérer les champs texte optionnels (chaînes vides → null, sauf champs requis)
+        else if (key === 'prenom' || key === 'nom' || key === 'email') {
+          updateData[key] = rawData[key] || ''
+        }
+        // Autres champs texte optionnels
+        else {
+          updateData[key] = rawData[key] && rawData[key] !== '' ? rawData[key] : null
+        }
+      }
+    })
+
+    // S'assurer que les champs requis sont présents
+    if (!updateData.prenom || !updateData.nom || !updateData.email) {
+      throw new Error('Les champs prénom, nom et email sont requis')
+    }
+
+    // Logger les colonnes qui seront mises à jour (pour debug)
+    logInfo('updateMember: Colonnes à mettre à jour', { 
+      columns: Object.keys(updateData),
+      memberId 
+    })
+
+    const { data, error } = await supabaseAdhesion
+      .from('members')
+      .update(updateData)
+      .eq('id', memberId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('updateMember error', error)
+      // Inclure le message d'erreur de Supabase pour plus de détails
+      const errorMessage = error.message || 'Erreur lors de la mise à jour du membre'
+      throw new Error(errorMessage)
+    }
+
+    if (!data) {
+      throw new Error('Membre introuvable')
+    }
+
+    logInfo('Membre mis à jour', { id: memberId })
+    return data
+  } catch (err) {
+    logError('updateMember exception', err)
+    throw err
+  }
+}
+
+/**
+ * Supprime un membre
+ */
+export async function deleteMember(memberId) {
+  try {
+    const { data, error } = await supabaseAdhesion
+      .from('members')
+      .delete()
+      .eq('id', memberId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('deleteMember error', error)
+      throw new Error('Erreur lors de la suppression du membre')
+    }
+
+    if (!data) {
+      throw new Error('Membre introuvable')
+    }
+
+    logInfo('Membre supprimé', { id: memberId })
+    return data
+  } catch (err) {
+    logError('deleteMember exception', err)
     throw err
   }
 }

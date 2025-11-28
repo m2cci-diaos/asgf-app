@@ -218,6 +218,64 @@ export async function rejectMember(memberId) {
   return data?.data || data
 }
 
+export async function updateMember(memberId, memberData) {
+  const token = getAuthToken()
+  
+  if (!token) {
+    throw new Error('Token manquant. Veuillez vous reconnecter.')
+  }
+
+  const res = await fetch(`${API_URL}/api/adhesion/members/${memberId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(memberData),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    // Améliorer le message d'erreur pour inclure les détails de validation
+    const errorMessage = data?.message || data?.errors?.[0]?.message || 'Erreur lors de la mise à jour du membre'
+    const errorDetails = data?.errors ? ` (${data.errors.map(e => e.message || e.field).join(', ')})` : ''
+    throw new Error(errorMessage + errorDetails)
+  }
+
+  return data?.data || data
+}
+
+export async function deleteMember(memberId) {
+  const token = getAuthToken()
+  
+  if (!token) {
+    throw new Error('Token manquant. Veuillez vous reconnecter.')
+  }
+
+  const res = await fetch(`${API_URL}/api/adhesion/members/${memberId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(
+      data?.message || 'Erreur lors de la suppression du membre'
+    )
+  }
+
+  return data?.data || data
+}
+
 // ───── Mentorat ─────
 
 export async function fetchMentors(params = {}) {
@@ -544,10 +602,53 @@ export async function fetchAllMembers(params = {}) {
       localStorage.removeItem('asgf_admin_info')
       throw new Error('Session expirée. Veuillez vous reconnecter.')
     }
-    throw new Error(data?.message || 'Erreur lors du chargement des membres')
+    // Améliorer le message d'erreur pour inclure les détails de validation
+    const errorMessage = data?.message || data?.errors?.[0]?.message || 'Erreur lors du chargement des membres'
+    throw new Error(errorMessage)
   }
 
+  // Le backend retourne { success: true, data: members, pagination: {...} }
+  if (data?.success && Array.isArray(data.data)) {
+    return data.data
+  }
+  
+  // Fallback pour compatibilité
   return data?.data || []
+}
+
+export async function sendMemberEmails({ memberIds, subject, body, attachments = [] }) {
+  const res = await fetch(`${API_URL}/api/adhesion/members/email`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      member_ids: memberIds,
+      subject,
+      body,
+      attachments: attachments.map(att => ({
+        name: att.name,
+        data: att.data,
+        type: att.type,
+      })),
+    }),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    // Retourner l'objet d'erreur complet pour que le frontend puisse l'utiliser
+    const errorMessage = data?.message || "Erreur lors de l'envoi des emails membres"
+    const error = new Error(errorMessage)
+    error.responseData = data
+    throw error
+  }
+
+  // Retourner les données avec le statut success
+  return data
 }
 
 // ───── Trésorerie ─────
@@ -735,6 +836,91 @@ export async function createCarteMembre(carteData) {
 export async function geocodeMemberAddress({ adresse = '', ville = '', pays = '' } = {}) {
   const query = buildQueryString({ adresse, ville, pays })
   return sendJsonRequest(`/api/geocode/search${query}`)
+}
+
+export async function generateCartePDF(carteId) {
+  const res = await fetch(`${API_URL}/api/tresorerie/cartes/${carteId}/generate-pdf`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la génération du PDF')
+  }
+
+  return data?.data || data
+}
+
+export async function generateMissingPDFs() {
+  const res = await fetch(`${API_URL}/api/tresorerie/cartes/generate-missing-pdfs`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la génération des PDF manquants')
+  }
+
+  return data?.data || data
+}
+
+export async function listCartesMembres(filters = {}) {
+  const queryParams = new URLSearchParams()
+  if (filters.statut_paiement) queryParams.append('statut_paiement', filters.statut_paiement)
+  if (filters.pays) queryParams.append('pays', filters.pays)
+  
+  const res = await fetch(`${API_URL}/api/tresorerie/cartes?${queryParams.toString()}`, {
+    method: 'GET',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la récupération des cartes membres')
+  }
+
+  return data?.data || data
+}
+
+export async function updateCarteMembre(carteId, carteData) {
+  const res = await fetch(`${API_URL}/api/tresorerie/cartes/${carteId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(carteData),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de la carte membre')
+  }
+
+  return data?.data || data
 }
 
 export async function fetchCarteMembreByNumero(numeroMembre) {
@@ -1401,6 +1587,42 @@ export async function rejectInscription(inscriptionId) {
   return data?.data || data
 }
 
+export async function sendInscriptionInvitation(inscriptionId, accessLink) {
+  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}/invitation`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ access_link: accessLink }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || "Erreur lors de l'envoi de l'invitation")
+  }
+  return data
+}
+
+export async function sendSessionReminder(sessionId, { kind, accessLink }) {
+  const res = await fetch(`${API_URL}/api/formation/sessions/${sessionId}/reminder`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ kind, access_link: accessLink }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de lenvoi du rappel')
+  }
+  return data
+}
+
 export async function fetchFormateurs() {
   const res = await fetch(`${API_URL}/api/formation/formateurs`, {
     headers: getAuthHeaders(),
@@ -1468,6 +1690,121 @@ export async function deleteFormateur(formateurId) {
     throw new Error(data?.message || 'Erreur lors de la suppression du formateur')
   }
   return data
+}
+
+// ============================================
+// PARAMÈTRES ADMIN / GESTION DES ACCÈS
+// ============================================
+
+export async function fetchAdminsList({ page = 1, limit = 20, search = '' } = {}) {
+  const query = buildQueryString({ page, limit, search })
+  const res = await fetch(`${API_URL}/api/admin/admins${query}`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des administrateurs')
+  }
+  return {
+    admins: data?.data || [],
+    pagination: data?.pagination || { page, limit, total: 0, totalPages: 1 },
+  }
+}
+
+export async function createAdminAccount(payload) {
+  const res = await fetch(`${API_URL}/api/admin/admins`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création de l\'administrateur')
+  }
+  return data?.data || data
+}
+
+export async function updateAdminAccount(adminId, payload) {
+  const res = await fetch(`${API_URL}/api/admin/admins/${adminId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de l\'administrateur')
+  }
+  return data?.data || data
+}
+
+export async function updateAdminAccess(adminId, modules) {
+  const res = await fetch(`${API_URL}/api/admin/admins/${adminId}/modules`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ modules }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour des modules')
+  }
+  return data?.data || data
+}
+
+export async function suspendAdminAccount(adminId, { reason, disabledUntil } = {}) {
+  const res = await fetch(`${API_URL}/api/admin/admins/${adminId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      reason,
+      disabled_until: disabledUntil || null,
+    }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la désactivation de l\'administrateur')
+  }
+  return data
+}
+
+export async function fetchAdminModulesCatalog() {
+  const res = await fetch(`${API_URL}/api/admin/modules`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des modules disponibles')
+  }
+  return data?.data || []
 }
 
 // ============================================
@@ -1649,6 +1986,42 @@ export async function deleteWebinaireInscription(inscriptionId) {
       throw new Error('Session expirée. Veuillez vous reconnecter.')
     }
     throw new Error(data?.message || 'Erreur lors de la suppression de l\'inscription')
+  }
+  return data
+}
+
+export async function sendWebinaireInscriptionInvitation(inscriptionId, accessLink) {
+  const res = await fetch(`${API_URL}/api/webinaire/inscriptions/${inscriptionId}/invitation`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ access_link: accessLink }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || "Erreur lors de l'envoi de l'invitation webinaire")
+  }
+  return data
+}
+
+export async function sendWebinaireReminder(webinaireId, { kind, accessLink }) {
+  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}/reminder`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ kind, access_link: accessLink }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de lenvoi du rappel webinaire')
   }
   return data
 }

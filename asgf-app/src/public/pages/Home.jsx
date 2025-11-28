@@ -1,8 +1,18 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+
+const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
 
 function Home() {
   const location = useLocation()
+  const [contactForm, setContactForm] = useState({
+    fullName: '',
+    email: '',
+    subject: '',
+    message: '',
+  })
+  const [contactStatus, setContactStatus] = useState({ type: '', message: '' })
+  const [contactLoading, setContactLoading] = useState(false)
 
   useEffect(() => {
     // Gérer le scroll vers une section si une ancre est présente dans l'URL
@@ -114,6 +124,66 @@ function Home() {
         top: offsetPosition,
         behavior: 'smooth'
       })
+    }
+  }
+
+  const handleContactChange = (event) => {
+    const { name, value } = event.target
+    setContactForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }))
+  }
+
+  const handleContactSubmit = async (event) => {
+    event.preventDefault()
+    setContactStatus({ type: '', message: '' })
+
+    if (!contactForm.email.includes('@')) {
+      setContactStatus({ type: 'error', message: 'Merci de saisir un email valide.' })
+      return
+    }
+
+    setContactLoading(true)
+    try {
+      const response = await fetch(`${API_URL}/api/contact/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          full_name: contactForm.fullName.trim(),
+          email: contactForm.email.trim(),
+          subject: contactForm.subject.trim(),
+          message: contactForm.message.trim(),
+        }),
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result?.message || "Impossible d'envoyer le message pour le moment.")
+      }
+
+      setContactStatus({
+        type: 'success',
+        message: 'Merci ! Votre message a bien été envoyé. Nous revenons vers vous rapidement.',
+      })
+      setContactForm({
+        fullName: '',
+        email: '',
+        subject: '',
+        message: '',
+      })
+    } catch (error) {
+      setContactStatus({
+        type: 'error',
+        message:
+          error.message ||
+          "Une erreur est survenue lors de l'envoi du message. Merci de réessayer plus tard.",
+      })
+    } finally {
+      setContactLoading(false)
     }
   }
 
@@ -339,25 +409,67 @@ function Home() {
         <div className="container">
           <h2 className="section-title fade-in" style={{color: 'white'}}>Contactez-nous</h2>
           <div className="contact-content">
-            <form className="contact-form fade-in" onSubmit={(e) => e.preventDefault()}>
+            <form className="contact-form fade-in" onSubmit={handleContactSubmit}>
               <h3>Envoyez-nous un message</h3>
               <div className="form-group">
                 <label htmlFor="contact-nom">Nom complet</label>
-                <input type="text" id="contact-nom" name="nom" required />
+                <input
+                  type="text"
+                  id="contact-nom"
+                  name="fullName"
+                  value={contactForm.fullName}
+                  onChange={handleContactChange}
+                  required
+                />
               </div>
               <div className="form-group">
                 <label htmlFor="contact-email">Email</label>
-                <input type="email" id="contact-email" name="email" required />
+                <input
+                  type="email"
+                  id="contact-email"
+                  name="email"
+                  value={contactForm.email}
+                  onChange={handleContactChange}
+                  required
+                />
               </div>
               <div className="form-group">
                 <label htmlFor="contact-sujet">Sujet</label>
-                <input type="text" id="contact-sujet" name="sujet" required />
+                <input
+                  type="text"
+                  id="contact-sujet"
+                  name="subject"
+                  value={contactForm.subject}
+                  onChange={handleContactChange}
+                  required
+                />
               </div>
               <div className="form-group">
                 <label htmlFor="contact-message">Message</label>
-                <textarea id="contact-message" name="message" rows="5" required></textarea>
+                <textarea
+                  id="contact-message"
+                  name="message"
+                  rows="5"
+                  value={contactForm.message}
+                  onChange={handleContactChange}
+                  required
+                ></textarea>
               </div>
-              <button type="submit" className="submit-btn">Envoyer le message</button>
+              {contactStatus.message && (
+                <p
+                  style={{
+                    marginBottom: '1rem',
+                    color: contactStatus.type === 'success' ? '#6ee7b7' : '#fecaca',
+                    fontWeight: 500,
+                  }}
+                  aria-live="polite"
+                >
+                  {contactStatus.message}
+                </p>
+              )}
+              <button type="submit" className="submit-btn" disabled={contactLoading}>
+                {contactLoading ? 'Envoi en cours...' : 'Envoyer le message'}
+              </button>
             </form>
             <div className="contact-info fade-in">
               <h3>Informations de contact</h3>

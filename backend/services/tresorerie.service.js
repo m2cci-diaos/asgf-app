@@ -1,6 +1,6 @@
 // backend/services/tresorerie.service.js
 import { supabaseTresorerie, supabaseAdhesion } from '../config/supabase.js'
-import { logError, logInfo } from '../utils/logger.js'
+import { logError, logInfo, logWarning } from '../utils/logger.js'
 import { Parser as Json2CsvParser } from 'json2csv'
 import ExcelJS from 'exceljs'
 import PDFDocument from 'pdfkit'
@@ -1235,9 +1235,11 @@ export async function createRelance(relanceData) {
 /**
  * Récupère toutes les cartes membres avec pagination et filtres
  */
-export async function getAllCartesMembres({ page = 1, limit = 20, search = '', statut_carte = '', statut_paiement = '' }) {
+export async function getAllCartesMembres({ page = 1, limit = 1000, search = '', statut_carte = '', statut_paiement = '' }) {
   try {
     logInfo('getAllCartesMembres: Requête initiale', { page, limit, search, statut_carte, statut_paiement })
+    
+    // Récupérer toutes les cartes sans limite de pagination pour avoir tous les membres
     let query = supabaseTresorerie
       .from('cartes_membres')
       .select('*', { count: 'exact' })
@@ -1255,10 +1257,7 @@ export async function getAllCartesMembres({ page = 1, limit = 20, search = '', s
       query = query.ilike('numero_membre', `%${search}%`)
     }
 
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-    query = query.range(from, to)
-
+    // Ne pas utiliser .range() pour récupérer tous les membres
     const { data: cartes, error, count } = await query
 
     if (error) {
@@ -1268,22 +1267,52 @@ export async function getAllCartesMembres({ page = 1, limit = 20, search = '', s
 
     logInfo('getAllCartesMembres: Cartes récupérées', { count: cartes?.length || 0, total: count || 0 })
 
-    const cartesWithTarif = (cartes || []).map((carte) => {
-      const info = getTarifInfoForCountry(carte.pays)
-      return {
-        ...carte,
-        devise: info.devise,
-        currencySymbol: info.symbol,
-      }
-    })
+    // Récupérer les informations des membres pour chaque carte
+    const cartesWithMembers = await Promise.all(
+      (cartes || []).map(async (carte) => {
+        const info = getTarifInfoForCountry(carte.pays)
+        
+        // Récupérer les informations du membre depuis la table members
+        let membreInfo = null
+        if (carte.numero_membre) {
+          try {
+            const { data: membre, error: membreError } = await supabaseAdhesion
+              .from('members')
+              .select('id, prenom, nom, email')
+              .eq('numero_membre', carte.numero_membre)
+              .maybeSingle()
+            
+            if (!membreError && membre) {
+              membreInfo = {
+                prenom: membre.prenom || '',
+                nom: membre.nom || '',
+                email: membre.email || '',
+              }
+            }
+          } catch (membreErr) {
+            logWarning('Erreur récupération membre pour carte', {
+              numeroMembre: carte.numero_membre,
+              error: membreErr.message,
+            })
+          }
+        }
+
+        return {
+          ...carte,
+          devise: info.devise,
+          currencySymbol: info.symbol,
+          membre: membreInfo,
+        }
+      })
+    )
 
     return {
-      cartes: cartesWithTarif,
+      cartes: cartesWithMembers,
       pagination: {
-        page,
-        limit,
+        page: 1,
+        limit: count || 0,
         total: count || 0,
-        totalPages: Math.ceil((count || 0) / limit),
+        totalPages: 1,
       },
     }
   } catch (err) {
@@ -1293,45 +1322,610 @@ export async function getAllCartesMembres({ page = 1, limit = 20, search = '', s
 }
 
 /**
+ * Génère le PDF de la carte membre
+ */
+async function generateCarteMembrePDF(membre, carteData) {
+  // Format A4 paysage (comme dans CarteMembreGenerator)
+  // A4 = 297mm x 210mm en paysage
+  const doc = new PDFDocument({ 
+    size: 'A4',
+    layout: 'landscape',
+    margin: 0
+  })
+  
+  const chunks = []
+  doc.on('data', (chunk) => chunks.push(chunk))
+
+  // Dimensions de la page en points
+  const pageWidth = doc.page.width
+  const pageHeight = doc.page.height
+
+  // Couleurs
+  const primaryColor = '#0d47a1' // Bleu ASGF
+  const accentColor = '#e53935' // Rouge ASGF
+  const textColor = '#020617'
+  const lightGray = '#f8fafc'
+  const borderGray = '#e2e8f0'
+
+  // Fond blanc
+  doc.rect(0, 0, pageWidth, pageHeight)
+    .fill('#ffffff')
+
+  // Dégradé de fond (simulé)
+  doc.rect(0, 0, pageWidth, pageHeight)
+    .fillOpacity(0.1)
+    .fill('#3b82f6')
+
+  // En-tête
+  const headerHeight = 80
+  doc.rect(0, 0, pageWidth, headerHeight)
+    .fill('#ffffff')
+  
+  doc.fontSize(18)
+    .fillColor(textColor)
+    .font('Helvetica-Bold')
+    .text('Association des Sénégalais Géomaticiens de France', 30, 24, { width: pageWidth - 60 })
+  
+  doc.fontSize(12)
+    .fillColor('#475569')
+    .font('Helvetica')
+    .text('Carte de membre officielle', 30, 50, { width: pageWidth - 60 })
+
+  // Zone de contenu principale
+  const contentTop = headerHeight + 20
+  const contentHeight = pageHeight - contentTop - 60
+  const photoWidth = 200
+  const photoHeight = (photoWidth * 4) / 3 // Ratio 3:4
+  const contentLeft = 30
+  const infoLeft = contentLeft + photoWidth + 30
+
+  // Photo du membre (à gauche)
+  const photoTop = contentTop + 20
+  const photoLeft = contentLeft
+  
+  // Cadre photo
+  doc.rect(photoLeft, photoTop, photoWidth, photoHeight)
+    .stroke(borderGray)
+    .fill(lightGray)
+
+  // Télécharger et inclure la photo si disponible
+  const photoUrl = carteData.photo_url || membre?.photo_url || null
+  if (photoUrl) {
+    try {
+      let photoBuffer = null
+      let imageType = 'JPEG'
+
+      // Vérifier si c'est une data URL (base64)
+      if (photoUrl.startsWith('data:image/')) {
+        logInfo('Photo en format base64 détectée')
+        // Extraire le type et les données base64
+        const matches = photoUrl.match(/^data:image\/(\w+);base64,(.+)$/)
+        if (matches) {
+          imageType = matches[1].toUpperCase()
+          const base64Data = matches[2]
+          photoBuffer = Buffer.from(base64Data, 'base64')
+          logInfo('Photo base64 décodée', { imageType, size: photoBuffer.length })
+        }
+      } else {
+        // C'est une URL, télécharger l'image
+        logInfo('Téléchargement photo membre depuis URL', { photoUrl: photoUrl.substring(0, 100) })
+        const fetch = (await import('node-fetch')).default
+        const photoResponse = await fetch(photoUrl)
+        
+        if (photoResponse.ok) {
+          photoBuffer = await photoResponse.buffer()
+          // Détecter le type d'image depuis l'URL ou le buffer
+          if (photoUrl.includes('.png') || photoBuffer[0] === 0x89) {
+            imageType = 'PNG'
+          } else if (photoUrl.includes('.gif') || photoBuffer[0] === 0x47) {
+            imageType = 'GIF'
+          } else if (photoUrl.includes('.webp')) {
+            imageType = 'WEBP'
+          }
+          logInfo('Photo téléchargée depuis URL', { imageType, size: photoBuffer.length })
+        } else {
+          logWarning('Impossible de télécharger la photo', { status: photoResponse.status })
+        }
+      }
+
+      // Ajouter l'image au PDF si disponible
+      if (photoBuffer) {
+        try {
+          doc.image(photoBuffer, photoLeft + 10, photoTop + 10, {
+            width: photoWidth - 20,
+            height: photoHeight - 20,
+            fit: [photoWidth - 20, photoHeight - 20],
+            align: 'center',
+            valign: 'center',
+          })
+          logInfo('Photo incluse dans le PDF avec succès', { imageType })
+        } catch (imageErr) {
+          logWarning('Erreur ajout image au PDF', { error: imageErr.message })
+          // Continuer sans photo
+        }
+      }
+    } catch (photoErr) {
+      logWarning('Erreur traitement photo', { error: photoErr.message })
+      // Continuer sans photo
+    }
+  } else {
+    logInfo('Aucune photo fournie pour la carte membre')
+  }
+
+  // Numéro de membre sous la photo
+  doc.fontSize(10)
+    .fillColor('#475569')
+    .font('Helvetica')
+    .text('Matricule', photoLeft, photoTop + photoHeight + 10, { 
+      width: photoWidth, 
+      align: 'center' 
+    })
+  
+  doc.fontSize(16)
+    .fillColor(textColor)
+    .font('Helvetica-Bold')
+    .text(carteData.numero_membre || membre?.numero_membre || 'XXXX-000', photoLeft, photoTop + photoHeight + 25, { 
+      width: photoWidth, 
+      align: 'center' 
+    })
+
+  // Informations du membre (à droite)
+  const prenom = membre?.prenom || carteData.prenom || ''
+  const nom = membre?.nom || carteData.nom || ''
+  const numeroMembre = carteData.numero_membre || membre?.numero_membre || ''
+  const dateEmission = carteData.date_emission || new Date().toISOString().split('T')[0]
+  const dateValidite = carteData.date_validite || null
+  const statutCarte = carteData.statut_carte || 'Membre actif'
+  const fonction = carteData.fonction || membre?.fonction || ''
+  const pays = carteData.pays || membre?.pays || ''
+  const ville = carteData.ville || membre?.ville || ''
+  const section = pays ? `${pays}${ville ? ` / ${ville}` : ''}` : 'France'
+
+  // Nom du membre (grand)
+  doc.fontSize(40)
+    .fillColor(textColor)
+    .font('Helvetica-Bold')
+    .text(`${prenom} ${nom.toUpperCase()}`, infoLeft, contentTop + 20, { 
+      width: pageWidth - infoLeft - 30 
+    })
+
+  // Fonction
+  if (fonction) {
+    doc.fontSize(20)
+      .fillColor('#3b82f6')
+      .font('Helvetica')
+      .text(fonction, infoLeft, contentTop + 70, { 
+        width: pageWidth - infoLeft - 30 
+      })
+  }
+
+  // Informations détaillées
+  let infoY = contentTop + 120
+
+  // Statut
+  doc.fontSize(10)
+    .fillColor('#475569')
+    .font('Helvetica')
+    .text('STATUT', infoLeft, infoY, { width: 150 })
+  
+  doc.fontSize(16)
+    .fillColor(textColor)
+    .font('Helvetica-Bold')
+    .text(statutCarte, infoLeft, infoY + 15, { width: 150 })
+
+  // Section
+  doc.fontSize(10)
+    .fillColor('#475569')
+    .font('Helvetica')
+    .text('SECTION', infoLeft + 200, infoY, { width: 150 })
+  
+  doc.fontSize(16)
+    .fillColor(textColor)
+    .font('Helvetica-Bold')
+    .text(section, infoLeft + 200, infoY + 15, { width: 150 })
+
+  // Validité
+  infoY += 60
+  doc.fontSize(10)
+    .fillColor('#475569')
+    .font('Helvetica')
+    .text('VALIDITÉ', infoLeft, infoY, { width: pageWidth - infoLeft - 30 })
+  
+  if (dateEmission && dateValidite) {
+    const dateEmissionFR = new Date(dateEmission + 'T00:00:00').toLocaleDateString('fr-FR', { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric' 
+    })
+    const dateValiditeFR = new Date(dateValidite + 'T00:00:00').toLocaleDateString('fr-FR', { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric' 
+    })
+    doc.fontSize(16)
+      .fillColor(textColor)
+      .font('Helvetica-Bold')
+      .text(`Du ${dateEmissionFR} au ${dateValiditeFR}`, infoLeft, infoY + 15, { 
+        width: pageWidth - infoLeft - 30 
+      })
+  }
+
+  // Signature et date en bas
+  const footerY = pageHeight - 80
+  doc.fontSize(10)
+    .fillColor('#475569')
+    .font('Helvetica')
+    .text('Émis le', infoLeft, footerY, { width: 200 })
+  
+  if (dateEmission) {
+    const dateEmissionFR = new Date(dateEmission + 'T00:00:00').toLocaleDateString('fr-FR', { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric' 
+    })
+    doc.fontSize(12)
+      .fillColor(textColor)
+      .font('Helvetica-Bold')
+      .text(dateEmissionFR, infoLeft, footerY + 15, { width: 200 })
+  }
+
+  // Barre de couleur en bas
+  doc.rect(0, pageHeight - 10, pageWidth, 10)
+    .fill('#3b82f6')
+
+  doc.end()
+
+  const buffer = await new Promise((resolve, reject) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)))
+    doc.on('error', reject)
+  })
+
+  return buffer
+}
+
+/**
+ * Upload le PDF sur Google Drive via Google Apps Script
+ */
+async function uploadCartePDFToDrive(pdfBuffer, numeroMembre) {
+  const APPSCRIPT_WEBHOOK_URL = process.env.APPSCRIPT_CONTACT_WEBHOOK_URL || ''
+  const APPSCRIPT_WEBHOOK_TOKEN = process.env.APPSCRIPT_CONTACT_TOKEN || ''
+  const GOOGLE_DRIVE_FOLDER_ID = '1iSFImqsc4AeDFeTesNpDl8uIsi1ocdx6'
+
+  if (!APPSCRIPT_WEBHOOK_URL) {
+    logWarning('Apps Script webhook non configuré, upload PDF ignoré')
+    return null
+  }
+
+  try {
+    // Convertir le buffer en base64
+    const pdfBase64 = pdfBuffer.toString('base64')
+    const fileName = `CARTE-${numeroMembre}.pdf`
+
+    const payload = {
+      type: 'upload_pdf',
+      folderId: GOOGLE_DRIVE_FOLDER_ID,
+      fileName: fileName,
+      fileData: pdfBase64,
+      mimeType: 'application/pdf',
+      token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+    }
+
+    logInfo('Upload PDF carte membre vers Google Drive', {
+      fileName,
+      folderId: GOOGLE_DRIVE_FOLDER_ID,
+      size: `${(pdfBuffer.length / 1024).toFixed(2)} KB`,
+      webhookUrl: APPSCRIPT_WEBHOOK_URL ? 'Configuré' : 'Non configuré',
+      hasToken: !!APPSCRIPT_WEBHOOK_TOKEN,
+      payloadSize: `${(JSON.stringify(payload).length / 1024).toFixed(2)} KB`,
+    })
+
+    if (!APPSCRIPT_WEBHOOK_URL) {
+      logError('APPSCRIPT_WEBHOOK_URL non configuré - Impossible d\'uploader le PDF')
+      return null
+    }
+
+    const fetch = (await import('node-fetch')).default
+    
+    logInfo('Envoi requête vers Google Apps Script', {
+      url: APPSCRIPT_WEBHOOK_URL.substring(0, 50) + '...',
+      method: 'POST',
+      hasToken: !!APPSCRIPT_WEBHOOK_TOKEN,
+    })
+    
+    const response = await fetch(APPSCRIPT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(APPSCRIPT_WEBHOOK_TOKEN && { 'x-contact-token': APPSCRIPT_WEBHOOK_TOKEN }),
+      },
+      body: JSON.stringify(payload),
+    })
+
+    logInfo('Réponse reçue de Google Apps Script', {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok,
+    })
+
+    const responseText = await response.text()
+    
+    if (!response.ok) {
+      logError('Erreur upload PDF vers Google Drive', {
+        status: response.status,
+        statusText: response.statusText,
+        body: responseText.substring(0, 500),
+      })
+      return null
+    }
+
+    try {
+      logInfo('Parsing réponse Google Apps Script', {
+        responseLength: responseText.length,
+        preview: responseText.substring(0, 200),
+      })
+      
+      const responseData = JSON.parse(responseText)
+      
+      logInfo('Réponse parsée', {
+        success: responseData.success,
+        hasFileUrl: !!responseData.fileUrl,
+        message: responseData.message,
+        error: responseData.error,
+      })
+      
+      if (responseData.success && responseData.fileUrl) {
+        logInfo('PDF uploadé avec succès sur Google Drive', {
+          fileName,
+          fileUrl: responseData.fileUrl,
+          fileId: responseData.fileId,
+          folderId: responseData.folderId,
+        })
+        return responseData.fileUrl
+      } else {
+        logWarning('Upload PDF échoué - Réponse indique échec', {
+          message: responseData.message,
+          error: responseData.error,
+          success: responseData.success,
+        })
+        return null
+      }
+    } catch (parseErr) {
+      logError('Erreur parsing réponse upload PDF', {
+        error: parseErr.message,
+        responseText: responseText.substring(0, 500),
+        responseLength: responseText.length,
+      })
+      return null
+    }
+  } catch (err) {
+    logError('Exception upload PDF vers Google Drive', err)
+    return null
+  }
+}
+
+/**
  * Crée une nouvelle carte membre
  */
 export async function createCarteMembre(carteData) {
   try {
+    logInfo('createCarteMembre appelé', { 
+      carteDataKeys: Object.keys(carteData),
+      membre_id: carteData.membre_id,
+      numero_membre: carteData.numero_membre,
+    })
+    
     let membre = null
     if (carteData.membre_id) {
-      membre = await fetchMemberById(carteData.membre_id)
+      // Récupérer toutes les informations du membre pour la carte
+      logInfo('Récupération membre par ID', { membre_id: carteData.membre_id })
+      const { data, error } = await supabaseAdhesion
+        .from('members')
+        .select('*')
+        .eq('id', carteData.membre_id)
+        .maybeSingle()
+      if (error) {
+        logError('fetchMemberById error', error)
+        throw new Error("Impossible de récupérer le membre associé à la carte")
+      }
+      membre = data
+      logInfo('Membre récupéré par ID', { 
+        membreId: membre?.id, 
+        numeroMembre: membre?.numero_membre,
+        nom: membre?.nom,
+        prenom: membre?.prenom,
+      })
     } else if (carteData.numero_membre) {
-      membre = await fetchMemberByNumero(carteData.numero_membre)
+      // Récupérer toutes les informations du membre pour la carte
+      logInfo('Récupération membre par numéro', { numero_membre: carteData.numero_membre })
+      const { data, error } = await supabaseAdhesion
+        .from('members')
+        .select('*')
+        .eq('numero_membre', carteData.numero_membre)
+        .maybeSingle()
+      if (error) {
+        logError('fetchMemberByNumero error', error)
+        throw new Error("Impossible de récupérer le membre associé à la carte")
+      }
+      membre = data
+      logInfo('Membre récupéré par numéro', { 
+        membreId: membre?.id, 
+        numeroMembre: membre?.numero_membre,
+        nom: membre?.nom,
+        prenom: membre?.prenom,
+      })
+    } else {
+      logWarning('Aucun membre_id ni numero_membre fourni dans carteData', { carteData })
     }
 
     const numeroMembre = carteData.numero_membre || membre?.numero_membre
     if (!numeroMembre) {
+      logError('Numéro de membre manquant', { 
+        carteData,
+        membre,
+        membreId: membre?.id,
+      })
       throw new Error('Le numéro de membre est obligatoire pour créer une carte')
     }
+    
+    logInfo('Numéro de membre trouvé', { numeroMembre })
 
     const pays = carteData.pays || membre?.pays || null
     const tarifInfo = getTarifInfoForCountry(pays)
 
-    const { data, error } = await supabaseTresorerie
-      .from('cartes_membres')
-      .insert({
-        numero_membre: numeroMembre,
-        date_emission: carteData.date_emission || null,
-        date_validite: carteData.date_validite || null,
-        pays,
-        statut_carte: carteData.statut_carte || null,
-        statut_paiement: carteData.statut_paiement || null,
-        lien_pdf: carteData.lien_pdf || null,
+    // Générer le PDF de la carte
+    let lienPdf = null
+    try {
+      logInfo('Génération PDF carte membre', { numeroMembre, membreId: membre?.id })
+      const pdfBuffer = await generateCarteMembrePDF(membre, carteData)
+      logInfo('PDF généré avec succès', { 
+        numeroMembre, 
+        size: `${(pdfBuffer.length / 1024).toFixed(2)} KB` 
       })
-      .select()
-      .single()
-
-    if (error) {
-      logError('createCarteMembre error', error)
-      throw new Error('Erreur lors de la création de la carte membre')
+      
+      lienPdf = await uploadCartePDFToDrive(pdfBuffer, numeroMembre)
+      
+      if (!lienPdf) {
+        logWarning('PDF non uploadé, carte créée sans lien PDF', { 
+          numeroMembre,
+          note: 'Vérifiez les logs pour plus de détails sur l\'erreur d\'upload'
+        })
+      } else {
+        logInfo('PDF uploadé avec succès', { numeroMembre, lienPdf })
+      }
+    } catch (pdfErr) {
+      logError('Erreur génération/upload PDF carte membre', {
+        numeroMembre,
+        error: pdfErr.message,
+        stack: pdfErr.stack,
+      })
+      // Ne pas bloquer la création de la carte si le PDF échoue
+      // mais logger l'erreur pour diagnostic
     }
 
-    logInfo('Carte membre créée', { id: data.id })
+    logInfo('Sauvegarde carte membre dans la base de données', {
+      numeroMembre,
+      lienPdf,
+      hasLienPdf: !!lienPdf,
+    })
+
+    // Vérifier si la carte existe déjà
+    const { data: existingCarte } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .eq('numero_membre', numeroMembre)
+      .maybeSingle()
+
+    let data
+    let error
+
+    if (existingCarte) {
+      // Mettre à jour la carte existante
+      logInfo('Carte existante trouvée, mise à jour', {
+        carteId: existingCarte.id,
+        numeroMembre,
+        existingLienPdf: existingCarte.lien_pdf,
+        newLienPdf: lienPdf,
+      })
+      
+      const updateData = {
+        ...(carteData.date_emission && { date_emission: carteData.date_emission }),
+        ...(carteData.date_validite && { date_validite: carteData.date_validite }),
+        ...(pays && { pays }),
+        ...(carteData.statut_carte && { statut_carte: carteData.statut_carte }),
+        ...(carteData.statut_paiement !== undefined && { statut_paiement: carteData.statut_paiement }),
+        ...(lienPdf && { lien_pdf: lienPdf }), // Mettre à jour le lien PDF si généré
+      }
+
+      const result = await supabaseTresorerie
+        .from('cartes_membres')
+        .update(updateData)
+        .eq('id', existingCarte.id)
+        .select()
+        .single()
+
+      data = result.data
+      error = result.error
+    } else {
+      // Créer une nouvelle carte
+      const result = await supabaseTresorerie
+        .from('cartes_membres')
+        .insert({
+          numero_membre: numeroMembre,
+          date_emission: carteData.date_emission || null,
+          date_validite: carteData.date_validite || null,
+          pays,
+          statut_carte: carteData.statut_carte || null,
+          statut_paiement: carteData.statut_paiement || null,
+          lien_pdf: lienPdf || carteData.lien_pdf || null,
+        })
+        .select()
+        .single()
+
+      data = result.data
+      error = result.error
+    }
+
+    if (error) {
+      logError('createCarteMembre error - Erreur insertion/mise à jour base de données', {
+        error,
+        errorCode: error.code,
+        errorMessage: error.message,
+        errorDetails: error.details,
+        numeroMembre,
+        lienPdf,
+        isUpdate: !!existingCarte,
+      })
+      
+      // Si c'est une erreur de contrainte unique, c'est que la carte existe déjà
+      if (error.code === '23505') {
+        logWarning('Carte existe déjà, tentative de mise à jour', { numeroMembre })
+        // Essayer de mettre à jour la carte existante
+        try {
+          const updateResult = await supabaseTresorerie
+            .from('cartes_membres')
+            .update({
+              ...(carteData.date_emission && { date_emission: carteData.date_emission }),
+              ...(carteData.date_validite && { date_validite: carteData.date_validite }),
+              ...(pays && { pays }),
+              ...(carteData.statut_carte && { statut_carte: carteData.statut_carte }),
+              ...(carteData.statut_paiement !== undefined && { statut_paiement: carteData.statut_paiement }),
+              ...(lienPdf && { lien_pdf: lienPdf }),
+            })
+            .eq('numero_membre', numeroMembre)
+            .select()
+            .single()
+          
+          if (updateResult.error) {
+            throw updateResult.error
+          }
+          
+          data = updateResult.data
+          error = null
+          logInfo('Carte mise à jour avec succès après erreur de contrainte', { numeroMembre, carteId: data.id })
+        } catch (updateErr) {
+          logError('Erreur lors de la mise à jour après contrainte unique', { error: updateErr })
+          throw new Error(`Erreur lors de la création/mise à jour de la carte membre: ${error.message}`)
+        }
+      } else {
+        throw new Error(`Erreur lors de la création/mise à jour de la carte membre: ${error.message}`)
+      }
+    }
+
+    logInfo('Carte membre créée avec succès', { 
+      id: data.id, 
+      numeroMembre: data.numero_membre,
+      lienPdf: data.lien_pdf,
+      lienPdfSaved: !!data.lien_pdf,
+    })
+    
+    // Vérifier que le lien PDF a bien été sauvegardé
+    if (lienPdf && !data.lien_pdf) {
+      logError('ATTENTION: lienPdf généré mais non sauvegardé dans la base de données', {
+        lienPdf,
+        savedLienPdf: data.lien_pdf,
+        carteId: data.id,
+      })
+    }
     return {
       ...data,
       devise: tarifInfo.devise,
@@ -1339,6 +1933,245 @@ export async function createCarteMembre(carteData) {
     }
   } catch (err) {
     logError('createCarteMembre exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour le lien PDF d'une carte en cherchant le fichier sur Google Drive
+ */
+export async function updateCartePDFLink(numeroMembre) {
+  try {
+    logInfo('Mise à jour lien PDF pour carte', { numeroMembre })
+    
+    // Récupérer la carte
+    const { data: carte, error: carteError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .eq('numero_membre', numeroMembre)
+      .maybeSingle()
+
+    if (carteError) {
+      logError('Erreur récupération carte', { numeroMembre, error: carteError })
+      throw new Error('Erreur lors de la récupération de la carte')
+    }
+
+    if (!carte) {
+      throw new Error('Carte non trouvée')
+    }
+
+    // Le fichier devrait être sur Google Drive avec le nom CARTE-{numeroMembre}.pdf
+    // On ne peut pas le récupérer directement depuis le backend, mais on peut
+    // demander à Google Apps Script de le chercher et retourner le lien
+    const APPSCRIPT_WEBHOOK_URL = process.env.APPSCRIPT_CONTACT_WEBHOOK_URL || ''
+    const APPSCRIPT_WEBHOOK_TOKEN = process.env.APPSCRIPT_CONTACT_TOKEN || ''
+    const GOOGLE_DRIVE_FOLDER_ID = '1iSFImqsc4AeDFeTesNpDl8uIsi1ocdx6'
+
+    if (!APPSCRIPT_WEBHOOK_URL) {
+      throw new Error('APPSCRIPT_WEBHOOK_URL non configuré')
+    }
+
+    const fileName = `CARTE-${numeroMembre}.pdf`
+    const payload = {
+      type: 'find_pdf_file',
+      folderId: GOOGLE_DRIVE_FOLDER_ID,
+      fileName: fileName,
+      token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+    }
+
+    logInfo('Recherche fichier PDF sur Google Drive', { fileName, folderId: GOOGLE_DRIVE_FOLDER_ID })
+
+    const fetch = (await import('node-fetch')).default
+    const response = await fetch(APPSCRIPT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+
+    const responseText = await response.text()
+    
+    if (!response.ok) {
+      logError('Erreur recherche PDF sur Google Drive', {
+        status: response.status,
+        body: responseText,
+      })
+      throw new Error('Erreur lors de la recherche du PDF sur Google Drive')
+    }
+
+    try {
+      const responseData = JSON.parse(responseText)
+      if (responseData.success && responseData.fileUrl) {
+        // Mettre à jour la carte avec le lien
+        const { data: updatedCarte, error: updateError } = await supabaseTresorerie
+          .from('cartes_membres')
+          .update({ lien_pdf: responseData.fileUrl })
+          .eq('id', carte.id)
+          .select()
+          .single()
+
+        if (updateError) {
+          logError('Erreur mise à jour carte avec lien PDF', { carteId: carte.id, error: updateError })
+          throw new Error('Erreur lors de la mise à jour de la carte')
+        }
+
+        logInfo('Lien PDF mis à jour avec succès', { 
+          carteId: carte.id, 
+          numeroMembre,
+          lienPdf: responseData.fileUrl,
+        })
+
+        return updatedCarte
+      } else {
+        throw new Error(responseData.message || 'PDF non trouvé sur Google Drive')
+      }
+    } catch (parseErr) {
+      logError('Erreur parsing réponse recherche PDF', {
+        error: parseErr.message,
+        responseText: responseText.substring(0, 500),
+      })
+      throw new Error('Erreur lors de la recherche du PDF')
+    }
+  } catch (err) {
+    logError('updateCartePDFLink exception', err)
+    throw err
+  }
+}
+
+/**
+ * Génère le PDF pour une carte existante qui n'a pas de PDF
+ */
+export async function generatePDFForCarte(carteId) {
+  try {
+    logInfo('Génération PDF pour carte existante', { carteId })
+    
+    // Récupérer la carte
+    const { data: carte, error: carteError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .eq('id', carteId)
+      .single()
+
+    if (carteError || !carte) {
+      logError('Carte non trouvée', { carteId, error: carteError })
+      throw new Error('Carte non trouvée')
+    }
+
+    // Récupérer le membre
+    const { data: membre, error: membreError } = await supabaseAdhesion
+      .from('members')
+      .select('*')
+      .eq('numero_membre', carte.numero_membre)
+      .maybeSingle()
+
+    if (membreError) {
+      logError('Erreur récupération membre', { numeroMembre: carte.numero_membre, error: membreError })
+      throw new Error('Impossible de récupérer le membre')
+    }
+
+    if (!membre) {
+      logError('Membre non trouvé', { numeroMembre: carte.numero_membre })
+      throw new Error('Membre non trouvé')
+    }
+
+    // Générer le PDF
+    logInfo('Génération PDF', { numeroMembre: carte.numero_membre })
+    const pdfBuffer = await generateCarteMembrePDF(membre, carte)
+    logInfo('PDF généré', { 
+      numeroMembre: carte.numero_membre, 
+      size: `${(pdfBuffer.length / 1024).toFixed(2)} KB` 
+    })
+
+    // Uploader le PDF
+    const lienPdf = await uploadCartePDFToDrive(pdfBuffer, carte.numero_membre)
+
+    if (!lienPdf) {
+      logWarning('PDF non uploadé', { numeroMembre: carte.numero_membre })
+      throw new Error('Échec de l\'upload du PDF')
+    }
+
+    // Mettre à jour la carte avec le lien PDF
+    const { data: updatedCarte, error: updateError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .update({ lien_pdf: lienPdf })
+      .eq('id', carteId)
+      .select()
+      .single()
+
+    if (updateError) {
+      logError('Erreur mise à jour carte avec lien PDF', { carteId, error: updateError })
+      throw new Error('Erreur lors de la mise à jour de la carte')
+    }
+
+    logInfo('PDF généré et enregistré avec succès', { 
+      carteId, 
+      numeroMembre: carte.numero_membre,
+      lienPdf 
+    })
+
+    return updatedCarte
+  } catch (err) {
+    logError('generatePDFForCarte exception', err)
+    throw err
+  }
+}
+
+/**
+ * Génère les PDF pour toutes les cartes qui n'ont pas de PDF
+ */
+export async function generateMissingPDFs() {
+  try {
+    logInfo('Génération PDF manquants - Début')
+    
+    // Récupérer toutes les cartes sans PDF
+    const { data: cartes, error } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .is('lien_pdf', null)
+
+    if (error) {
+      logError('Erreur récupération cartes sans PDF', error)
+      throw new Error('Erreur lors de la récupération des cartes')
+    }
+
+    logInfo(`Trouvé ${cartes?.length || 0} cartes sans PDF`)
+
+    const results = {
+      success: 0,
+      errors: 0,
+      details: [],
+    }
+
+    for (const carte of cartes || []) {
+      try {
+        await generatePDFForCarte(carte.id)
+        results.success++
+        results.details.push({
+          carteId: carte.id,
+          numeroMembre: carte.numero_membre,
+          status: 'success',
+        })
+      } catch (err) {
+        results.errors++
+        results.details.push({
+          carteId: carte.id,
+          numeroMembre: carte.numero_membre,
+          status: 'error',
+          error: err.message,
+        })
+        logError('Erreur génération PDF pour carte', {
+          carteId: carte.id,
+          numeroMembre: carte.numero_membre,
+          error: err.message,
+        })
+      }
+    }
+
+    logInfo('Génération PDF manquants - Terminé', results)
+    return results
+  } catch (err) {
+    logError('generateMissingPDFs exception', err)
     throw err
   }
 }

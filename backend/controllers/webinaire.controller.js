@@ -15,8 +15,13 @@ import {
   deletePresentateur,
   getWebinaireStats,
 } from '../services/webinaire.service.js'
+import { supabaseWebinaire } from '../config/supabase.js'
 import { validateId, validatePagination } from '../utils/validators.js'
 import { logError } from '../utils/logger.js'
+import {
+  notifyWebinaireInvitation,
+  notifyWebinaireReminder,
+} from '../services/notifications.service.js'
 
 /**
  * GET /api/webinaire/webinaires
@@ -300,6 +305,150 @@ export async function deleteInscriptionController(req, res) {
     return res.status(400).json({
       success: false,
       message: err.message || 'Erreur lors de la suppression de l\'inscription',
+    })
+  }
+}
+
+/**
+ * POST /api/webinaire/inscriptions/:id/invitation
+ * Envoie un email d'invitation avec le lien d'accès au webinaire
+ */
+export async function sendWebinaireInvitationController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const { access_link } = req.body || {}
+    if (!access_link) {
+      return res.status(400).json({
+        success: false,
+        message: "Le lien d'accès (access_link) est requis",
+      })
+    }
+
+    // Récupérer l'inscription et le webinaire lié
+    const { data: inscription, error } = await supabaseWebinaire
+      .from('inscriptions')
+      .select('*')
+      .eq('id', req.params.id)
+      .maybeSingle()
+
+    if (error) {
+      throw new Error("Erreur lors de la récupération de l'inscription webinaire")
+    }
+
+    if (!inscription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inscription introuvable',
+      })
+    }
+
+    const { data: webinaire, error: webinaireError } = await supabaseWebinaire
+      .from('webinaires')
+      .select('titre, date_webinaire, heure_debut')
+      .eq('id', inscription.webinaire_id)
+      .maybeSingle()
+
+    if (webinaireError) {
+      throw new Error('Erreur lors de la récupération du webinaire')
+    }
+
+    await notifyWebinaireInvitation({
+      email: inscription.email,
+      prenom: inscription.prenom,
+      nom: inscription.nom,
+      webinaire_title: webinaire?.titre || 'Webinaire ASGF',
+      webinaire_date: webinaire?.date_webinaire || '',
+      webinaire_time: webinaire?.heure_debut ? webinaire.heure_debut.substring(0, 5) : '',
+      access_link,
+    })
+
+    return res.json({
+      success: true,
+      message: 'Invitation webinaire envoyée avec succès',
+    })
+  } catch (err) {
+    logError('sendWebinaireInvitationController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Erreur lors de l'envoi de l'invitation webinaire",
+    })
+  }
+}
+
+/**
+ * POST /api/webinaire/webinaires/:id/reminder
+ * Envoie un rappel à toutes les inscriptions confirmées d'un webinaire
+ */
+export async function sendWebinaireReminderController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const { kind = 'generic', access_link } = req.body || {}
+
+    const { data: inscriptions, error } = await supabaseWebinaire
+      .from('inscriptions')
+      .select('*')
+      .eq('webinaire_id', req.params.id)
+      .eq('statut', 'confirmed')
+
+    if (error) {
+      throw new Error('Erreur lors de la récupération des inscriptions webinaire')
+    }
+
+    if (!inscriptions || inscriptions.length === 0) {
+      return res.json({
+        success: true,
+        message: 'Aucune inscription confirmée pour ce webinaire',
+      })
+    }
+
+    const { data: webinaire, error: webinaireError } = await supabaseWebinaire
+      .from('webinaires')
+      .select('titre, date_webinaire, heure_debut')
+      .eq('id', req.params.id)
+      .maybeSingle()
+
+    if (webinaireError) {
+      throw new Error('Erreur lors de la récupération du webinaire')
+    }
+
+    for (const inscription of inscriptions) {
+      await notifyWebinaireReminder({
+        kind,
+        email: inscription.email,
+        prenom: inscription.prenom,
+        nom: inscription.nom,
+        webinaire_title: webinaire?.titre || 'Webinaire ASGF',
+        webinaire_date: webinaire?.date_webinaire || '',
+        webinaire_time: webinaire?.heure_debut ? webinaire.heure_debut.substring(0, 5) : '',
+        access_link,
+      })
+    }
+
+    return res.json({
+      success: true,
+      message: 'Rappel webinaire envoyé aux participants',
+    })
+  } catch (err) {
+    logError('sendWebinaireReminderController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de lenvoi du rappel webinaire',
     })
   }
 }

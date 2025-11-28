@@ -1,7 +1,7 @@
 // backend/services/admin.service.js
 import { supabase } from '../config/supabase.js'
 import { hashPassword } from '../utils/hashPassword.js'
-import { ALL_MODULES } from '../config/constants.js'
+import { ALL_MODULES, ROLE_TYPES, MODULE_DROITS } from '../config/constants.js'
 import { logError, logInfo } from '../utils/logger.js'
 
 /**
@@ -11,7 +11,7 @@ export async function getAllAdmins({ page = 1, limit = 20, search = '' }) {
   try {
     let query = supabase
       .from('admins')
-      .select('id, numero_membre, email, role_global, is_master, is_active, created_at', { count: 'exact' })
+      .select('id, numero_membre, email, role_type, super_scope, is_master, is_active, disabled_until, disabled_reason, created_at, admins_modules(module, droit, scope_ids)', { count: 'exact' })
       .order('created_at', { ascending: false })
 
     // Recherche par email ou numéro membre
@@ -31,8 +31,17 @@ export async function getAllAdmins({ page = 1, limit = 20, search = '' }) {
       throw new Error('Erreur lors de la récupération des admins')
     }
 
+    const admins = (data || []).map(({ admins_modules = [], ...admin }) => ({
+      ...admin,
+      modules: admins_modules.map((m) => ({
+        module: m.module,
+        droit: m.droit,
+        scope_ids: m.scope_ids || [],
+      })),
+    }))
+
     return {
-      admins: data || [],
+      admins,
       pagination: {
         page,
         limit,
@@ -54,7 +63,7 @@ export async function getAdminById(adminId) {
     // Récupérer l'admin
     const { data: admin, error: adminError } = await supabase
       .from('admins')
-      .select('id, numero_membre, email, role_global, is_master, is_active, created_at')
+      .select('id, numero_membre, email, role_type, super_scope, is_master, is_active, disabled_until, disabled_reason, created_at, admins_modules(module, droit, scope_ids)')
       .eq('id', adminId)
       .maybeSingle()
 
@@ -68,18 +77,17 @@ export async function getAdminById(adminId) {
     }
 
     // Récupérer les modules de l'admin
-    const { data: modules, error: modulesError } = await supabase
-      .from('admins_modules')
-      .select('module')
-      .eq('admin_id', adminId)
+    const modules = (admin.admins_modules || []).map((m) => ({
+      module: m.module,
+      droit: m.droit,
+      scope_ids: m.scope_ids || [],
+    }))
 
-    if (modulesError) {
-      logError('getAdminById modules error', modulesError)
-    }
+    const { admins_modules, ...rest } = admin
 
     return {
-      ...admin,
-      modules: (modules || []).map((m) => m.module),
+      ...rest,
+      modules,
     }
   } catch (err) {
     logError('getAdminById exception', err)
@@ -92,7 +100,19 @@ export async function getAdminById(adminId) {
  */
 export async function createAdmin(adminData) {
   try {
-    const { numero_membre, email, password, role_global = 'admin', is_master = false, is_active = true, modules = [] } = adminData
+    const {
+      numero_membre,
+      email,
+      password,
+      role_type = ROLE_TYPES.ADMIN,
+      is_master = false,
+      is_active = true,
+      modules = [],
+      super_scope = [],
+      membre_id = null,
+      disabled_until = null,
+      disabled_reason = null,
+    } = adminData
 
     // Vérifier si l'email ou le numéro membre existe déjà
     const { data: existing, error: checkError } = await supabase
@@ -120,11 +140,15 @@ export async function createAdmin(adminData) {
         numero_membre,
         email,
         password_hash,
-        role_global,
+        role_type: is_master ? ROLE_TYPES.SUPERADMIN : role_type,
+        super_scope: is_master ? ALL_MODULES : super_scope,
         is_master,
         is_active,
+        membre_id,
+        disabled_until,
+        disabled_reason,
       })
-      .select('id, numero_membre, email, role_global, is_master, is_active, created_at')
+      .select('id, numero_membre, email, role_type, super_scope, is_master, is_active, created_at, disabled_until, disabled_reason')
       .single()
 
     if (createError) {
@@ -153,12 +177,12 @@ export async function createAdmin(adminData) {
  */
 export async function updateAdmin(adminId, updateData) {
   try {
-    const { email, role_global, is_master, is_active } = updateData
+    const { email } = updateData
 
     // Vérifier si l'admin existe
     const { data: existing, error: checkError } = await supabase
       .from('admins')
-      .select('id')
+      .select('id, is_master, role_type, super_scope')
       .eq('id', adminId)
       .maybeSingle()
 
@@ -193,16 +217,48 @@ export async function updateAdmin(adminId, updateData) {
     // Construire l'objet de mise à jour
     const updateObj = {}
     if (email !== undefined) updateObj.email = email
-    if (role_global !== undefined) updateObj.role_global = role_global
-    if (is_master !== undefined) updateObj.is_master = is_master
-    if (is_active !== undefined) updateObj.is_active = is_active
+    if (updateData.numero_membre !== undefined) updateObj.numero_membre = updateData.numero_membre
+    if (updateData.membre_id !== undefined) updateObj.membre_id = updateData.membre_id
+    if (updateData.is_active !== undefined) updateObj.is_active = updateData.is_active
+    if (updateData.disabled_reason !== undefined) updateObj.disabled_reason = updateData.disabled_reason || null
+    if (updateData.disabled_until !== undefined) updateObj.disabled_until = updateData.disabled_until
+
+    let nextIsMaster = existing.is_master
+    if (updateData.is_master !== undefined) {
+      nextIsMaster = updateData.is_master
+      updateObj.is_master = nextIsMaster
+    }
+
+    let nextRoleType = existing.role_type
+    if (updateData.role_type) {
+      nextRoleType = updateData.role_type
+    }
+    if (nextIsMaster) {
+      nextRoleType = ROLE_TYPES.SUPERADMIN
+      updateObj.super_scope = ALL_MODULES
+    } else if (updateData.super_scope !== undefined) {
+      updateObj.super_scope = updateData.super_scope
+    }
+    updateObj.role_type = nextRoleType
+
+    if (updateData.password) {
+      updateObj.password_hash = await hashPassword(updateData.password)
+    }
+
+    // Réactivation : on nettoie les champs de suspension
+    if (updateData.is_active === true || (updateData.disabled_until !== undefined && !updateData.disabled_until)) {
+      updateObj.disabled_until = null
+      if (updateData.disabled_reason === undefined) {
+        updateObj.disabled_reason = null
+      }
+    }
 
     // Mettre à jour l'admin
     const { data: admin, error: updateError } = await supabase
       .from('admins')
       .update(updateObj)
       .eq('id', adminId)
-      .select('id, numero_membre, email, role_global, is_master, is_active, created_at')
+      .select('id, numero_membre, email, role_type, super_scope, is_master, is_active, created_at, disabled_until, disabled_reason')
       .single()
 
     if (updateError) {
@@ -224,11 +280,24 @@ export async function updateAdmin(adminId, updateData) {
 /**
  * Désactive un admin (soft delete)
  */
-export async function deactivateAdmin(adminId) {
+export async function deactivateAdmin(adminId, options = {}) {
   try {
+    const { reason = 'Compte désactivé par un superadmin', disabled_until = null } = options
+    const updatePayload = {
+      disabled_reason: reason,
+    }
+
+    if (disabled_until) {
+      updatePayload.disabled_until = disabled_until
+      updatePayload.is_active = true
+    } else {
+      updatePayload.is_active = false
+      updatePayload.disabled_until = null
+    }
+
     const { data, error } = await supabase
       .from('admins')
-      .update({ is_active: false })
+      .update(updatePayload)
       .eq('id', adminId)
       .select('id')
       .single()
@@ -242,8 +311,11 @@ export async function deactivateAdmin(adminId) {
       throw new Error('Admin introuvable')
     }
 
-    logInfo('Admin désactivé', { id: adminId })
-    return { success: true, message: 'Admin désactivé avec succès' }
+    logInfo('Admin désactivé', { id: adminId, disabled_until })
+    const message = disabled_until
+      ? `Admin suspendu jusqu'au ${new Date(disabled_until).toLocaleString('fr-FR')}`
+      : 'Admin désactivé avec succès'
+    return { success: true, message }
   } catch (err) {
     logError('deactivateAdmin exception', err)
     throw err
@@ -257,7 +329,7 @@ export async function getAdminModules(adminId) {
   try {
     const { data, error } = await supabase
       .from('admins_modules')
-      .select('module')
+      .select('module, droit, scope_ids')
       .eq('admin_id', adminId)
 
     if (error) {
@@ -265,7 +337,11 @@ export async function getAdminModules(adminId) {
       throw new Error('Erreur lors de la récupération des modules')
     }
 
-    return (data || []).map((m) => m.module)
+    return (data || []).map((m) => ({
+      module: m.module,
+      droit: m.droit,
+      scope_ids: m.scope_ids || [],
+    }))
   } catch (err) {
     logError('getAdminModules exception', err)
     throw err
@@ -298,10 +374,26 @@ export async function updateAdminModules(adminId, modules) {
       return ALL_MODULES
     }
 
-    // Valider les modules
-    const validModules = modules.filter((m) => ALL_MODULES.includes(m))
-    if (validModules.length !== modules.length) {
-      throw new Error('Certains modules sont invalides')
+    // Normaliser et valider la charge utile
+    const normalizedModules = modules.map((entry) => {
+      if (typeof entry === 'string') {
+        return { module: entry, droit: MODULE_DROITS.FULL, scope_ids: [] }
+      }
+      return {
+        module: entry.module,
+        droit: entry.droit || MODULE_DROITS.FULL,
+        scope_ids: entry.scope_ids || [],
+      }
+    })
+
+    const invalidModule = normalizedModules.find((m) => !ALL_MODULES.includes(m.module))
+    if (invalidModule) {
+      throw new Error(`Module invalide: ${invalidModule.module}`)
+    }
+
+    const invalidDroit = normalizedModules.find((m) => !Object.values(MODULE_DROITS).includes(m.droit))
+    if (invalidDroit) {
+      throw new Error(`Droit invalide pour ${invalidDroit.module}`)
     }
 
     // Supprimer tous les modules existants
@@ -316,10 +408,12 @@ export async function updateAdminModules(adminId, modules) {
     }
 
     // Ajouter les nouveaux modules
-    if (validModules.length > 0) {
-      const modulesToInsert = validModules.map((module) => ({
+    if (normalizedModules.length > 0) {
+      const modulesToInsert = normalizedModules.map((module) => ({
         admin_id: adminId,
-        module,
+        module: module.module,
+        droit: module.droit,
+        scope_ids: module.scope_ids,
       }))
 
       const { error: insertError } = await supabase
@@ -332,8 +426,9 @@ export async function updateAdminModules(adminId, modules) {
       }
     }
 
-    logInfo('Modules admin mis à jour', { id: adminId, modules: validModules })
-    return validModules
+    const formatted = normalizedModules.map((m) => m.module)
+    logInfo('Modules admin mis à jour', { id: adminId, modules: formatted })
+    return normalizedModules
   } catch (err) {
     logError('updateAdminModules exception', err)
     throw err

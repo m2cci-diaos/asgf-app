@@ -18,6 +18,12 @@ import tresorerieRoutes from './routes/tresorerie.routes.js'
 import secretariatRoutes from './routes/secretariat.routes.js'
 import webinaireRoutes from './routes/webinaire.routes.js'
 import geocodeRoutes from './routes/geocode.routes.js'
+import contactRoutes from './routes/contact.routes.js'
+import publicRoutes from './routes/public.routes.js'
+import {
+  sendFormationInvitationController,
+  sendFormationReminderController,
+} from './controllers/formation.controller.js'
 
 // Import du gestionnaire d'erreurs
 import { errorHandler } from './middlewares/errorHandler.js'
@@ -27,9 +33,10 @@ const app = express()
 
 // Middlewares globaux
 app.use(cors())
-// Augmenter la limite pour permettre l'upload de photos en base64 (jusqu'à 10MB)
-app.use(express.json({ limit: '10mb' }))
-app.use(express.urlencoded({ extended: true, limit: '10mb' }))
+// Augmenter la limite pour permettre l'upload de photos et pièces jointes en base64
+// 3 fichiers de 5MB chacun = ~20MB en base64 (base64 augmente la taille de ~33%)
+app.use(express.json({ limit: '25mb' }))
+app.use(express.urlencoded({ extended: true, limit: '25mb' }))
 
 // Route de test racine
 app.get('/', (req, res) => {
@@ -47,6 +54,26 @@ app.use('/api/tresorerie', tresorerieRoutes)
 app.use('/api/secretariat', secretariatRoutes)
 app.use('/api/webinaire', webinaireRoutes)
 app.use('/api/geocode', geocodeRoutes)
+app.use('/api/contact', contactRoutes)
+app.use('/api/public', publicRoutes)
+
+// Routes directes pour les invitations / rappels de formation
+// (assure que ces endpoints existent même si le routeur formation évolue)
+import { requireAuth, requireModule } from './middlewares/auth.js'
+import { MODULES } from './config/constants.js'
+
+app.post(
+  '/api/formation/inscriptions/:id/invitation',
+  requireAuth,
+  requireModule(MODULES.FORMATION),
+  sendFormationInvitationController
+)
+app.post(
+  '/api/formation/sessions/:id/reminder',
+  requireAuth,
+  requireModule(MODULES.FORMATION),
+  sendFormationReminderController
+)
 
 // Log des routes enregistrées (pour debug)
 console.log('📋 Routes enregistrées:')
@@ -60,10 +87,10 @@ console.log('  - /api/tresorerie')
 console.log('  - /api/secretariat')
 console.log('  - /api/webinaire')
 console.log('  - /api/geocode')
+console.log('  - /api/contact')
+console.log('  - /api/public')
 
 // Routes de compatibilité pour l'ancien endpoint /admin/members
-import { requireAuth, requireModule } from './middlewares/auth.js'
-import { MODULES } from './config/constants.js'
 import {
   getPendingMembersController,
   approveMemberController,

@@ -22,6 +22,8 @@ import {
   createFormateurController,
   updateFormateurController,
   deleteFormateurController,
+  sendFormationInvitationController,
+  sendFormationReminderController,
 } from '../controllers/formation.controller.js'
 import { requireAuth, requireModule } from '../middlewares/auth.js'
 import { MODULES } from '../config/constants.js'
@@ -45,6 +47,7 @@ router.delete('/formations/:id', deleteFormation)
 router.get('/formations/:id/inscriptions', getInscriptions)
 router.post('/inscriptions/:id/confirm', confirmInscriptionController)
 router.post('/inscriptions/:id/reject', rejectInscriptionController)
+router.post('/inscriptions/:id/invitation', sendFormationInvitationController)
 router.get('/inscriptions', listInscriptions)
 router.post('/inscriptions', createInscriptionController)
 router.put('/inscriptions/:id', updateInscriptionController)
@@ -55,6 +58,7 @@ router.get('/sessions', listSessions)
 router.post('/sessions', createSessionController)
 router.put('/sessions/:id', updateSessionController)
 router.delete('/sessions/:id', deleteSessionController)
+router.post('/sessions/:id/reminder', sendFormationReminderController)
 
 // Routes pour les formateurs
 router.get('/formateurs', listFormateurs)

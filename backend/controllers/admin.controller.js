@@ -172,7 +172,8 @@ export async function deleteAdmin(req, res) {
       })
     }
 
-    const result = await deactivateAdmin(req.params.id)
+    const { reason, disabled_until } = req.body || {}
+    const result = await deactivateAdmin(req.params.id, { reason, disabled_until })
     return res.json({
       success: true,
       message: result.message,

@@ -2,6 +2,7 @@
 import { verifyToken } from '../utils/jwt.js'
 import { supabase } from '../config/supabase.js'
 import { logError } from '../utils/logger.js'
+import { ROLE_TYPES } from '../config/constants.js'
 
 export async function requireAuth(req, res, next) {
   try {
@@ -35,9 +36,16 @@ export function requireModule(moduleName) {
         return res.status(401).json({ message: 'Non authentifié' })
       }
 
-      // Les master ont accès à tout
+      // Les superadmins ont accès global (masters) ou scoped
       if (req.admin.is_master) {
         return next()
+      }
+
+      if (req.admin.role_type === ROLE_TYPES.SUPERADMIN) {
+        const scopedModules = Array.isArray(req.admin.super_scope) ? req.admin.super_scope : []
+        if (scopedModules.length === 0 || scopedModules.includes(moduleName)) {
+          return next()
+        }
       }
 
       const { data, error } = await supabase

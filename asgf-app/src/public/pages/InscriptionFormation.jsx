@@ -3,6 +3,8 @@ import { useNavigate, useLocation, useParams, Link } from 'react-router-dom'
 import { FormationStyles } from '../components/PageStyles'
 import { supabaseFormation } from '../config/supabase.config'
 
+const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+
 // Styles pour le spinner CSS
 const spinnerStyle = `
   @keyframes spin {
@@ -36,6 +38,7 @@ function InscriptionFormation() {
   })
   const [errors, setErrors] = useState({})
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
 
   // Charger les informations de la formation
   useEffect(() => {
@@ -138,6 +141,9 @@ function InscriptionFormation() {
     if (errors[name]) {
       setErrors({ ...errors, [name]: '' })
     }
+    if (submitError) {
+      setSubmitError('')
+    }
   }
 
   const validate = () => {
@@ -161,6 +167,7 @@ function InscriptionFormation() {
     if (!validate()) return
 
     setIsSubmitting(true)
+    setSubmitError('')
 
     try {
       const dataToInsert = {
@@ -180,20 +187,18 @@ function InscriptionFormation() {
         source: 'site web'
       }
 
-      const { data, error } = await supabaseFormation
-        .from('inscriptions')
-        .insert([dataToInsert])
-        .select()
+      const response = await fetch(`${API_URL}/api/public/formation/inscriptions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(dataToInsert),
+      })
 
-      if (error) {
-        console.error('Erreur Supabase:', error)
-        
-        if (error.code === '23505' && error.message.includes('email')) {
-          alert('Cet email est déjà inscrit à cette formation. Veuillez utiliser un autre email ou contacter l\'ASGF.')
-        } else {
-          alert(`Erreur d'enregistrement : ${error.message}`)
-        }
-        return
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result?.message || "Impossible d'enregistrer votre inscription")
       }
 
       // Rediriger vers la page de succès
@@ -209,8 +214,12 @@ function InscriptionFormation() {
         replace: true
       })
     } catch (err) {
-      console.error('Erreur fatale lors de l\'envoi:', err)
-      alert('Une erreur inattendue est survenue. Veuillez réessayer.')
+      console.error('Erreur lors de l\'inscription formation:', err)
+      setSubmitError(
+        err.message ||
+          "Une erreur inattendue est survenue lors de l'inscription. Veuillez réessayer ou nous contacter."
+      )
+      window.scrollTo({ top: 0, behavior: 'smooth' })
     } finally {
       setIsSubmitting(false)
     }
@@ -437,6 +446,7 @@ function InscriptionFormation() {
           font-size: 1rem;
           transition: all 0.3s ease;
           background: #fafafa;
+          color: #111827;
         }
         .form-group-modern input:focus,
         .form-group-modern select:focus {
@@ -518,6 +528,40 @@ function InscriptionFormation() {
       `}</style>
       
       <section className="inscription-page">
+        {submitError && (
+          <div
+            style={{
+              position: 'fixed',
+              top: '90px',
+              right: '20px',
+              maxWidth: '380px',
+              padding: '0.9rem 1.1rem',
+              borderRadius: '12px',
+              background: 'rgba(239, 68, 68, 0.95)',
+              color: '#fee2e2',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '0.75rem',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.35)',
+              zIndex: 9999,
+            }}
+          >
+            <div style={{ fontSize: '1.4rem', lineHeight: 1 }}>⚠️</div>
+            <div>
+              <h3
+                style={{
+                  margin: 0,
+                  marginBottom: '0.25rem',
+                  fontSize: '0.95rem',
+                  fontWeight: 600,
+                }}
+              >
+                Impossible de finaliser votre inscription
+              </h3>
+              <p style={{ margin: 0, fontSize: '0.9rem' }}>{submitError}</p>
+            </div>
+          </div>
+        )}
         <div className="inscription-container">
           {/* En-tête */}
           <div className="inscription-header">

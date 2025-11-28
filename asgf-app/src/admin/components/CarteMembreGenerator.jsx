@@ -16,6 +16,13 @@ const CarteMembreGenerator = ({ memberData = null, onClose = null }) => {
     status: 'Membre actif'
   })
   const [photoDataUrl, setPhotoDataUrl] = useState(memberData?.photo_url || null)
+  
+  // Si le membre a une photo dans la BD, l'utiliser par défaut
+  useEffect(() => {
+    if (memberData?.photo_url) {
+      setPhotoDataUrl(memberData.photo_url)
+    }
+  }, [memberData?.photo_url])
   const [logoDataUrl, setLogoDataUrl] = useState(null)
   const [generating, setGenerating] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
@@ -61,35 +68,56 @@ const CarteMembreGenerator = ({ memberData = null, onClose = null }) => {
   }
 
   const generatePDF = async () => {
-    if (!cardRef.current) return
+    if (!formData.memberId) {
+      alert("❌ Le numéro de membre est requis")
+      return
+    }
 
     setGenerating(true)
-    const card = cardRef.current
 
     try {
-      const canvas = await html2canvas(card, {
-        scale: 3,
-        backgroundColor: null,
-        useCORS: true,
-        allowTaint: true
+      console.log('📋 Génération carte membre - Données:', {
+        ...formData,
+        photo_url: photoDataUrl ? 'Présente' : 'Absente',
       })
 
-      const imgData = canvas.toDataURL("image/png")
-      const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" })
-      const pageW = pdf.internal.pageSize.getWidth()
-      const pageH = pdf.internal.pageSize.getHeight()
-      pdf.addImage(imgData, "PNG", 0, 0, pageW, pageH, undefined, "FAST")
+      // Préparer les données pour le backend
+      const carteData = {
+        numero_membre: formData.memberId,
+        prenom: formData.firstName,
+        nom: formData.lastName,
+        fonction: formData.role,
+        date_emission: formData.issueDate,
+        date_validite: formData.expiryDate,
+        pays: formData.section?.split(' / ')[0] || '',
+        ville: formData.section?.split(' / ')[1] || '',
+        statut_carte: formData.status,
+        photo_url: photoDataUrl, // URL de la photo (base64 data URL ou URL publique)
+      }
 
-      const fileName = (formData.memberId.trim() || "CARTE-MEMBRE") + ".pdf"
-      pdf.save(fileName)
+      // Appeler l'API backend pour générer et sauvegarder la carte
+      const { createCarteMembre } = await import('../services/api')
+      const result = await createCarteMembre(carteData)
 
-      // TODO: Envoyer les données au backend pour archivage
-      // await saveCarteMembreToDatabase({ pdfData: pdf.output('datauristring'), formData })
+      console.log('✅ Carte membre créée avec succès:', result)
 
-      alert("✅ Le PDF a été téléchargé avec succès !")
+      if (result?.lien_pdf) {
+        alert(`✅ Carte membre créée avec succès !\n\nLe PDF a été généré et sauvegardé sur Google Drive.\n\nLien: ${result.lien_pdf}`)
+        // Optionnel : ouvrir le lien dans un nouvel onglet
+        if (window.confirm('Voulez-vous ouvrir le PDF dans un nouvel onglet ?')) {
+          window.open(result.lien_pdf, '_blank')
+        }
+      } else {
+        alert("✅ Carte membre créée avec succès !\n\n⚠️ Le PDF n'a pas pu être généré. Vérifiez les logs du backend.")
+      }
+
+      // Fermer le générateur si une fonction onClose est fournie
+      if (onClose) {
+        onClose()
+      }
     } catch (error) {
-      console.error("Erreur génération PDF:", error)
-      alert("❌ Une erreur est survenue lors de la génération du PDF.")
+      console.error("❌ Erreur génération carte membre:", error)
+      alert(`❌ Erreur lors de la création de la carte : ${error.message}`)
     } finally {
       setGenerating(false)
     }
