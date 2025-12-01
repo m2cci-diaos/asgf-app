@@ -23,7 +23,7 @@ const StudioContent = () => {
   const [subtitle, setSubtitle] = useState('Organisé par le Pôle Formations — AGSF')
   const [qrLink, setQrLink] = useState('https://www.agsf.sn/evenements/webinaire-logistique')
   const [accentColor, setAccentColor] = useState(COLORS[0])
-  const [bgMap, setBgMap] = useState('senegal')
+  const [bgMap, setBgMap] = useState('france_senegal')
   const [textAlign, setTextAlign] = useState('left')
   const [fontSize, setFontSize] = useState(38)
   const [textColor, setTextColor] = useState('#0f172a')
@@ -144,7 +144,7 @@ const StudioContent = () => {
     setSubtitle('Organisé par le Pôle Formations — AGSF')
     setQrLink('https://www.agsf.sn/evenements/webinaire-logistique')
     setAccentColor(COLORS[0])
-    setBgMap('senegal')
+    setBgMap('france_senegal')
     setTextAlign('left')
     setFontSize(38)
     setTextColor('#0f172a')
@@ -156,113 +156,31 @@ const StudioContent = () => {
     setExportSize({ width: 800, height: 800 })
   }
 
-  // SVG inline pour les contours (évite les problèmes de chargement)
-  const getMapSvg = () => {
-    if (bgMap === 'senegal') {
-      // Contours du Sénégal (forme réaliste)
+  // Image pour les contours France-Sénégal
+  const getMapImage = () => {
+    if (bgMap === 'france_senegal') {
       return (
-        <svg
-          viewBox="0 0 1000 1200"
+        <img
+          src="/assets/images/Contours_France_senegal.png"
+          alt="Contours France Sénégal"
           style={{
             position: 'absolute',
             inset: 0,
             width: '100%',
             height: '100%',
-            opacity: 0.3,
+            objectFit: 'contain',
+            opacity: 0.07,
             zIndex: 1,
             pointerEvents: 'none',
-            filter: 'grayscale(100%) brightness(1.4)'
+            filter: 'brightness(3) contrast(0.6) saturate(0.3)'
           }}
-          preserveAspectRatio="xMidYMid meet"
-        >
-          <path
-            d="M 200 200 Q 250 180 300 200 T 450 220 Q 500 240 550 280 T 650 360 Q 700 400 720 480 T 700 600 Q 680 680 620 720 T 500 760 Q 400 750 350 700 T 250 600 Q 200 500 180 400 T 200 200 Z"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          {/* Cap-Vert (presqu'île) */}
-          <path
-            d="M 150 250 Q 140 240 130 250 Q 120 260 130 270 Q 140 280 150 270 Q 160 260 150 250 Z"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          {/* Fleuve Sénégal */}
-          <path
-            d="M 100 300 Q 150 320 200 340"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="4"
-            strokeLinecap="round"
-            opacity="0.7"
-          />
-        </svg>
-      )
-    } else if (bgMap === 'africa') {
-      // Contours de l'Afrique (forme réaliste)
-      return (
-        <svg
-          viewBox="0 0 2000 2400"
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
-            opacity: 0.3,
-            zIndex: 1,
-            pointerEvents: 'none',
-            filter: 'grayscale(100%) brightness(1.4)'
-          }}
-          preserveAspectRatio="xMidYMid meet"
-        >
-          {/* Contours principaux de l'Afrique */}
-          <path
-            d="M 1000 200 Q 1200 180 1400 220 T 1700 400 Q 1800 600 1750 800 T 1600 1200 Q 1500 1400 1300 1500 T 1000 1600 Q 700 1500 500 1400 T 300 1200 Q 200 1000 250 800 T 400 600 Q 500 400 700 300 T 1000 200 Z"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="12"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          {/* Corne de l'Afrique */}
-          <path
-            d="M 1700 600 Q 1800 700 1850 900 T 1800 1100"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="10"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          {/* Golfe de Guinée */}
-          <path
-            d="M 600 1000 Q 550 1100 600 1200 Q 650 1300 700 1200 Q 750 1100 700 1000 Q 650 900 600 1000 Z"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          {/* Madagascar */}
-          <path
-            d="M 1900 1400 Q 1950 1450 1920 1600 T 1880 1800 Q 1850 1900 1800 1850 T 1750 1700 Q 1780 1550 1850 1500 T 1900 1400 Z"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="10"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+        />
       )
     }
     return null
   }
 
-  const mapSvg = getMapSvg()
+  const mapImage = getMapImage()
 
   // Styles réutilisables
   const inputStyle = {
@@ -374,22 +292,23 @@ const StudioContent = () => {
         gap: '20px'
       }}>
         {/* Control Panel */}
-        <aside style={{
-          position: isMobile ? 'static' : 'sticky',
-          top: isMobile ? 'auto' : '18px',
-          background: 'rgba(30,41,59,0.7)',
-          backdropFilter: 'blur(16px)',
-          WebkitBackdropFilter: 'blur(16px)',
-          border: '1px solid rgba(148,163,184,0.2)',
-          borderRadius: '20px',
-          padding: '24px',
-          boxShadow: '0 20px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.05) inset',
-          height: 'fit-content',
-          maxHeight: isMobile ? 'none' : 'calc(100vh - 100px)',
-          overflowY: isMobile ? 'visible' : 'auto',
-          position: 'relative',
-          zIndex: 1
-        }}>
+        <aside
+          style={{
+            position: isMobile ? 'static' : 'sticky',
+            top: isMobile ? 'auto' : '18px',
+            background: 'rgba(30,41,59,0.7)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            border: '1px solid rgba(148,163,184,0.2)',
+            borderRadius: '20px',
+            padding: '24px',
+            boxShadow: '0 20px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.05) inset',
+            height: 'fit-content',
+            maxHeight: isMobile ? 'none' : 'calc(100vh - 100px)',
+            overflowY: isMobile ? 'visible' : 'auto',
+            zIndex: 1,
+          }}
+        >
           <h2 style={sectionTitleStyle}>
             Informations Générales
           </h2>
@@ -537,8 +456,7 @@ const StudioContent = () => {
               onBlur={(e) => Object.assign(e.target.style, inputStyle)}
             >
               <option value="none">Aucune</option>
-              <option value="senegal">Contours Sénégal</option>
-              <option value="africa">Contours Afrique</option>
+              <option value="france_senegal">Contours France Sénégal</option>
             </select>
           </div>
 
@@ -953,7 +871,7 @@ const StudioContent = () => {
                 opacity: 0.12,
                 background: COLORS[(COLORS.indexOf(accentColor) + 1) % COLORS.length] || '#06b6d4'
               }}></div>
-              {bgMap !== 'none' && mapSvg}
+              {bgMap !== 'none' && mapImage}
             </div>
 
             {/* Canvas Content */}

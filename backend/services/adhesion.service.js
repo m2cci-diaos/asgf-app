@@ -1,5 +1,5 @@
 // backend/services/adhesion.service.js
-import { supabaseAdhesion } from '../config/supabase.js'
+import { supabaseAdhesion, supabaseTresorerie } from '../config/supabase.js'
 import { logError, logInfo } from '../utils/logger.js'
 
 /**
@@ -288,18 +288,28 @@ export async function getAdhesionStats() {
       : currentMonthCount > 0 ? '100.0' : '0.0'
 
     return {
+      total_membres: totalMembers || 0,
+      membres_actifs: activeCount || 0,
+      membres_en_attente: statusCounts.pending,
+      membres_approuves: statusCounts.approved,
+      membres_rejetes: statusCounts.rejected,
+      repartition_pays: countryDistribution,
+      evolution_mensuelle: monthlyEvolution,
+      repartition_niveau: levelDistribution,
+      repartition_universite: universityDistribution,
+      taux_croissance: parseFloat(growthRate),
+      nombre_mois_courant: currentMonthCount,
+      nombre_mois_precedent: lastMonthCount,
+      // Alias pour compatibilité
       total_members: totalMembers || 0,
       active_members: activeCount || 0,
       pending_members: statusCounts.pending,
       approved_members: statusCounts.approved,
       rejected_members: statusCounts.rejected,
+      // Alias pour les graphiques frontend
       country_distribution: countryDistribution,
       monthly_evolution: monthlyEvolution,
       level_distribution: levelDistribution,
-      university_distribution: universityDistribution,
-      growth_rate: parseFloat(growthRate),
-      current_month_count: currentMonthCount,
-      last_month_count: lastMonthCount,
     }
   } catch (err) {
     logError('getAdhesionStats exception', err)
@@ -425,6 +435,68 @@ export async function updateMember(memberId, memberData) {
  */
 export async function deleteMember(memberId) {
   try {
+    // Récupérer le numéro de membre avant suppression pour vérifier les dépendances
+    const { data: member } = await supabaseAdhesion
+      .from('members')
+      .select('numero_membre')
+      .eq('id', memberId)
+      .single()
+
+    if (!member) {
+      throw new Error('Membre introuvable')
+    }
+
+    // Vérifier s'il y a des cartes membres associées
+    const { data: cartes, error: cartesError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('id')
+      .eq('numero_membre', member.numero_membre)
+
+    if (cartesError) {
+      logError('Erreur vérification cartes membres', cartesError)
+    }
+
+    if (cartes && cartes.length > 0) {
+      // Supprimer d'abord les cartes membres associées
+      const { error: deleteCartesError } = await supabaseTresorerie
+        .from('cartes_membres')
+        .delete()
+        .eq('numero_membre', member.numero_membre)
+
+      if (deleteCartesError) {
+        logError('Erreur suppression cartes membres', deleteCartesError)
+        throw new Error('Impossible de supprimer les cartes membres associées')
+      }
+
+      logInfo('Cartes membres supprimées', { numero_membre: member.numero_membre, count: cartes.length })
+    }
+
+    // Vérifier s'il y a des cotisations associées
+    const { data: cotisations, error: cotisationsError } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id')
+      .eq('membre_id', memberId)
+
+    if (cotisationsError) {
+      logError('Erreur vérification cotisations', cotisationsError)
+    }
+
+    if (cotisations && cotisations.length > 0) {
+      // Supprimer les cotisations associées
+      const { error: deleteCotisationsError } = await supabaseTresorerie
+        .from('cotisations')
+        .delete()
+        .eq('membre_id', memberId)
+
+      if (deleteCotisationsError) {
+        logError('Erreur suppression cotisations', deleteCotisationsError)
+        throw new Error('Impossible de supprimer les cotisations associées')
+      }
+
+      logInfo('Cotisations supprimées', { membre_id: memberId, count: cotisations.length })
+    }
+
+    // Maintenant supprimer le membre
     const { data, error } = await supabaseAdhesion
       .from('members')
       .delete()
@@ -434,6 +506,12 @@ export async function deleteMember(memberId) {
 
     if (error) {
       logError('deleteMember error', error)
+      
+      // Message d'erreur plus spécifique pour les contraintes de clé étrangère
+      if (error.code === '23503') {
+        throw new Error('Ce membre ne peut pas être supprimé car il est référencé dans d\'autres tables. Veuillez d\'abord supprimer les données associées (cartes membres, cotisations, etc.).')
+      }
+      
       throw new Error('Erreur lors de la suppression du membre')
     }
 

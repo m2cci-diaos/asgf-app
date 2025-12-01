@@ -3,6 +3,8 @@ import { useNavigate, useLocation, useParams, Link } from 'react-router-dom'
 import { WebinairesStyles } from '../components/PageStyles'
 import { supabaseWebinaire } from '../config/supabase.config'
 
+const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+
 // Styles pour le spinner CSS
 const spinnerStyle = `
   @keyframes spin {
@@ -153,18 +155,22 @@ function InscriptionWebinaire() {
         source: 'site web'
       }
 
-      const { data, error } = await supabaseWebinaire
-        .from('inscriptions')
-        .insert([dataToInsert])
-        .select()
+      // Utiliser l'API backend publique pour créer l'inscription (envoie automatiquement un email)
+      const response = await fetch(`${API_URL}/api/public/webinaire/inscriptions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(dataToInsert),
+      })
 
-      if (error) {
-        console.error('Erreur Supabase:', error)
-        
-        if (error.code === '23505' && error.message.includes('email')) {
+      const result = await response.json()
+
+      if (!response.ok) {
+        if (result.message && result.message.includes('déjà inscrit')) {
           alert('Cet email est déjà inscrit à ce webinaire. Veuillez utiliser un autre email ou contacter l\'ASGF.')
         } else {
-          alert(`Erreur d'enregistrement : ${error.message}`)
+          alert(`Erreur d'enregistrement : ${result.message || 'Erreur inconnue'}`)
         }
         return
       }

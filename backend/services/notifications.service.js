@@ -11,6 +11,8 @@ const EVENT_TYPES = {
   FORMATION_STATUS: 'formation_status',
   FORMATION_INVITATION: 'formation_invitation',
   FORMATION_REMINDER: 'formation_reminder',
+  WEBINAIRE_INSCRIPTION: 'webinaire_inscription',
+  WEBINAIRE_STATUS: 'webinaire_status',
   WEBINAIRE_INVITATION: 'webinaire_invitation',
   WEBINAIRE_REMINDER: 'webinaire_reminder',
   MEMBER_EMAIL: 'member_email',
@@ -57,15 +59,26 @@ async function sendAppsScriptEvent(payload, logContext = '') {
     const responseText = await response.text()
     
     if (!response.ok) {
-      logError('Apps Script webhook a renvoyé une erreur', {
-        status: response.status,
-        body: responseText,
-        logContext,
-      })
+      // Pour les erreurs 404, c'est probablement que l'URL du webhook est incorrecte
+      if (response.status === 404) {
+        logError('Apps Script webhook URL invalide (404)', {
+          status: response.status,
+          url: APPSCRIPT_WEBHOOK_URL.substring(0, 50) + '...',
+          logContext,
+          hint: 'Vérifiez que l\'URL du webhook dans APPSCRIPT_CONTACT_WEBHOOK_URL est correcte et que le script Google Apps Script est bien déployé'
+        })
+      } else {
+        logError('Apps Script webhook a renvoyé une erreur', {
+          status: response.status,
+          body: responseText.substring(0, 500),
+          logContext,
+        })
+      }
+      // Ne pas faire échouer l'opération principale si le webhook échoue
       return {
         success: false,
         message: `Erreur HTTP ${response.status} lors de l'appel au script Google Apps Script`,
-        errors: [responseText.substring(0, 200)]
+        errors: [response.status === 404 ? 'URL du webhook invalide (404)' : responseText.substring(0, 200)]
       }
     }
 
@@ -169,6 +182,26 @@ export async function notifyFormationReminder(data) {
       ...data,
     },
     `formation_reminder_${data.kind || 'generic'}`
+  )
+}
+
+export async function notifyWebinaireInscription(data) {
+  return sendAppsScriptEvent(
+    {
+      type: EVENT_TYPES.WEBINAIRE_INSCRIPTION,
+      ...data,
+    },
+    'webinaire_inscription'
+  )
+}
+
+export async function notifyWebinaireStatus(data) {
+  return sendAppsScriptEvent(
+    {
+      type: EVENT_TYPES.WEBINAIRE_STATUS,
+      ...data,
+    },
+    'webinaire_status'
   )
 }
 

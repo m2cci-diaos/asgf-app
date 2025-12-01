@@ -39,3 +39,8 @@ LEFT JOIN tresorerie.cotisations c ON c.membre_id = m.id
 GROUP BY m.id, m.numero_membre, m.prenom, m.nom, m.status, m.is_active
 ORDER BY nombre_cotisations ASC, m.numero_membre;
 
+
+
+
+
+

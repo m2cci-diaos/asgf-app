@@ -1,5 +1,6 @@
 // src/pages/AdminLogin.jsx
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { loginAdminApi } from '../services/api'
 import './AdminLogin.css'
 import logoASGF from '../img/Logo_officiel_ASGF.png'
@@ -10,14 +11,37 @@ export default function AdminLogin({ onLoginSuccess }) {
   const [rememberMe, setRememberMe] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  
+  // Vérifier si c'est une déconnexion par timeout
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search)
+    if (urlParams.get('timeout') === 'true') {
+      setError('Vous avez été déconnecté après 15 minutes d\'inactivité. Veuillez vous reconnecter.')
+      // Nettoyer l'URL
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
     setLoading(true)
 
+    // Validation basique côté client
+    if (!numeroMembre.trim() && !password.trim()) {
+      setError('Veuillez remplir tous les champs')
+      setLoading(false)
+      return
+    }
+
+    if (password.length < 6) {
+      setError('Le mot de passe doit contenir au moins 6 caractères')
+      setLoading(false)
+      return
+    }
+
     try {
-      const data = await loginAdminApi({ numeroMembre, password })
+      const data = await loginAdminApi({ numeroMembre: numeroMembre.trim(), password })
       console.log('Connecté ✅', data)
       
       if (typeof onLoginSuccess === 'function') {
@@ -25,7 +49,14 @@ export default function AdminLogin({ onLoginSuccess }) {
       }
     } catch (err) {
       console.error(err)
-      setError(err.message || 'Erreur de connexion')
+      // Messages d'erreur plus sécurisés (ne pas révéler trop d'infos)
+      if (err.message?.includes('401') || err.message?.includes('introuvable') || err.message?.includes('invalides')) {
+        setError('Identifiants incorrects')
+      } else if (err.message?.includes('désactivé') || err.message?.includes('suspendu')) {
+        setError(err.message)
+      } else {
+        setError('Erreur de connexion. Veuillez réessayer.')
+      }
     } finally {
       setLoading(false)
     }
@@ -41,9 +72,9 @@ export default function AdminLogin({ onLoginSuccess }) {
             Association des Sénégalais Géomaticiens de France
           </span>
         </div>
-        <a href="https://asgf.fr" className="header-link" target="_blank" rel="noopener noreferrer">
+        <Link to="/" className="header-link">
           ↩ Retour au site
-        </a>
+        </Link>
       </header>
 
       {/* Main content */}
@@ -103,7 +134,7 @@ export default function AdminLogin({ onLoginSuccess }) {
               <input
                 id="identifiant"
                 type="text"
-                placeholder="ASGF-2025-001 ou email"
+                placeholder="Numéro de membre ou email"
                 value={numeroMembre}
                 onChange={(e) => setNumeroMembre(e.target.value)}
                 required

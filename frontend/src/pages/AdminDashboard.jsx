@@ -48,11 +48,15 @@ import {
   fetchRelances,
   fetchSecretariatStats,
   fetchReunions,
+  fetchReunion,
   createReunion,
   addParticipant,
   createAction,
   saveCompteRendu,
   createDocument,
+  fetchParticipants,
+  updateParticipantsPresence,
+  generateReunionPDF,
   fetchFormationStats,
   fetchFormations,
   createFormation,
@@ -85,7 +89,13 @@ import {
   createPresentateur,
   updatePresentateur,
   deletePresentateur,
+  fetchAllBureauMembers,
+  createBureauMember,
+  updateBureauMember,
+  deleteBureauMember,
 } from "../services/api"
+import { supabaseStorage } from "../config/supabase.config.js"
+import SecretariatDashboard from "./SecretariatDashboard"
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet"
 import MarkerClusterGroup from "react-leaflet-cluster"
 import L from "leaflet"
@@ -3429,10 +3439,13 @@ function AdminDashboard({ admin, onLogout }) {
     const [secretariatStats, setSecretariatStats] = useState(null)
     const [reunions, setReunions] = useState([])
     const [loading, setLoading] = useState(true)
-    const [showModal, setShowModal] = useState(null) // 'reunion', 'participant', 'action', 'document'
+    const [showModal, setShowModal] = useState(null) // 'reunion', 'participant', 'action', 'document', 'presence', 'details'
     const [members, setMembers] = useState([])
     const [formData, setFormData] = useState({})
     const [submitting, setSubmitting] = useState(false)
+    const [selectedReunion, setSelectedReunion] = useState(null)
+    const [participants, setParticipants] = useState([])
+    const [loadingParticipants, setLoadingParticipants] = useState(false)
 
     const loadData = async () => {
       setLoading(true)
@@ -3482,8 +3495,44 @@ function AdminDashboard({ admin, onLogout }) {
             alert('Veuillez d\'abord créer une réunion')
             return
           }
-          await addParticipant(formData)
-          alert('Participant ajouté avec succès !')
+          
+          // Si c'est un membre et qu'on a sélectionné plusieurs membres
+          if (formData.participant_type === 'membre') {
+            const selectedMembers = Array.isArray(formData.membre_ids) ? formData.membre_ids : []
+            
+            if (selectedMembers.length === 0) {
+              alert('Veuillez sélectionner au moins un membre')
+              return
+            }
+            
+            // Créer un tableau de participants
+            const participants = selectedMembers.map(membreId => ({
+              reunion_id: formData.reunion_id,
+              membre_id: membreId,
+              statut_invitation: formData.statut_invitation || 'envoye',
+              commentaire: formData.commentaire || null,
+            }))
+            
+            // Envoyer le tableau au backend
+            await addParticipant(participants)
+            alert(`${participants.length} participant(s) ajouté(s) avec succès !`)
+          } else {
+            // Pour les externes, on ajoute un seul participant
+            if (!formData.prenom_externe || !formData.nom_externe) {
+              alert('Veuillez remplir le prénom et le nom pour le participant externe')
+              return
+            }
+            
+            await addParticipant({
+              reunion_id: formData.reunion_id,
+              nom_externe: formData.nom_externe,
+              prenom_externe: formData.prenom_externe,
+              email_externe: formData.email_externe,
+              statut_invitation: formData.statut_invitation || 'envoye',
+              commentaire: formData.commentaire || null,
+            })
+            alert('Participant externe ajouté avec succès !')
+          }
         } else if (showModal === 'action') {
           await createAction(formData)
           alert('Action créée avec succès !')
@@ -3597,6 +3646,7 @@ function AdminDashboard({ admin, onLogout }) {
                       <th>Date</th>
                       <th>Heure</th>
                       <th>Pôle</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3607,6 +3657,77 @@ function AdminDashboard({ admin, onLogout }) {
                         <td>{reunion.date_reunion ? new Date(reunion.date_reunion).toLocaleDateString('fr-FR') : '—'}</td>
                         <td>{reunion.heure_debut || '—'}</td>
                         <td>{reunion.pole || '—'}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                            <button 
+                              className="btn-secondary" 
+                              style={{ fontSize: '0.85rem', padding: '5px 10px' }}
+                              onClick={async () => {
+                                setSelectedReunion(reunion)
+                                setShowModal('details')
+                                setLoadingParticipants(true)
+                                try {
+                                  const [parts, reunionDetails] = await Promise.all([
+                                    fetchParticipants(reunion.id),
+                                    fetchReunion(reunion.id)
+                                  ])
+                                  setParticipants(parts || [])
+                                  setSelectedReunion(reunionDetails)
+                                } catch (err) {
+                                  console.error('Erreur chargement participants:', err)
+                                  setParticipants([])
+                                } finally {
+                                  setLoadingParticipants(false)
+                                }
+                              }}
+                            >
+                              Détails
+                            </button>
+                            <button 
+                              className="btn-secondary" 
+                              style={{ fontSize: '0.85rem', padding: '5px 10px' }}
+                              onClick={async () => {
+                                setSelectedReunion(reunion)
+                                setShowModal('presence')
+                                setLoadingParticipants(true)
+                                try {
+                                  const parts = await fetchParticipants(reunion.id)
+                                  setParticipants(parts || [])
+                                } catch (err) {
+                                  console.error('Erreur chargement participants:', err)
+                                  setParticipants([])
+                                } finally {
+                                  setLoadingParticipants(false)
+                                }
+                              }}
+                            >
+                              Présence
+                            </button>
+                            <button 
+                              className="btn-primary" 
+                              style={{ fontSize: '0.85rem', padding: '5px 10px', display: 'flex', alignItems: 'center', gap: '5px' }}
+                              onClick={async (e) => {
+                                const button = e.currentTarget
+                                try {
+                                  button.disabled = true
+                                  const originalText = button.textContent
+                                  button.textContent = 'Génération...'
+                                  await generateReunionPDF(reunion.id)
+                                  alert('PDF généré et téléchargé avec succès !')
+                                } catch (err) {
+                                  alert('Erreur lors de la génération du PDF : ' + err.message)
+                                  console.error('Erreur génération PDF:', err)
+                                } finally {
+                                  button.disabled = false
+                                  button.textContent = '📄 PDF'
+                                }
+                              }}
+                              title="Générer le PDF de la réunion avec compte-rendu"
+                            >
+                              📄 PDF
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -3701,6 +3822,20 @@ function AdminDashboard({ admin, onLogout }) {
                       />
                     </div>
                     <div className="form-group">
+                      <label>Présenté par</label>
+                      <select
+                        value={formData.presente_par || ''}
+                        onChange={(e) => setFormData({ ...formData, presente_par: e.target.value })}
+                      >
+                        <option value="">Sélectionner un membre (optionnel)</option>
+                        {members.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.prenom} {m.nom} ({m.numero_membre})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
                       <label>Lien visio</label>
                       <input
                         type="url"
@@ -3738,19 +3873,121 @@ function AdminDashboard({ admin, onLogout }) {
                       </select>
                     </div>
                     <div className="form-group">
-                      <label>Membre</label>
+                      <label>Type de participant</label>
                       <select
-                        value={formData.membre_id || ''}
-                        onChange={(e) => setFormData({ ...formData, membre_id: e.target.value })}
+                        value={formData.participant_type || 'membre'}
+                        onChange={(e) => {
+                          const type = e.target.value
+                          setFormData({ 
+                            ...formData, 
+                            participant_type: type,
+                            membre_ids: type === 'membre' ? (formData.membre_ids || []) : [],
+                            membre_id: '', // Garder pour compatibilité mais utiliser membre_ids
+                            nom_externe: type === 'externe' ? formData.nom_externe : '',
+                            prenom_externe: type === 'externe' ? formData.prenom_externe : '',
+                            email_externe: type === 'externe' ? formData.email_externe : '',
+                          })
+                        }}
                       >
-                        <option value="">Sélectionner un membre</option>
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.prenom} {m.nom} ({m.numero_membre})
-                          </option>
-                        ))}
+                        <option value="membre">Membre ASGF</option>
+                        <option value="externe">Personne externe</option>
                       </select>
                     </div>
+                    {formData.participant_type === 'membre' ? (
+                      <div className="form-group">
+                        <label>Membres * (sélection multiple)</label>
+                        <div style={{ 
+                          maxHeight: '200px', 
+                          overflowY: 'auto', 
+                          border: '1px solid #ccc', 
+                          borderRadius: '4px', 
+                          padding: '10px',
+                          backgroundColor: '#fff'
+                        }}>
+                          {members.length === 0 ? (
+                            <p style={{ color: '#666', fontStyle: 'italic' }}>Chargement des membres...</p>
+                          ) : (
+                            members.map((m) => {
+                              const selectedMembers = Array.isArray(formData.membre_ids) ? formData.membre_ids : []
+                              const isSelected = selectedMembers.includes(m.id)
+                              return (
+                                <label 
+                                  key={m.id} 
+                                  style={{ 
+                                    display: 'flex', 
+                                    alignItems: 'center', 
+                                    padding: '8px',
+                                    cursor: 'pointer',
+                                    borderRadius: '4px',
+                                    marginBottom: '4px',
+                                    backgroundColor: isSelected ? '#e3f2fd' : 'transparent'
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (!isSelected) e.currentTarget.style.backgroundColor = '#f5f5f5'
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={(e) => {
+                                      const currentIds = Array.isArray(formData.membre_ids) ? formData.membre_ids : []
+                                      const newIds = e.target.checked
+                                        ? [...currentIds, m.id]
+                                        : currentIds.filter(id => id !== m.id)
+                                      setFormData({ ...formData, membre_ids: newIds })
+                                    }}
+                                    style={{ marginRight: '10px', cursor: 'pointer' }}
+                                  />
+                                  <span>
+                                    {m.prenom} {m.nom} ({m.numero_membre})
+                                  </span>
+                                </label>
+                              )
+                            })
+                          )}
+                        </div>
+                        {Array.isArray(formData.membre_ids) && formData.membre_ids.length > 0 && (
+                          <p style={{ marginTop: '8px', fontSize: '0.9rem', color: '#666' }}>
+                            {formData.membre_ids.length} membre(s) sélectionné(s)
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="form-group">
+                          <label>Prénom *</label>
+                          <input
+                            type="text"
+                            required
+                            value={formData.prenom_externe || ''}
+                            onChange={(e) => setFormData({ ...formData, prenom_externe: e.target.value })}
+                            placeholder="Prénom"
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label>Nom *</label>
+                          <input
+                            type="text"
+                            required
+                            value={formData.nom_externe || ''}
+                            onChange={(e) => setFormData({ ...formData, nom_externe: e.target.value })}
+                            placeholder="Nom"
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label>Email</label>
+                          <input
+                            type="email"
+                            value={formData.email_externe || ''}
+                            onChange={(e) => setFormData({ ...formData, email_externe: e.target.value })}
+                            placeholder="email@example.com"
+                          />
+                        </div>
+                      </>
+                    )}
                     <div className="form-group">
                       <label>Statut invitation</label>
                       <select
@@ -3891,6 +4128,228 @@ function AdminDashboard({ admin, onLogout }) {
             </button>
           </div>
               </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Modal pour gérer la présence */}
+        {showModal === 'presence' && selectedReunion && typeof document !== 'undefined' && createPortal(
+          <div className="modal-overlay" onClick={() => { setShowModal(null); setSelectedReunion(null); setParticipants([]) }}>
+            <div className="modal-content" style={{ maxWidth: '800px' }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Gérer la présence - {selectedReunion.titre}</h2>
+                <button className="modal-close" onClick={() => { setShowModal(null); setSelectedReunion(null); setParticipants([]) }}>×</button>
+              </div>
+              <div className="modal-form" style={{ padding: '20px' }}>
+                {loadingParticipants ? (
+                  <div style={{ textAlign: 'center', padding: '20px' }}>
+                    <div className="spinner"></div>
+                    <p>Chargement des participants...</p>
+                  </div>
+                ) : participants.length === 0 ? (
+                  <p style={{ textAlign: 'center', padding: '20px' }}>Aucun participant pour cette réunion</p>
+                ) : (
+                  <>
+                    <div style={{ marginBottom: '20px' }}>
+                      <p style={{ marginBottom: '10px', fontWeight: 'bold' }}>Sélectionnez les participants présents et absents :</p>
+                      <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px' }}>
+                        {participants.map((participant) => {
+                          const nom = participant.nom_display || (participant.membre ? `${participant.membre.prenom} ${participant.membre.nom}` : `${participant.prenom_externe || ''} ${participant.nom_externe || ''}`.trim() || 'Participant externe')
+                          return (
+                            <div key={participant.id} style={{ marginBottom: '15px', padding: '10px', border: '1px solid #e2e8f0', borderRadius: '4px' }}>
+                              <div style={{ marginBottom: '8px', fontWeight: '600' }}>{nom}</div>
+                              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                                  <input
+                                    type="radio"
+                                    name={`presence_${participant.id}`}
+                                    value="present"
+                                    checked={participant.presence === 'present'}
+                                    onChange={(e) => {
+                                      const updated = participants.map(p => 
+                                        p.id === participant.id 
+                                          ? { ...p, presence: e.target.value, motif_absence: null }
+                                          : p
+                                      )
+                                      setParticipants(updated)
+                                    }}
+                                  />
+                                  <span>Présent</span>
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                                  <input
+                                    type="radio"
+                                    name={`presence_${participant.id}`}
+                                    value="absent"
+                                    checked={participant.presence === 'absent'}
+                                    onChange={(e) => {
+                                      const updated = participants.map(p => 
+                                        p.id === participant.id 
+                                          ? { ...p, presence: e.target.value }
+                                          : p
+                                      )
+                                      setParticipants(updated)
+                                    }}
+                                  />
+                                  <span>Absent</span>
+                                </label>
+                                {participant.presence === 'absent' && (
+                                  <input
+                                    type="text"
+                                    placeholder="Motif d'absence (optionnel)"
+                                    value={participant.motif_absence || ''}
+                                    onChange={(e) => {
+                                      const updated = participants.map(p => 
+                                        p.id === participant.id 
+                                          ? { ...p, motif_absence: e.target.value }
+                                          : p
+                                      )
+                                      setParticipants(updated)
+                                    }}
+                                    style={{ flex: 1, minWidth: '200px', padding: '5px', border: '1px solid #ccc', borderRadius: '4px' }}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                    <div className="modal-actions">
+                      <button 
+                        type="button" 
+                        className="btn-secondary" 
+                        onClick={() => { setShowModal(null); setSelectedReunion(null); setParticipants([]) }}
+                      >
+                        Annuler
+                      </button>
+                      <button 
+                        type="button" 
+                        className="btn-primary" 
+                        disabled={submitting}
+                        onClick={async () => {
+                          setSubmitting(true)
+                          try {
+                            const updates = participants.map(p => ({
+                              participant_id: p.id,
+                              presence: p.presence || null,
+                              motif_absence: p.presence === 'absent' ? (p.motif_absence || null) : null,
+                            }))
+                            await updateParticipantsPresence(selectedReunion.id, updates)
+                            alert('Présence mise à jour avec succès !')
+                            setShowModal(null)
+                            setSelectedReunion(null)
+                            setParticipants([])
+                            loadData()
+                          } catch (err) {
+                            alert('Erreur : ' + err.message)
+                          } finally {
+                            setSubmitting(false)
+                          }
+                        }}
+                      >
+                        {submitting ? 'En cours...' : 'Enregistrer'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Modal pour voir les détails d'une réunion */}
+        {showModal === 'details' && selectedReunion && typeof document !== 'undefined' && createPortal(
+          <div className="modal-overlay" onClick={() => { setShowModal(null); setSelectedReunion(null); setParticipants([]) }}>
+            <div className="modal-content" style={{ maxWidth: '800px' }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Détails de la réunion - {selectedReunion.titre}</h2>
+                <button className="modal-close" onClick={() => { setShowModal(null); setSelectedReunion(null); setParticipants([]) }}>×</button>
+              </div>
+              <div className="modal-form" style={{ padding: '20px' }}>
+                <div style={{ marginBottom: '20px' }}>
+                  <h3 style={{ marginBottom: '10px', fontSize: '16px', fontWeight: 'bold' }}>Informations</h3>
+                  <p><strong>Type:</strong> {selectedReunion.type_reunion}</p>
+                  <p><strong>Date:</strong> {selectedReunion.date_reunion ? new Date(selectedReunion.date_reunion).toLocaleDateString('fr-FR') : '—'}</p>
+                  <p><strong>Heure:</strong> {selectedReunion.heure_debut || '—'}{selectedReunion.heure_fin ? ` - ${selectedReunion.heure_fin}` : ''}</p>
+                  {selectedReunion.pole && <p><strong>Pôle:</strong> {selectedReunion.pole}</p>}
+                  {selectedReunion.presentateur && (
+                    <p><strong>Présenté par:</strong> {selectedReunion.presentateur.prenom} {selectedReunion.presentateur.nom}</p>
+                  )}
+                  {selectedReunion.description && (
+                    <>
+                      <p style={{ marginTop: '10px' }}><strong>Description:</strong></p>
+                      <p style={{ marginLeft: '10px' }}>{selectedReunion.description}</p>
+                    </>
+                  )}
+                  {selectedReunion.ordre_du_jour && (
+                    <>
+                      <p style={{ marginTop: '10px' }}><strong>Ordre du jour:</strong></p>
+                      <p style={{ marginLeft: '10px', whiteSpace: 'pre-wrap' }}>{selectedReunion.ordre_du_jour}</p>
+                    </>
+                  )}
+                </div>
+                {loadingParticipants ? (
+                  <div style={{ textAlign: 'center', padding: '20px' }}>
+                    <div className="spinner"></div>
+                    <p>Chargement des participants...</p>
+                  </div>
+                ) : participants.length === 0 ? (
+                  <p style={{ textAlign: 'center', padding: '20px' }}>Aucun participant pour cette réunion</p>
+                ) : (
+                  <div>
+                    <h3 style={{ marginBottom: '10px', fontSize: '16px', fontWeight: 'bold' }}>Participants</h3>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px' }}>
+                      {participants.map((participant) => {
+                        const nom = participant.nom_display || (participant.membre ? `${participant.membre.prenom} ${participant.membre.nom}` : `${participant.prenom_externe || ''} ${participant.nom_externe || ''}`.trim() || 'Participant externe')
+                        const presenceStatus = participant.presence === 'present' 
+                          ? '✅ Présent' 
+                          : participant.presence === 'absent' 
+                          ? `❌ Absent${participant.motif_absence ? ` (${participant.motif_absence})` : ''}`
+                          : '⏳ Non défini'
+                        return (
+                          <div key={participant.id} style={{ marginBottom: '10px', padding: '8px', border: '1px solid #e2e8f0', borderRadius: '4px' }}>
+                            <div style={{ fontWeight: '600' }}>{nom}</div>
+                            <div style={{ fontSize: '0.9rem', color: '#666' }}>{presenceStatus}</div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="modal-actions" style={{ marginTop: '20px' }}>
+                  <button 
+                    type="button" 
+                    className="btn-secondary" 
+                    onClick={() => { setShowModal(null); setSelectedReunion(null); setParticipants([]) }}
+                  >
+                    Fermer
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn-primary" 
+                    onClick={async (e) => {
+                      const button = e.currentTarget
+                      try {
+                        button.disabled = true
+                        button.textContent = 'Génération en cours...'
+                        await generateReunionPDF(selectedReunion.id)
+                        alert('PDF généré et téléchargé avec succès !')
+                      } catch (err) {
+                        alert('Erreur lors de la génération du PDF : ' + err.message)
+                        console.error('Erreur génération PDF:', err)
+                      } finally {
+                        button.disabled = false
+                        button.textContent = '📄 Générer PDF'
+                      }
+                    }}
+                  >
+                    📄 Générer PDF
+                  </button>
+                </div>
+              </div>
             </div>
           </div>,
           document.body
@@ -4498,6 +4957,1000 @@ function AdminDashboard({ admin, onLogout }) {
             </div>
           </div>,
           document.body
+        )}
+      </div>
+    )
+  }
+
+  // Composant pour le contenu Paramètres (Settings)
+  const SettingsContent = () => {
+    const [activeTab, setActiveTab] = useState('bureau')
+    const [activeSegment, setActiveSegment] = useState('liste') // 'liste', 'ajouter', 'modifier', 'photos'
+    const [bureauMembers, setBureauMembers] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [showModal, setShowModal] = useState(false)
+    const [editingId, setEditingId] = useState(null)
+    const [selectedMemberForPhoto, setSelectedMemberForPhoto] = useState(null)
+    const [formData, setFormData] = useState({
+      prenom: '',
+      nom: '',
+      nom_affichage: '',
+      role_court: '',
+      role_long: '',
+      categorie: 'direction',
+      pole_nom: '',
+      email: '',
+      phone: '',
+      linkedin_url: '',
+      other_url: '',
+      ordre: 100,
+      highlight: false,
+      photo_url: '',
+    })
+    const [photoFile, setPhotoFile] = useState(null)
+    const [uploadingPhoto, setUploadingPhoto] = useState(false)
+
+    const roleOptions = [
+      { value: 'PRESIDENT', label: 'Président' },
+      { value: 'VICE-PRESIDENT', label: 'Vice-président' },
+      { value: 'SECRETAIRE', label: 'Secrétaire général' },
+      { value: 'TRESORIER', label: 'Trésorier' },
+      { value: 'MEMBRE_BUREAU', label: 'Membre du Bureau Exécutif' },
+      { value: 'RESPONSABLE_POLE', label: 'Responsable de pôle' },
+      { value: 'CO_RESPONSABLE', label: 'Co-responsable' },
+      { value: 'AUTRE', label: 'Autre' },
+    ]
+
+    const loadBureauMembers = useCallback(async () => {
+      setLoading(true)
+      try {
+        const data = await fetchAllBureauMembers()
+        setBureauMembers(Array.isArray(data) ? data : [])
+      } catch (err) {
+        console.error('Erreur chargement bureau:', err)
+        alert('Erreur lors du chargement des membres du bureau')
+        setBureauMembers([])
+      } finally {
+        setLoading(false)
+      }
+    }, [])
+
+    useEffect(() => {
+      if (activeTab === 'bureau') {
+        loadBureauMembers()
+      }
+    }, [activeTab, loadBureauMembers])
+
+    const handlePhotoUpload = async (file, memberId) => {
+      if (!file) return null
+
+      const fileExt = file.name.split('.').pop()
+      const fileName = `member-${memberId}.${fileExt}`
+      const filePath = `photos/${fileName}`
+
+      try {
+        setUploadingPhoto(true)
+        const { data: uploadData, error: uploadError } = await supabaseStorage.storage
+          .from('bureau-photos')
+          .upload(filePath, file, { upsert: true })
+
+        if (uploadError) throw uploadError
+
+        const { data: publicUrlData } = supabaseStorage.storage
+          .from('bureau-photos')
+          .getPublicUrl(filePath)
+
+        return publicUrlData.publicUrl
+      } catch (err) {
+        console.error('Erreur upload photo:', err)
+        throw err
+      } finally {
+        setUploadingPhoto(false)
+      }
+    }
+
+    const handleSubmit = async (e) => {
+      e.preventDefault()
+      setUploadingPhoto(true)
+
+      try {
+        let memberId = editingId
+
+        // Si création, créer d'abord le membre pour obtenir l'ID
+        if (!memberId) {
+          const newMember = await createBureauMember({
+            ...formData,
+            photo_url: null, // Sera mis à jour après l'upload
+          })
+          memberId = newMember.id
+        }
+
+        // Upload de la photo si un fichier est sélectionné
+        let photoUrl = formData.photo_url
+        if (photoFile) {
+          photoUrl = await handlePhotoUpload(photoFile, memberId)
+        }
+
+        // Mettre à jour le membre avec la photo_url
+        const updateData = { ...formData }
+        if (photoUrl) {
+          updateData.photo_url = photoUrl
+        }
+
+        if (memberId) {
+          await updateBureauMember(memberId, updateData)
+        }
+
+        alert(editingId ? 'Membre mis à jour avec succès !' : 'Membre créé avec succès !')
+        setShowModal(false)
+        resetForm()
+        setActiveSegment('liste')
+        await loadBureauMembers()
+      } catch (err) {
+        console.error('Erreur:', err)
+        alert('Erreur : ' + (err.message || 'Erreur lors de l\'opération'))
+      } finally {
+        setUploadingPhoto(false)
+      }
+    }
+
+    const handleEdit = (member) => {
+      setEditingId(member.id)
+      setFormData({
+        prenom: member.prenom || '',
+        nom: member.nom || '',
+        nom_affichage: member.nom_affichage || '',
+        role_court: member.role_court || '',
+        role_long: member.role_long || '',
+        categorie: member.categorie || 'direction',
+        pole_nom: member.pole_nom || '',
+        email: member.email || '',
+        phone: member.phone || '',
+        linkedin_url: member.linkedin_url || '',
+        other_url: member.other_url || '',
+        ordre: member.ordre || 100,
+        highlight: member.highlight || false,
+        photo_url: member.photo_url || '',
+      })
+      setPhotoFile(null)
+      setActiveSegment('modifier')
+    }
+
+    const handleDelete = async (id) => {
+      if (!window.confirm('Êtes-vous sûr de vouloir désactiver ce membre ?')) return
+      try {
+        await deleteBureauMember(id)
+        alert('Membre désactivé avec succès !')
+        await loadBureauMembers()
+      } catch (err) {
+        alert('Erreur : ' + (err.message || 'Erreur lors de la suppression'))
+      }
+    }
+
+    const handlePhotoOnly = (member) => {
+      setSelectedMemberForPhoto(member)
+      setActiveSegment('photos')
+    }
+
+    const handlePhotoUploadOnly = async (file, memberId) => {
+      if (!file) {
+        alert('Veuillez sélectionner un fichier')
+        return
+      }
+
+      try {
+        setUploadingPhoto(true)
+        const photoUrl = await handlePhotoUpload(file, memberId)
+        await updateBureauMember(memberId, { photo_url: photoUrl })
+        alert('Photo mise à jour avec succès !')
+        setSelectedMemberForPhoto(null)
+        setActiveSegment('liste')
+        await loadBureauMembers()
+      } catch (err) {
+        console.error('Erreur upload photo:', err)
+        alert('Erreur : ' + (err.message || 'Erreur lors de l\'upload de la photo'))
+      } finally {
+        setUploadingPhoto(false)
+      }
+    }
+
+    const resetForm = () => {
+      setFormData({
+        prenom: '',
+        nom: '',
+        nom_affichage: '',
+        role_court: '',
+        role_long: '',
+        categorie: 'direction',
+        pole_nom: '',
+        email: '',
+        phone: '',
+        linkedin_url: '',
+        other_url: '',
+        ordre: 100,
+        highlight: false,
+        photo_url: '',
+      })
+      setPhotoFile(null)
+      setEditingId(null)
+      setSelectedMemberForPhoto(null)
+    }
+
+    return (
+      <div className="module-content">
+        <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '2px solid #e2e8f0' }}>
+          <button
+            className={`tab-button ${activeTab === 'bureau' ? 'active' : ''}`}
+            onClick={() => setActiveTab('bureau')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              border: 'none',
+              background: activeTab === 'bureau' ? '#3b82f6' : 'transparent',
+              color: activeTab === 'bureau' ? 'white' : '#64748b',
+              cursor: 'pointer',
+              borderBottom: activeTab === 'bureau' ? '2px solid #3b82f6' : '2px solid transparent',
+              marginBottom: '-2px',
+            }}
+          >
+            Bureau & Équipe
+          </button>
+        </div>
+
+        {activeTab === 'bureau' && (
+          <>
+            {/* Segments pour les différentes actions */}
+            <div style={{ 
+              display: 'flex', 
+              gap: '0.5rem', 
+              marginBottom: '2rem', 
+              borderBottom: '2px solid #e2e8f0',
+              paddingBottom: '0.5rem'
+            }}>
+              <button
+                onClick={() => { setActiveSegment('liste'); resetForm() }}
+                style={{
+                  padding: '0.75rem 1.5rem',
+                  border: 'none',
+                  background: activeSegment === 'liste' ? '#3b82f6' : 'transparent',
+                  color: activeSegment === 'liste' ? 'white' : '#64748b',
+                  cursor: 'pointer',
+                  borderRadius: '8px 8px 0 0',
+                  fontWeight: activeSegment === 'liste' ? '600' : '400',
+                }}
+              >
+                📋 Liste des membres
+              </button>
+              <button
+                onClick={() => { setActiveSegment('ajouter'); resetForm() }}
+                style={{
+                  padding: '0.75rem 1.5rem',
+                  border: 'none',
+                  background: activeSegment === 'ajouter' ? '#3b82f6' : 'transparent',
+                  color: activeSegment === 'ajouter' ? 'white' : '#64748b',
+                  cursor: 'pointer',
+                  borderRadius: '8px 8px 0 0',
+                  fontWeight: activeSegment === 'ajouter' ? '600' : '400',
+                }}
+              >
+                ➕ Ajouter un membre
+              </button>
+              <button
+                onClick={() => { setActiveSegment('photos'); resetForm() }}
+                style={{
+                  padding: '0.75rem 1.5rem',
+                  border: 'none',
+                  background: activeSegment === 'photos' ? '#3b82f6' : 'transparent',
+                  color: activeSegment === 'photos' ? 'white' : '#64748b',
+                  cursor: 'pointer',
+                  borderRadius: '8px 8px 0 0',
+                  fontWeight: activeSegment === 'photos' ? '600' : '400',
+                }}
+              >
+                📷 Gérer les photos
+              </button>
+            </div>
+
+            {/* Segment: Liste des membres */}
+            {activeSegment === 'liste' && (
+              <>
+
+            {loading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Chargement...</p>
+              </div>
+            ) : (
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Nom</th>
+                      <th>Rôle</th>
+                      <th>Catégorie</th>
+                      <th>Ordre</th>
+                      <th>Statut</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bureauMembers.length === 0 ? (
+                      <tr>
+                        <td colSpan="6" className="text-center py-4">
+                          Aucun membre du bureau
+                        </td>
+                      </tr>
+                    ) : (
+                      bureauMembers.map((member) => (
+                        <tr key={member.id}>
+                          <td>
+                            {member.nom_affichage || `${member.prenom} ${member.nom.toUpperCase()}`}
+                          </td>
+                          <td>{member.role_long}</td>
+                          <td>
+                            <span className="status-badge">{member.categorie}</span>
+                          </td>
+                          <td>{member.ordre}</td>
+                          <td>
+                            <span className={`status-badge ${member.is_active ? 'approved' : 'pending'}`}>
+                              {member.is_active ? 'Actif' : 'Inactif'}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="table-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+                              <button
+                                className="action-btn approve"
+                                onClick={() => handleEdit(member)}
+                                title="Modifier"
+                              >
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: '16px', height: '16px' }}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </button>
+                              <button
+                                className="action-btn"
+                                onClick={() => handlePhotoOnly(member)}
+                                title="Gérer la photo"
+                                style={{ background: '#10b981', color: 'white' }}
+                              >
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: '16px', height: '16px' }}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                              </button>
+                              <button
+                                className="action-btn reject"
+                                onClick={() => handleDelete(member.id)}
+                                title="Désactiver"
+                              >
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: '16px', height: '16px' }}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Segment: Ajouter un membre */}
+            {activeSegment === 'ajouter' && (
+              <div style={{ background: 'white', padding: '2rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <h2 style={{ marginBottom: '1.5rem', color: '#1e293b' }}>Ajouter un nouveau membre du bureau</h2>
+                <form onSubmit={handleSubmit}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem' }}>
+                    <div className="form-group">
+                      <label>Prénom *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.prenom}
+                        onChange={(e) => setFormData({ ...formData, prenom: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.nom}
+                        onChange={(e) => setFormData({ ...formData, nom: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                      <label>Nom d'affichage (optionnel)</label>
+                      <input
+                        type="text"
+                        value={formData.nom_affichage}
+                        onChange={(e) => setFormData({ ...formData, nom_affichage: e.target.value })}
+                        placeholder="Sinon: Prénom + NOM"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Rôle court *</label>
+                      <select
+                        required
+                        value={formData.role_court}
+                        onChange={(e) => setFormData({ ...formData, role_court: e.target.value })}
+                      >
+                        <option value="">Sélectionner...</option>
+                        {roleOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Rôle long *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.role_long}
+                        onChange={(e) => setFormData({ ...formData, role_long: e.target.value })}
+                        placeholder="ex: Président, Vice-président"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Catégorie *</label>
+                      <select
+                        required
+                        value={formData.categorie}
+                        onChange={(e) => setFormData({ ...formData, categorie: e.target.value })}
+                      >
+                        <option value="direction">Direction</option>
+                        <option value="pole">Pôle</option>
+                        <option value="autre">Autre</option>
+                      </select>
+                    </div>
+                    {formData.categorie === 'pole' && (
+                      <div className="form-group">
+                        <label>Nom du pôle</label>
+                        <input
+                          type="text"
+                          value={formData.pole_nom}
+                          onChange={(e) => setFormData({ ...formData, pole_nom: e.target.value })}
+                          placeholder="ex: Pôle Formation"
+                        />
+                      </div>
+                    )}
+                    <div className="form-group">
+                      <label>Email</label>
+                      <input
+                        type="email"
+                        value={formData.email}
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Téléphone</label>
+                      <input
+                        type="tel"
+                        value={formData.phone}
+                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>LinkedIn URL</label>
+                      <input
+                        type="url"
+                        value={formData.linkedin_url}
+                        onChange={(e) => setFormData({ ...formData, linkedin_url: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Autre URL</label>
+                      <input
+                        type="url"
+                        value={formData.other_url}
+                        onChange={(e) => setFormData({ ...formData, other_url: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Ordre d'affichage</label>
+                      <input
+                        type="number"
+                        value={formData.ordre}
+                        onChange={(e) => setFormData({ ...formData, ordre: parseInt(e.target.value) || 100 })}
+                      />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={formData.highlight}
+                          onChange={(e) => setFormData({ ...formData, highlight: e.target.checked })}
+                        />
+                        {' '}Mettre en avant (ex: président)
+                      </label>
+                    </div>
+                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                      <label>Photo (optionnel - peut être ajoutée plus tard)</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => setPhotoFile(e.target.files[0] || null)}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => { setActiveSegment('liste'); resetForm() }}
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary"
+                      disabled={uploadingPhoto}
+                    >
+                      {uploadingPhoto ? 'Création en cours...' : 'Créer le membre'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* Segment: Modifier un membre */}
+            {activeSegment === 'modifier' && editingId && (
+              <div style={{ background: 'white', padding: '2rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <h2 style={{ marginBottom: '1.5rem', color: '#1e293b' }}>Modifier un membre du bureau</h2>
+                <form onSubmit={handleSubmit}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem' }}>
+                    <div className="form-group">
+                      <label>Prénom *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.prenom}
+                        onChange={(e) => setFormData({ ...formData, prenom: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.nom}
+                        onChange={(e) => setFormData({ ...formData, nom: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                      <label>Nom d'affichage (optionnel)</label>
+                      <input
+                        type="text"
+                        value={formData.nom_affichage}
+                        onChange={(e) => setFormData({ ...formData, nom_affichage: e.target.value })}
+                        placeholder="Sinon: Prénom + NOM"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Rôle court *</label>
+                      <select
+                        required
+                        value={formData.role_court}
+                        onChange={(e) => setFormData({ ...formData, role_court: e.target.value })}
+                      >
+                        <option value="">Sélectionner...</option>
+                        {roleOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Rôle long *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.role_long}
+                        onChange={(e) => setFormData({ ...formData, role_long: e.target.value })}
+                        placeholder="ex: Président, Vice-président"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Catégorie *</label>
+                      <select
+                        required
+                        value={formData.categorie}
+                        onChange={(e) => setFormData({ ...formData, categorie: e.target.value })}
+                      >
+                        <option value="direction">Direction</option>
+                        <option value="pole">Pôle</option>
+                        <option value="autre">Autre</option>
+                      </select>
+                    </div>
+                    {formData.categorie === 'pole' && (
+                      <div className="form-group">
+                        <label>Nom du pôle</label>
+                        <input
+                          type="text"
+                          value={formData.pole_nom}
+                          onChange={(e) => setFormData({ ...formData, pole_nom: e.target.value })}
+                          placeholder="ex: Pôle Formation"
+                        />
+                      </div>
+                    )}
+                    <div className="form-group">
+                      <label>Email</label>
+                      <input
+                        type="email"
+                        value={formData.email}
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Téléphone</label>
+                      <input
+                        type="tel"
+                        value={formData.phone}
+                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>LinkedIn URL</label>
+                      <input
+                        type="url"
+                        value={formData.linkedin_url}
+                        onChange={(e) => setFormData({ ...formData, linkedin_url: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Autre URL</label>
+                      <input
+                        type="url"
+                        value={formData.other_url}
+                        onChange={(e) => setFormData({ ...formData, other_url: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Ordre d'affichage</label>
+                      <input
+                        type="number"
+                        value={formData.ordre}
+                        onChange={(e) => setFormData({ ...formData, ordre: parseInt(e.target.value) || 100 })}
+                      />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={formData.highlight}
+                          onChange={(e) => setFormData({ ...formData, highlight: e.target.checked })}
+                        />
+                        {' '}Mettre en avant (ex: président)
+                      </label>
+                    </div>
+                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                      <label>Photo (optionnel - peut être modifiée dans l'onglet Photos)</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => setPhotoFile(e.target.files[0] || null)}
+                      />
+                      {formData.photo_url && !photoFile && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                          <img
+                            src={formData.photo_url}
+                            alt="Photo actuelle"
+                            style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px', border: '1px solid #e2e8f0' }}
+                          />
+                          <p style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '0.5rem' }}>
+                            Photo actuelle. Utilisez l'onglet "Gérer les photos" pour la modifier.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => { setActiveSegment('liste'); resetForm() }}
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary"
+                      disabled={uploadingPhoto}
+                    >
+                      {uploadingPhoto ? 'Mise à jour en cours...' : 'Mettre à jour'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* Segment: Gérer les photos */}
+            {activeSegment === 'photos' && (
+              <div style={{ background: 'white', padding: '2rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <h2 style={{ marginBottom: '1.5rem', color: '#1e293b' }}>Gérer les photos des membres</h2>
+                
+                {selectedMemberForPhoto ? (
+                  <div>
+                    <div style={{ marginBottom: '1.5rem', padding: '1rem', background: '#f8fafc', borderRadius: '8px' }}>
+                      <p><strong>Membre sélectionné :</strong> {selectedMemberForPhoto.nom_affichage || `${selectedMemberForPhoto.prenom} ${selectedMemberForPhoto.nom.toUpperCase()}`}</p>
+                      <p><strong>Rôle :</strong> {selectedMemberForPhoto.role_long}</p>
+                    </div>
+                    
+                    {selectedMemberForPhoto.photo_url && (
+                      <div style={{ marginBottom: '1.5rem' }}>
+                        <p style={{ marginBottom: '0.5rem', fontWeight: '600' }}>Photo actuelle :</p>
+                        <img
+                          src={selectedMemberForPhoto.photo_url}
+                          alt="Photo actuelle"
+                          style={{ maxWidth: '300px', maxHeight: '300px', borderRadius: '8px', border: '2px solid #e2e8f0' }}
+                        />
+                      </div>
+                    )}
+                    
+                    <div className="form-group">
+                      <label>Nouvelle photo</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        id="photo-upload-input"
+                        onChange={async (e) => {
+                          const file = e.target.files[0]
+                          if (file) {
+                            await handlePhotoUploadOnly(file, selectedMemberForPhoto.id)
+                          }
+                        }}
+                      />
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem' }}>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => { setSelectedMemberForPhoto(null) }}
+                      >
+                        Retour à la liste
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <p style={{ marginBottom: '1.5rem', color: '#64748b' }}>
+                      Sélectionnez un membre pour ajouter ou modifier sa photo
+                    </p>
+                    <div className="table-container">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Photo</th>
+                            <th>Nom</th>
+                            <th>Rôle</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bureauMembers.length === 0 ? (
+                            <tr>
+                              <td colSpan="4" className="text-center py-4">
+                                Aucun membre du bureau
+                              </td>
+                            </tr>
+                          ) : (
+                            bureauMembers.map((member) => (
+                              <tr key={member.id}>
+                                <td>
+                                  {member.photo_url ? (
+                                    <img
+                                      src={member.photo_url}
+                                      alt={member.nom_affichage || `${member.prenom} ${member.nom}`}
+                                      style={{ width: '50px', height: '50px', borderRadius: '50%', objectFit: 'cover' }}
+                                    />
+                                  ) : (
+                                    <div style={{ width: '50px', height: '50px', borderRadius: '50%', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                      <span style={{ fontSize: '1.5rem' }}>👤</span>
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  {member.nom_affichage || `${member.prenom} ${member.nom.toUpperCase()}`}
+                                </td>
+                                <td>{member.role_long}</td>
+                                <td>
+                                  <button
+                                    className="btn-primary"
+                                    onClick={() => handlePhotoOnly(member)}
+                                    style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }}
+                                  >
+                                    {member.photo_url ? 'Modifier photo' : 'Ajouter photo'}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Modal pour confirmation (gardé pour compatibilité) */}
+            {showModal && createPortal(
+              <div className="modal-overlay" onClick={() => setShowModal(false)}>
+                <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                  <h2>{editingId ? 'Modifier un membre' : 'Ajouter un membre du bureau'}</h2>
+                  <form onSubmit={handleSubmit}>
+                    <div className="form-group">
+                      <label>Prénom *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.prenom}
+                        onChange={(e) => setFormData({ ...formData, prenom: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.nom}
+                        onChange={(e) => setFormData({ ...formData, nom: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Nom d'affichage (optionnel)</label>
+                      <input
+                        type="text"
+                        value={formData.nom_affichage}
+                        onChange={(e) => setFormData({ ...formData, nom_affichage: e.target.value })}
+                        placeholder="Sinon: Prénom + NOM"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Rôle court *</label>
+                      <select
+                        required
+                        value={formData.role_court}
+                        onChange={(e) => setFormData({ ...formData, role_court: e.target.value })}
+                      >
+                        <option value="">Sélectionner...</option>
+                        {roleOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Rôle long *</label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.role_long}
+                        onChange={(e) => setFormData({ ...formData, role_long: e.target.value })}
+                        placeholder="ex: Président, Vice-président"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Catégorie *</label>
+                      <select
+                        required
+                        value={formData.categorie}
+                        onChange={(e) => setFormData({ ...formData, categorie: e.target.value })}
+                      >
+                        <option value="direction">Direction</option>
+                        <option value="pole">Pôle</option>
+                        <option value="autre">Autre</option>
+                      </select>
+                    </div>
+                    {formData.categorie === 'pole' && (
+                      <div className="form-group">
+                        <label>Nom du pôle</label>
+                        <input
+                          type="text"
+                          value={formData.pole_nom}
+                          onChange={(e) => setFormData({ ...formData, pole_nom: e.target.value })}
+                          placeholder="ex: Pôle Formation"
+                        />
+                      </div>
+                    )}
+                    <div className="form-group">
+                      <label>Email</label>
+                      <input
+                        type="email"
+                        value={formData.email}
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Téléphone</label>
+                      <input
+                        type="tel"
+                        value={formData.phone}
+                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>LinkedIn URL</label>
+                      <input
+                        type="url"
+                        value={formData.linkedin_url}
+                        onChange={(e) => setFormData({ ...formData, linkedin_url: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Autre URL</label>
+                      <input
+                        type="url"
+                        value={formData.other_url}
+                        onChange={(e) => setFormData({ ...formData, other_url: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Ordre d'affichage</label>
+                      <input
+                        type="number"
+                        value={formData.ordre}
+                        onChange={(e) => setFormData({ ...formData, ordre: parseInt(e.target.value) || 100 })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={formData.highlight}
+                          onChange={(e) => setFormData({ ...formData, highlight: e.target.checked })}
+                        />
+                        {' '}Mettre en avant (ex: président)
+                      </label>
+                    </div>
+                    <div className="form-group">
+                      <label>Photo</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => setPhotoFile(e.target.files[0] || null)}
+                      />
+                      {formData.photo_url && !photoFile && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                          <img
+                            src={formData.photo_url}
+                            alt="Photo actuelle"
+                            style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <div className="modal-actions">
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
+                          setShowModal(false)
+                          setEditingId(null)
+                          setPhotoFile(null)
+                        }}
+                      >
+                        Annuler
+                      </button>
+                      <button
+                        type="submit"
+                        className="btn-primary"
+                        disabled={uploadingPhoto}
+                      >
+                        {uploadingPhoto ? 'Upload en cours...' : editingId ? 'Mettre à jour' : 'Créer'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>,
+              document.body
+            )}
+          </>
         )}
       </div>
     )
@@ -5152,7 +6605,10 @@ function AdminDashboard({ admin, onLogout }) {
           {activeModule === 'mentorat' && <MentoratContent />}
           {activeModule === 'recrutement' && <RecrutementContent />}
           {activeModule === 'tresorerie' && <TresorerieContent />}
-          {activeModule === 'secretariat' && <SecretariatContent />}
+          {activeModule === 'secretariat' && (
+            <SecretariatDashboard currentUser={admin} />
+          )}
+          {activeModule === 'settings' && <SettingsContent />}
           {activeModule === 'dashboard' && (
             <>
               {/* KPI Cards */}

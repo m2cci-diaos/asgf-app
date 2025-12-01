@@ -490,25 +490,25 @@ export async function createInscription(inscriptionData) {
     // Mettre à jour les stats
     await updateWebinaireStats(webinaire_id)
 
-    // Envoyer l'email de confirmation (asynchrone, ne bloque pas)
-    try {
-      const { sendWebinaireConfirmationEmail } = await import('./email.service.js')
-      const { data: webinaireDetails } = await supabaseWebinaire
-        .from('webinaires')
-        .select('titre, date_webinaire, heure_debut, lien_webinaire')
-        .eq('id', webinaire_id)
-        .single()
+    // Récupérer les détails du webinaire pour les emails
+    const { data: webinaireDetails } = await supabaseWebinaire
+      .from('webinaires')
+      .select('titre, date_webinaire, heure_debut, lien_webinaire')
+      .eq('id', webinaire_id)
+      .single()
 
-      if (webinaireDetails) {
-        const webinaireDate = webinaireDetails.date_webinaire
-          ? new Date(webinaireDetails.date_webinaire).toLocaleDateString('fr-FR', {
-              day: 'numeric',
-              month: 'long',
-              year: 'numeric'
-            })
-          : ''
+    if (webinaireDetails) {
+      const webinaireDate = webinaireDetails.date_webinaire
+        ? new Date(webinaireDetails.date_webinaire).toLocaleDateString('fr-FR', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric'
+          })
+        : ''
 
-        // Envoyer l'email en arrière-plan (ne pas attendre)
+      // Envoyer l'email de confirmation au participant (asynchrone, ne bloque pas)
+      try {
+        const { sendWebinaireConfirmationEmail } = await import('./email.service.js')
         sendWebinaireConfirmationEmail({
           to: email,
           prenom,
@@ -519,13 +519,30 @@ export async function createInscription(inscriptionData) {
           webinaireLien: webinaireDetails.lien_webinaire || null,
           confirmationCode: inscription.confirmation_code || null,
         }).catch(err => {
-          // Logger l'erreur mais ne pas faire échouer l'inscription
           logError('Erreur envoi email confirmation (non bloquant)', err)
         })
+      } catch (emailErr) {
+        logError('Erreur préparation email confirmation (non bloquant)', emailErr)
       }
-    } catch (emailErr) {
-      // Ne pas faire échouer l'inscription si l'email échoue
-      logError('Erreur préparation email confirmation (non bloquant)', emailErr)
+
+      // Notifier l'admin de la nouvelle inscription (asynchrone, ne bloque pas)
+      try {
+        const { notifyWebinaireInscription } = await import('./notifications.service.js')
+        notifyWebinaireInscription({
+          prenom,
+          nom,
+          email,
+          webinaire_title: webinaireDetails.titre,
+          webinaire_date: webinaireDetails.date_webinaire || '',
+          webinaire_time: webinaireDetails.heure_debut ? webinaireDetails.heure_debut.substring(0, 5) : '',
+          pays: inscriptionData.pays || 'France',
+          whatsapp: inscriptionData.whatsapp || null,
+        }).catch(err => {
+          logError('Erreur notification admin inscription webinaire (non bloquant)', err)
+        })
+      } catch (notifErr) {
+        logError('Erreur préparation notification admin (non bloquant)', notifErr)
+      }
     }
 
     logInfo('Inscription créée', { id: inscription.id, email })
@@ -541,6 +558,13 @@ export async function createInscription(inscriptionData) {
  */
 export async function updateInscription(inscriptionId, updateData) {
   try {
+    // Récupérer l'inscription actuelle pour vérifier le changement de statut
+    const { data: currentInscription } = await supabaseWebinaire
+      .from('inscriptions')
+      .select('*')
+      .eq('id', inscriptionId)
+      .single()
+
     const updateObj = {}
     if (updateData.prenom !== undefined) updateObj.prenom = updateData.prenom
     if (updateData.nom !== undefined) updateObj.nom = updateData.nom
@@ -569,6 +593,38 @@ export async function updateInscription(inscriptionId, updateData) {
     // Mettre à jour les stats
     if (data.webinaire_id) {
       await updateWebinaireStats(data.webinaire_id)
+    }
+
+    // Envoyer un email si le statut passe à 'confirmed'
+    if (updateData.statut === 'confirmed' && currentInscription && currentInscription.statut !== 'confirmed') {
+      try {
+        const { notifyWebinaireStatus } = await import('./notifications.service.js')
+        const { data: webinaireDetails } = await supabaseWebinaire
+          .from('webinaires')
+          .select('titre, date_webinaire, heure_debut, lien_webinaire')
+          .eq('id', data.webinaire_id)
+          .single()
+
+        if (webinaireDetails) {
+          // Notifier via Apps Script (envoie l'email de validation)
+          notifyWebinaireStatus({
+            prenom: data.prenom,
+            nom: data.nom,
+            email: data.email,
+            webinaire_title: webinaireDetails.titre,
+            webinaire_date: webinaireDetails.date_webinaire || '',
+            webinaire_time: webinaireDetails.heure_debut ? webinaireDetails.heure_debut.substring(0, 5) : '',
+            webinaire_lien: webinaireDetails.lien_webinaire || null,
+            status: 'confirmed',
+          }).catch(err => {
+            // Logger l'erreur mais ne pas faire échouer la mise à jour
+            logError('Erreur notification validation webinaire (non bloquant)', err)
+          })
+        }
+      } catch (notifErr) {
+        // Ne pas faire échouer la mise à jour si la notification échoue
+        logError('Erreur préparation notification validation (non bloquant)', notifErr)
+      }
     }
 
     logInfo('Inscription mise à jour', { id: inscriptionId })

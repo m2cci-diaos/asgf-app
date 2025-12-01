@@ -10,6 +10,9 @@ export const MODULES = {
   MENTORAT: 'mentorat',
   RECRUTEMENT: 'recrutement',
   CONTACT: 'contact',
+  AUDIT: 'audit',
+  CALENDAR: 'calendar',
+  PROJETS: 'projets',
 }
 
 // Liste de tous les modules (pour validation)

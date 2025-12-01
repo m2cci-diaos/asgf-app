@@ -15,6 +15,16 @@ function ScrollToTop() {
   useLayoutEffect(() => {
     // Si le pathname a changé, forcer le scroll vers le haut
     if (prevPathname.current !== pathname) {
+      // RÉACTIVER LE SCROLL EN PRIORITÉ
+      document.body.style.removeProperty('overflow')
+      document.body.style.removeProperty('overflow-y')
+      document.body.style.removeProperty('overflow-x')
+      document.documentElement.style.removeProperty('overflow')
+      document.documentElement.style.removeProperty('overflow-y')
+      document.documentElement.style.removeProperty('overflow-x')
+      document.body.style.overflowY = 'auto'
+      document.documentElement.style.overflowY = 'auto'
+      
       // Scroll immédiat vers le haut - méthode agressive
       window.scrollTo(0, 0)
       window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
@@ -44,7 +54,22 @@ function ScrollToTop() {
 
   // Double vérification avec useEffect pour s'assurer que le scroll est bien effectué
   useEffect(() => {
+    // RÉACTIVER LE SCROLL EN PRIORITÉ ABSOLUE
+    const enableScroll = () => {
+      document.body.style.removeProperty('overflow')
+      document.body.style.removeProperty('overflow-y')
+      document.body.style.removeProperty('overflow-x')
+      document.documentElement.style.removeProperty('overflow')
+      document.documentElement.style.removeProperty('overflow-y')
+      document.documentElement.style.removeProperty('overflow-x')
+      document.body.style.overflowY = 'auto'
+      document.documentElement.style.overflowY = 'auto'
+    }
+    
     const scrollToTop = () => {
+      // Toujours réactiver le scroll avant de scroller
+      enableScroll()
+      
       window.scrollTo(0, 0)
       window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
       
@@ -66,11 +91,17 @@ function ScrollToTop() {
       })
     }
 
-    // Scroll immédiat
+    // Réactiver le scroll immédiatement
+    enableScroll()
     scrollToTop()
 
-    // Scroll après plusieurs frames pour s'assurer que le contenu est rendu
+    // Réactiver le scroll après plusieurs frames pour s'assurer que c'est persistant
     const timeouts = []
+    timeouts.push(setTimeout(enableScroll, 0))
+    timeouts.push(setTimeout(enableScroll, 10))
+    timeouts.push(setTimeout(enableScroll, 50))
+    timeouts.push(setTimeout(enableScroll, 100))
+    timeouts.push(setTimeout(enableScroll, 200))
     timeouts.push(setTimeout(scrollToTop, 0))
     timeouts.push(setTimeout(scrollToTop, 10))
     timeouts.push(setTimeout(scrollToTop, 50))
@@ -79,8 +110,13 @@ function ScrollToTop() {
     
     // Scroll après le prochain frame de rendu (double RAF pour être sûr)
     requestAnimationFrame(() => {
+      enableScroll()
       requestAnimationFrame(() => {
-        requestAnimationFrame(scrollToTop)
+        enableScroll()
+        requestAnimationFrame(() => {
+          enableScroll()
+          scrollToTop()
+        })
       })
     })
 

@@ -1,164 +1,163 @@
 import React from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import './Footer.css'
 
 function Footer() {
   const currentYear = new Date().getFullYear()
   const location = useLocation()
+  const navigate = useNavigate()
 
   const scrollToSection = (e, sectionId) => {
+    e.preventDefault()
     if (location.pathname !== '/') {
-      // Si on n'est pas sur la page d'accueil, naviguer vers l'accueil avec l'ancre
-      e.preventDefault()
-      window.location.href = `/#${sectionId}`
+      navigate(`/#${sectionId}`)
+      setTimeout(() => {
+        const element = document.getElementById(sectionId)
+        if (element) {
+          const headerOffset = 80
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          setTimeout(() => {
+            window.scrollBy(0, -headerOffset)
+          }, 100)
+        }
+      }, 200)
       return
     }
-    e.preventDefault()
     const element = document.getElementById(sectionId)
     if (element) {
       const headerOffset = 80
-      const elementPosition = element.getBoundingClientRect().top
-      const offsetPosition = elementPosition + window.pageYOffset - headerOffset
-      window.scrollTo({
-        top: offsetPosition,
-        behavior: 'smooth'
-      })
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      setTimeout(() => {
+        window.scrollBy(0, -headerOffset)
+      }, 100)
     }
   }
 
   return (
-    <footer>
-      <div className="container">
-        <div className="footer-content">
-          <div className="footer-section footer-brand">
-            <div className="footer-logo">
-              <img 
-                src="/assets/images/Logo_officiel_ASGF-removebg-preview.png" 
-                alt="ASGF Logo" 
-                className="footer-logo-img"
-              />
-              <div className="footer-brand-text">
-                <h3>ASGF</h3>
-                <p className="footer-tagline">Association des Géomaticiens Sénégalais de France</p>
-              </div>
-            </div>
-            <p className="footer-mission">Unir les géomaticiens pour bâtir les territoires de demain</p>
-            <div className="footer-social">
-              <a 
-                href="https://www.linkedin.com/company/association-des-s%C3%A9n%C3%A9galais-g%C3%A9omaticiens-de-france-agsf/?viewAsMember=true" 
-                aria-label="LinkedIn" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="social-link linkedin"
-              >
-                <i className="fab fa-linkedin-in"></i>
-              </a>
-              <a 
-                href="#" 
-                aria-label="Facebook" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="social-link facebook"
-              >
-                <i className="fab fa-facebook-f"></i>
-              </a>
-              <a 
-                href="#" 
-                aria-label="Twitter" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="social-link twitter"
-              >
-                <i className="fab fa-twitter"></i>
-              </a>
-              <a 
-                href="#" 
-                aria-label="WhatsApp" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="social-link whatsapp"
-              >
-                <i className="fab fa-whatsapp"></i>
-              </a>
-              <a 
-                href="#" 
-                aria-label="YouTube" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="social-link youtube"
-              >
-                <i className="fab fa-youtube"></i>
-              </a>
+    <footer className="footer">
+      <div className="footer__top">
+        <div className="footer__col footer__brand">
+          <div className="footer__brand-header">
+            <img 
+              src="/assets/images/Logo_ASGF_Original.png" 
+              alt="ASGF Logo" 
+              className="footer__logo"
+            />
+            <div>
+              <h3 className="footer__brand-name">ASGF</h3>
+              <p className="footer__tagline">Association des Géomaticiens Sénégalais de France</p>
             </div>
           </div>
-
-          <div className="footer-section">
-            <h4>Liens rapides</h4>
-            <ul className="footer-links">
-              <li>
-                <Link to="/" onClick={(e) => scrollToSection(e, 'accueil')}>
-                  <i className="fas fa-home"></i> Accueil
-                </Link>
-              </li>
-              <li>
-                <Link to="/" onClick={(e) => scrollToSection(e, 'apropos')}>
-                  <i className="fas fa-info-circle"></i> À Propos
-                </Link>
-              </li>
-              <li>
-                <Link to="/" onClick={(e) => scrollToSection(e, 'missions')}>
-                  <i className="fas fa-bullseye"></i> Missions
-                </Link>
-              </li>
-              <li>
-                <Link to="/" onClick={(e) => scrollToSection(e, 'activites')}>
-                  <i className="fas fa-calendar-alt"></i> Activités
-                </Link>
-              </li>
-              <li>
-                <Link to="/bureau">
-                  <i className="fas fa-users"></i> Bureau
-                </Link>
-              </li>
-              <li>
-                <Link to="/formation">
-                  <i className="fas fa-graduation-cap"></i> Formations
-                </Link>
-              </li>
-              <li>
-                <Link to="/adhesion">
-                  <i className="fas fa-user-plus"></i> Adhésion
-                </Link>
-              </li>
-            </ul>
-          </div>
-
-          <div className="footer-section">
-            <h4>Contact</h4>
-            <div className="footer-contact">
-              <div className="contact-item">
-                <i className="fas fa-envelope"></i>
-                <a href="mailto:association.geomaticiens.sf@gmail.com">
-                  association.geomaticiens.sf@gmail.com
-                </a>
-              </div>
-              <div className="contact-item">
-                <i className="fas fa-phone"></i>
-                <a href="tel:+33662081621">+33 (0)6 62 08 16 21</a>
-              </div>
-              <div className="contact-item">
-                <i className="fas fa-map-marker-alt"></i>
-                <span>France</span>
-              </div>
-            </div>
+          <p>Unir les géomaticiens pour bâtir les territoires de demain</p>
+          <div className="footer__socials">
+            <a 
+              href="https://www.linkedin.com/company/association-des-s%C3%A9n%C3%A9galais-g%C3%A9omaticiens-de-france-agsf/?viewAsMember=true" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="footer__social-btn"
+              aria-label="LinkedIn"
+            >
+              <i className="fab fa-linkedin-in"></i>
+            </a>
+            <a 
+              href="#" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="footer__social-btn"
+              aria-label="Facebook"
+            >
+              <i className="fab fa-facebook-f"></i>
+            </a>
+            <a 
+              href="#" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="footer__social-btn"
+              aria-label="Twitter"
+            >
+              <i className="fab fa-twitter"></i>
+            </a>
+            <a 
+              href="#" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="footer__social-btn"
+              aria-label="WhatsApp"
+            >
+              <i className="fab fa-whatsapp"></i>
+            </a>
+            <a 
+              href="#" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="footer__social-btn"
+              aria-label="YouTube"
+            >
+              <i className="fab fa-youtube"></i>
+            </a>
           </div>
         </div>
 
-        <div className="footer-bottom">
-          <div className="footer-bottom-content">
-            <p>&copy; {currentYear} Association des Géomaticiens Sénégalais de France. Tous droits réservés.</p>
-            <p className="footer-heart">Conçu avec <span className="heart">❤️</span> pour promouvoir l'excellence géomatique africaine</p>
-          </div>
+        <div className="footer__col footer__links">
+          <h4 className="footer__title">Liens rapides</h4>
+          <ul className="footer__nav">
+            <li>
+              <Link to="/" className="footer__link" onClick={(e) => scrollToSection(e, 'accueil')}>
+                <i className="fas fa-home"></i> Accueil
+              </Link>
+            </li>
+            <li>
+              <Link to="/bureau" className="footer__link">
+                <i className="fas fa-users"></i> Bureau
+              </Link>
+            </li>
+            <li>
+              <Link to="/formation" className="footer__link">
+                <i className="fas fa-graduation-cap"></i> Formations
+              </Link>
+            </li>
+            <li>
+              <Link to="/webinaires" className="footer__link">
+                <i className="fas fa-video"></i> Webinaires
+              </Link>
+            </li>
+            <li>
+              <Link to="/adhesion" className="footer__link">
+                <i className="fas fa-user-plus"></i> Adhésion
+              </Link>
+            </li>
+            <li>
+              <Link to="/" className="footer__link" onClick={(e) => scrollToSection(e, 'contact')}>
+                <i className="fas fa-envelope"></i> Contact
+              </Link>
+            </li>
+          </ul>
         </div>
+
+        <div className="footer__col footer__contact">
+          <h4 className="footer__title">Contact</h4>
+          <ul className="footer__contact-list">
+            <li>
+              <a href="mailto:association.geomaticiens.sf@gmail.com" className="footer__link">
+                <i className="fas fa-envelope"></i> association.geomaticiens.sf@gmail.com
+              </a>
+            </li>
+            <li>
+              <a href="tel:+33662081621" className="footer__link">
+                <i className="fas fa-phone"></i> +33 (0)6 62 08 16 21
+              </a>
+            </li>
+            <li>
+              <span className="footer__link" style={{cursor: 'default'}}>
+                <i className="fas fa-map-marker-alt"></i> France
+              </span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div className="footer__bottom">
+        <p>&copy; {currentYear} Association des Géomaticiens Sénégalais de France. Tous droits réservés.</p>
       </div>
     </footer>
   )

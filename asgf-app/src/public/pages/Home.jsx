@@ -1,10 +1,65 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
 const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
 
+// Composant StatCard avec animation de compteur
+function StatCard({ stat }) {
+  const [displayedValue, setDisplayedValue] = useState(0)
+  const cardRef = useRef(null)
+  const animatedRef = useRef(false)
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && !animatedRef.current) {
+            animatedRef.current = true
+            let current = 0
+            const increment = stat.value / 50
+            const timer = setInterval(() => {
+              current += increment
+              if (current >= stat.value) {
+                setDisplayedValue(stat.value)
+                clearInterval(timer)
+              } else {
+                setDisplayedValue(Math.floor(current))
+              }
+            }, 30)
+          }
+        })
+      },
+      { threshold: 0.3 }
+    )
+
+    if (cardRef.current) {
+      observer.observe(cardRef.current)
+    }
+
+    return () => {
+      if (cardRef.current) {
+        observer.unobserve(cardRef.current)
+      }
+    }
+  }, [stat.value])
+
+  return (
+    <div className="stat-card" ref={cardRef}>
+      <div className="stat-card__icon">
+        <i className={`fas ${stat.icon}`}></i>
+      </div>
+      <div className="stat-card__value">
+        {displayedValue}{stat.suffix}
+      </div>
+      <p className="stat-card__label">{stat.label}</p>
+    </div>
+  )
+}
+
 function Home() {
   const location = useLocation()
+  // State pour l'onglet actif - toujours initialisé à 'apropos' par défaut
+  const [activeTab, setActiveTab] = useState('apropos')
   const [contactForm, setContactForm] = useState({
     fullName: '',
     email: '',
@@ -14,29 +69,75 @@ function Home() {
   const [contactStatus, setContactStatus] = useState({ type: '', message: '' })
   const [contactLoading, setContactLoading] = useState(false)
 
+  // Effet pour gérer le hash de l'URL et l'onglet actif
   useEffect(() => {
-    // Gérer le scroll vers une section si une ancre est présente dans l'URL
     if (location.hash) {
-      const sectionId = location.hash.substring(1) // Enlever le #
+      const sectionId = location.hash.substring(1)
+      if (['apropos', 'missions', 'activites', 'partenariats'].includes(sectionId)) {
+        setActiveTab(sectionId)
+      }
+    } else if (location.pathname === '/') {
+      // Si on est sur la page d'accueil sans hash, s'assurer qu'un onglet est actif
+      setActiveTab(prev => prev || 'apropos')
+    }
+  }, [location.hash, location.pathname])
+
+  // Effet séparé pour le scroll
+  useEffect(() => {
+    if (location.hash) {
+      const sectionId = location.hash.substring(1)
+      
+      if (['apropos', 'missions', 'activites', 'partenariats'].includes(sectionId)) {
+        // Scroll vers la section accueil-content d'abord
+        setTimeout(() => {
+          const accueilElement = document.getElementById('accueil-content')
+          if (accueilElement) {
+            accueilElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            setTimeout(() => {
+              const currentScroll = window.pageYOffset || document.documentElement.scrollTop
+              window.scrollTo({ top: currentScroll - 90, behavior: 'smooth' })
+            }, 100)
+          }
+        }, 100)
+      }
+      
+      // S'assurer que le scroll est activé
+      document.body.style.removeProperty('overflow')
+      document.body.style.removeProperty('overflow-y')
+      document.documentElement.style.removeProperty('overflow')
+      document.documentElement.style.removeProperty('overflow-y')
+      document.body.style.overflowY = 'auto'
+      document.documentElement.style.overflowY = 'auto'
       
       const scrollToElement = () => {
         const element = document.getElementById(sectionId)
         if (element) {
-          const headerOffset = 80
-          const elementPosition = element.getBoundingClientRect().top
-          const offsetPosition = elementPosition + window.pageYOffset - headerOffset
-          window.scrollTo({
-            top: offsetPosition,
-            behavior: 'smooth'
+          const headerOffset = 90
+          
+          // Utiliser scrollIntoView qui est plus fiable
+          element.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
           })
+          
+          // Ajuster pour le header fixed après le scroll
+          setTimeout(() => {
+            const currentScroll = window.pageYOffset || document.documentElement.scrollTop
+            window.scrollTo({
+              top: currentScroll - headerOffset,
+              behavior: 'smooth'
+            })
+          }, 100)
+        } else {
+          console.warn(`Section avec l'ID "${sectionId}" non trouvée`)
         }
       }
       
       // Plusieurs tentatives pour s'assurer que le scroll fonctionne
       setTimeout(scrollToElement, 100)
-      setTimeout(scrollToElement, 200)
       setTimeout(scrollToElement, 300)
       setTimeout(scrollToElement, 500)
+      setTimeout(scrollToElement, 700)
       
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -44,10 +145,10 @@ function Home() {
         })
       })
     } else {
-      // Sinon, scroll vers le haut
-      window.scrollTo(0, 0)
-      document.documentElement.scrollTop = 0
-      document.body.scrollTop = 0
+      // Sinon, scroll vers le haut seulement si on vient d'arriver sur la page
+      if (location.pathname === '/') {
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      }
     }
   }, [location.hash, location.pathname])
 
@@ -71,45 +172,8 @@ function Home() {
       observer.observe(el)
     })
 
-    // Animation des stats
-    const animateStats = () => {
-      const stats = document.querySelectorAll('#stats .mission-card h3')
-      stats.forEach(stat => {
-        const target = parseInt(stat.textContent.replace(/[^0-9]/g, ''))
-        if (target && !stat.dataset.animated) {
-          stat.dataset.animated = 'true'
-          let current = 0
-          const increment = target / 50
-          const timer = setInterval(() => {
-            current += increment
-            if (current >= target) {
-              stat.textContent = stat.textContent.replace(/[0-9]+/, target)
-              clearInterval(timer)
-            } else {
-              stat.textContent = stat.textContent.replace(/[0-9]+/, Math.floor(current))
-            }
-          }, 30)
-        }
-      })
-    }
-
-    // Observer pour les stats
-    const statsObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          animateStats()
-        }
-      })
-    }, observerOptions)
-
-    const statsSection = document.getElementById('stats')
-    if (statsSection) {
-      statsObserver.observe(statsSection)
-    }
-
     return () => {
       observer.disconnect()
-      statsObserver.disconnect()
     }
   }, [])
 
@@ -198,7 +262,26 @@ function Home() {
             <p>Unir les géomaticiens pour bâtir les territoires de demain</p>
             <p style={{marginTop: '1rem', fontStyle: 'italic'}}>Innovation géospatiale et coopération internationale</p>
             <div style={{display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap', marginTop: '2rem'}}>
-              <a href="#apropos" className="cta-button" onClick={(e) => scrollToSection(e, 'apropos')}>Découvrir notre mission</a>
+              <a 
+                href="#accueil-content" 
+                className="cta-button" 
+                onClick={(e) => {
+                  e.preventDefault()
+                  setActiveTab('missions')
+                  setTimeout(() => {
+                    const accueilElement = document.getElementById('accueil-content')
+                    if (accueilElement) {
+                      accueilElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                      setTimeout(() => {
+                        const currentScroll = window.pageYOffset || document.documentElement.scrollTop
+                        window.scrollTo({ top: currentScroll - 90, behavior: 'smooth' })
+                      }, 100)
+                    }
+                  }, 100)
+                }}
+              >
+                Découvrir notre mission
+              </a>
               <Link to="/adhesion" className="cta-button" style={{background: 'var(--accent-color)', color: 'var(--dark-color)'}}>
                 <i className="fas fa-user-plus"></i> Nous rejoindre
               </Link>
@@ -210,199 +293,242 @@ function Home() {
         </div>
       </section>
 
-      {/* About Section */}
-      <section id="apropos" className="about">
+      {/* Section Accueil avec onglets */}
+      <section id="accueil-content" className="accueil-tabs-section" style={{
+        background: 'linear-gradient(180deg, #f1f5f9 0%, #ffffff 100%)',
+        padding: '40px 0 30px 0'
+      }}>
         <div className="container">
-          <h2 className="section-title fade-in">À Propos du ASGF</h2>
-          <div className="about-content">
-            <div className="about-text fade-in">
-              <p><strong>Ensemble.</strong> C'est le mot qui résume notre raison d'être, notre force et notre engagement.</p>
-              <p>L'Association des Géomaticiens Sénégalais de France (ASGF) est née d'une conviction simple : la géomatique est un levier puissant pour comprendre, planifier et transformer nos territoires.</p>
-              <p>Notre ambition est claire : rassembler la diaspora sénégalaise autour d'un projet collectif, où les compétences techniques rencontrent la volonté d'agir pour le développement durable du Sénégal.</p>
-              <p>Chaque membre de notre réseau, qu'il soit étudiant, professionnel ou enseignant, participe à construire cette dynamique d'innovation, de solidarité et de partage du savoir.</p>
-              <p style={{marginTop: '1.5rem', fontStyle: 'italic', color: 'var(--primary-color)'}}>"Unir les géomaticiens pour bâtir les territoires de demain."</p>
+          <h2 className="section-title" style={{
+            textAlign: 'center', 
+            marginBottom: '1.5rem', 
+            marginTop: '0',
+            fontSize: '2.5rem', 
+            fontWeight: 800,
+            color: '#000000',
+            display: 'block',
+            visibility: 'visible',
+            opacity: 1,
+            textShadow: 'none',
+            letterSpacing: '0.02em'
+          }}>
+            Découvrez l'ASGF
+          </h2>
+          
+          <section className="section-tabs">
+            {/* Header avec onglets premium */}
+            <div className="section-tabs__header">
+              {[
+                { id: 'apropos', label: 'À Propos', icon: 'fa-info-circle' },
+                { id: 'missions', label: 'Missions', icon: 'fa-bullseye' },
+                { id: 'activites', label: 'Activités', icon: 'fa-calendar-check' },
+                { id: 'partenariats', label: 'Partenariats', icon: 'fa-handshake' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  className={`tab-btn ${activeTab === tab.id ? 'tab-btn--active' : ''}`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <i className={`fas ${tab.icon}`}></i>
+                  {tab.label}
+                </button>
+              ))}
             </div>
-            <div className="about-image fade-in">
-              <i className="fas fa-map-marked-alt"></i>
+
+            {/* Contenu des onglets */}
+            <div className="section-tabs__content">
+              {/* Onglet À Propos */}
+              {activeTab === 'apropos' && (
+                <div id="apropos" className="tab-panel">
+                  <div className="tab-layout">
+                    <div className="tab-layout__text">
+                      <p><strong>Ensemble.</strong> C'est le mot qui résume notre raison d'être, notre force et notre engagement.</p>
+                      <p>L'Association des Géomaticiens Sénégalais de France (ASGF) est née d'une conviction simple : la géomatique est un levier puissant pour comprendre, planifier et transformer nos territoires.</p>
+                      <p>Notre ambition est claire : rassembler la diaspora sénégalaise autour d'un projet collectif, où les compétences techniques rencontrent la volonté d'agir pour le développement durable du Sénégal.</p>
+                      <p>Chaque membre de notre réseau, qu'il soit étudiant, professionnel ou enseignant, participe à construire cette dynamique d'innovation, de solidarité et de partage du savoir.</p>
+                      <p className="about-slogan">
+                        <span className="about-slogan__quote">«</span>
+                        <span className="about-slogan__text">
+                          Unir les géomaticiens pour bâtir les territoires de demain.
+                        </span>
+                        <span className="about-slogan__quote">»</span>
+                      </p>
+                    </div>
+                    <div className="tab-layout__illustration">
+                      <img
+                        src="/assets/images/img_SN_FR.png"
+                        alt="Carte Sénégal - France"
+                        className="about-image"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Onglet Missions */}
+              {activeTab === 'missions' && (
+                <div id="missions" className="tab-panel">
+                  <div className="cards-grid">
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-graduation-cap"></i>
+                      </div>
+                      <h3 className="card-feature__title">Partager le savoir et former les générations futures</h3>
+                      <p className="card-feature__text">Nous organisons régulièrement des webinaires, ateliers et formations pratiques pour renforcer les compétences techniques des membres et des étudiants. Chaque activité vise à démocratiser la géomatique et à en faire un outil accessible à tous au service du développement durable.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-rocket"></i>
+                      </div>
+                      <h3 className="card-feature__title">Soutenir l'innovation et les projets SIG</h3>
+                      <p className="card-feature__text">Le pôle "Innovations et Projets SIG" pilote plusieurs initiatives concrètes : observatoires thématiques, dashboards interactifs, bases de données open data et géoportails. L'objectif : faire de la donnée géospatiale un levier de décision au service des territoires sénégalais.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-globe-africa"></i>
+                      </div>
+                      <h3 className="card-feature__title">Promouvoir la coopération entre la France et le Sénégal</h3>
+                      <p className="card-feature__text">L'ASGF s'appuie sur la force de sa diaspora pour tisser des ponts entre les géomaticiens des deux pays. Nous travaillons main dans la main avec les universités, les associations locales et les institutions publiques pour développer une géomatique collaborative et solidaire.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-handshake"></i>
+                      </div>
+                      <h3 className="card-feature__title">Renforcer les partenariats et la visibilité des géomaticiens</h3>
+                      <p className="card-feature__text">Nous collaborons avec des acteurs tels que GéoSénégal, les universités et les entreprises du secteur. Ces alliances permettent de valoriser les compétences sénégalaises, d'accéder à de nouvelles ressources et de créer un réseau professionnel dynamique et reconnu.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-users"></i>
+                      </div>
+                      <h3 className="card-feature__title">Encourager l'inclusion, la jeunesse et le leadership</h3>
+                      <p className="card-feature__text">L'ASGF promeut la participation active des jeunes et des femmes dans la géomatique. Nous croyons en une communauté ouverte, bienveillante et solidaire où chacun peut apprendre, partager et évoluer dans un esprit d'excellence.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Onglet Activités */}
+              {activeTab === 'activites' && (
+                <div id="activites" className="tab-panel">
+                  <div className="cards-grid">
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-chalkboard-teacher"></i>
+                      </div>
+                      <h3 className="card-feature__title">Formations & Ateliers</h3>
+                      <p className="card-feature__text">Organisation de formations pratiques sur les logiciels SIG, la télédétection, la cartographie numérique et les nouvelles technologies géospatiales.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-microphone"></i>
+                      </div>
+                      <h3 className="card-feature__title">Conférences & Séminaires</h3>
+                      <p className="card-feature__text">Invitation d'experts pour des conférences sur les enjeux de la géomatique en Afrique et les opportunités professionnelles.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-project-diagram"></i>
+                      </div>
+                      <h3 className="card-feature__title">Projets Collaboratifs</h3>
+                      <p className="card-feature__text">Développement de projets géomatiques pour résoudre des problématiques concrètes au Sénégal et en Afrique.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-calendar-alt"></i>
+                      </div>
+                      <h3 className="card-feature__title">Événements Culturels</h3>
+                      <p className="card-feature__text">Organisation d'événements culturels pour maintenir le lien avec nos racines sénégalaises tout en célébrant la diversité.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-briefcase"></i>
+                      </div>
+                      <h3 className="card-feature__title">Insertion Professionnelle</h3>
+                      <p className="card-feature__text">Accompagnement dans la recherche de stages, d'emplois et création d'un réseau professionnel dans le secteur géomatique.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-book-open"></i>
+                      </div>
+                      <h3 className="card-feature__title">Publications & Recherche</h3>
+                      <p className="card-feature__text">Encouragement de la recherche scientifique et publication d'articles sur les applications de la géomatique en Afrique.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Onglet Partenariats */}
+              {activeTab === 'partenariats' && (
+                <div id="partenariats" className="tab-panel">
+                  <div className="cards-grid">
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-university"></i>
+                      </div>
+                      <h3 className="card-feature__title">Universités Sénégalaises et Françaises</h3>
+                      <p className="card-feature__text">Partenariats avec les universités sénégalaises comme celle de <a href="https://www.ussein.sn/master-geomatique/" target="_blank" rel="noopener noreferrer">Elhadj Ibrahima Niass</a> proposant des formations en géomatique pour faciliter la collaboration et l'intégration de nos membres.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-building"></i>
+                      </div>
+                      <h3 className="card-feature__title">Entreprises Géomatiques</h3>
+                      <p className="card-feature__text">Collaboration avec les entreprises du secteur pour offrir des opportunités de stages et d'emplois à nos membres.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-flag"></i>
+                      </div>
+                      <h3 className="card-feature__title">Institutions Sénégalaises</h3>
+                      <p className="card-feature__text">Liens étroits avec les institutions sénégalaises <a href="https://anat.sn/" target="_blank" rel="noopener noreferrer">ANAT</a> et <a href="https://www.geosenegal.gouv.sn/" target="_blank" rel="noopener noreferrer">GeoSenegal</a> pour faciliter le transfert de compétences et les projets de développement.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-globe"></i>
+                      </div>
+                      <h3 className="card-feature__title">Organisations Internationales</h3>
+                      <p className="card-feature__text">Partenariats avec les ONG et organisations internationales travaillant sur les questions de développement en Afrique.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-users-cog"></i>
+                      </div>
+                      <h3 className="card-feature__title">Associations Étudiantes</h3>
+                      <p className="card-feature__text">Collaboration avec d'autres associations d'étudiants africains en France pour mutualiser nos ressources.</p>
+                    </div>
+                    <div className="card-feature">
+                      <div className="card-feature__icon">
+                        <i className="fas fa-laptop-code"></i>
+                      </div>
+                      <h3 className="card-feature__title">Entreprises Tech</h3>
+                      <p className="card-feature__text">Partenariats avec les entreprises technologiques spécialisées dans les solutions géospatiales innovantes.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
+          </section>
         </div>
       </section>
 
       {/* Stats Section */}
-      <section id="stats" style={{background: 'var(--gradient)', color: 'white', padding: '60px 0'}}>
-        <div className="container">
-          <h2 className="section-title fade-in" style={{color: 'white'}}>Votre Association en Chiffres</h2>
-          <div className="missions-grid" style={{marginTop: '3rem'}}>
-            <div className="mission-card fade-in" style={{background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(10px)', border: 'none'}}>
-              <i className="fas fa-users" style={{color: 'white', fontSize: '3.5rem'}}></i>
-              <h3 style={{color: 'white', fontSize: '2.5rem', margin: '1rem 0'}}>+50</h3>
-              <p style={{color: 'rgba(255,255,255,0.9)'}}>Membres et sympathisants en France et au Sénégal</p>
-            </div>
-            <div className="mission-card fade-in" style={{background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(10px)', border: 'none'}}>
-              <i className="fas fa-sitemap" style={{color: 'white', fontSize: '3.5rem'}}></i>
-              <h3 style={{color: 'white', fontSize: '2.5rem', margin: '1rem 0'}}>6</h3>
-              <p style={{color: 'rgba(255,255,255,0.9)'}}>Pôles actifs</p>
-            </div>
-            <div className="mission-card fade-in" style={{background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(10px)', border: 'none'}}>
-              <i className="fas fa-project-diagram" style={{color: 'white', fontSize: '3.5rem'}}></i>
-              <h3 style={{color: 'white', fontSize: '2.5rem', margin: '1rem 0'}}>4</h3>
-              <p style={{color: 'rgba(255,255,255,0.9)'}}>Projets SIG innovants en développement</p>
-            </div>
-            <div className="mission-card fade-in" style={{background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(10px)', border: 'none'}}>
-              <i className="fas fa-chalkboard-teacher" style={{color: 'white', fontSize: '3.5rem'}}></i>
-              <h3 style={{color: 'white', fontSize: '2.5rem', margin: '1rem 0'}}>3</h3>
-              <p style={{color: 'rgba(255,255,255,0.9)'}}>Formations et webinaires</p>
-            </div>
-            <div className="mission-card fade-in" style={{background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(10px)', border: 'none'}}>
-              <i className="fas fa-handshake" style={{color: 'white', fontSize: '3.5rem'}}></i>
-              <h3 style={{color: 'white', fontSize: '2.5rem', margin: '1rem 0'}}>3</h3>
-              <p style={{color: 'rgba(255,255,255,0.9)'}}>Partenariats institutionnels en cours</p>
-            </div>
-            <div className="mission-card fade-in" style={{background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(10px)', border: 'none'}}>
-              <i className="fas fa-heart" style={{color: 'white', fontSize: '3.5rem'}}></i>
-              <h3 style={{color: 'white', fontSize: '2.5rem', margin: '1rem 0'}}>100%</h3>
-              <p style={{color: 'rgba(255,255,255,0.9)'}}>D'engagement bénévole au service de la géomatique</p>
-            </div>
-          </div>
+      <section id="stats" className="stats-section">
+        <div className="stats-grid">
+          <h2 className="section-title" style={{color: 'white', gridColumn: '1 / -1', marginBottom: '1.5rem', marginTop: '0'}}>Votre Association en Chiffres</h2>
+          {[
+            { value: 50, suffix: '+', label: 'Membres et sympathisants en France et au Sénégal', icon: 'fa-users' },
+            { value: 6, suffix: '', label: 'Pôles actifs', icon: 'fa-sitemap' },
+            { value: 4, suffix: '', label: 'Projets SIG innovants en développement', icon: 'fa-project-diagram' },
+            { value: 3, suffix: '', label: 'Formations et webinaires', icon: 'fa-chalkboard-teacher' },
+            { value: 3, suffix: '', label: 'Partenariats institutionnels en cours', icon: 'fa-handshake' },
+            { value: 100, suffix: '%', label: "D'engagement bénévole au service de la géomatique", icon: 'fa-heart' },
+          ].map((stat, index) => (
+            <StatCard key={index} stat={stat} />
+          ))}
         </div>
       </section>
 
-      {/* Missions Section */}
-      <section id="missions">
-        <div className="container">
-          <h2 className="section-title fade-in">Nos 5 Engagements pour la Géomatique</h2>
-          <div className="missions-grid">
-            <div className="mission-card fade-in">
-              <i className="fas fa-graduation-cap"></i>
-              <h3>Partager le savoir et former les générations futures</h3>
-              <p>Nous organisons régulièrement des webinaires, ateliers et formations pratiques pour renforcer les compétences techniques des membres et des étudiants. Chaque activité vise à démocratiser la géomatique et à en faire un outil accessible à tous au service du développement durable.</p>
-            </div>
-            <div className="mission-card fade-in">
-              <i className="fas fa-rocket"></i>
-              <h3>Soutenir l'innovation et les projets SIG</h3>
-              <p>Le pôle "Innovations et Projets SIG" pilote plusieurs initiatives concrètes : observatoires thématiques, dashboards interactifs, bases de données open data et géoportails. L'objectif : faire de la donnée géospatiale un levier de décision au service des territoires sénégalais.</p>
-            </div>
-            <div className="mission-card fade-in">
-              <i className="fas fa-globe-africa"></i>
-              <h3>Promouvoir la coopération entre la France et le Sénégal</h3>
-              <p>L'ASGF s'appuie sur la force de sa diaspora pour tisser des ponts entre les géomaticiens des deux pays. Nous travaillons main dans la main avec les universités, les associations locales et les institutions publiques pour développer une géomatique collaborative et solidaire.</p>
-            </div>
-            <div className="mission-card fade-in">
-              <i className="fas fa-handshake"></i>
-              <h3>Renforcer les partenariats et la visibilité des géomaticiens</h3>
-              <p>Nous collaborons avec des acteurs tels que GéoSénégal, les universités et les entreprises du secteur. Ces alliances permettent de valoriser les compétences sénégalaises, d'accéder à de nouvelles ressources et de créer un réseau professionnel dynamique et reconnu.</p>
-            </div>
-            <div className="mission-card fade-in">
-              <i className="fas fa-users"></i>
-              <h3>Encourager l'inclusion, la jeunesse et le leadership</h3>
-              <p>L'ASGF promeut la participation active des jeunes et des femmes dans la géomatique. Nous croyons en une communauté ouverte, bienveillante et solidaire où chacun peut apprendre, partager et évoluer dans un esprit d'excellence.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Activities Section */}
-      <section id="activites" className="activities">
-        <div className="container">
-          <h2 className="section-title fade-in">Nos Activités</h2>
-          <div className="activities-grid">
-            <div className="activity-card fade-in">
-              <div className="activity-header">
-                <i className="fas fa-chalkboard-teacher"></i>
-                <h3>Formations & Ateliers</h3>
-              </div>
-              <div className="activity-content">
-                <p>Organisation de formations pratiques sur les logiciels SIG, la télédétection, la cartographie numérique et les nouvelles technologies géospatiales.</p>
-              </div>
-            </div>
-            <div className="activity-card fade-in">
-              <div className="activity-header">
-                <i className="fas fa-microphone"></i>
-                <h3>Conférences & Séminaires</h3>
-              </div>
-              <div className="activity-content">
-                <p>Invitation d'experts pour des conférences sur les enjeux de la géomatique en Afrique et les opportunités professionnelles.</p>
-              </div>
-            </div>
-            <div className="activity-card fade-in">
-              <div className="activity-header">
-                <i className="fas fa-project-diagram"></i>
-                <h3>Projets Collaboratifs</h3>
-              </div>
-              <div className="activity-content">
-                <p>Développement de projets géomatiques pour résoudre des problématiques concrètes au Sénégal et en Afrique.</p>
-              </div>
-            </div>
-            <div className="activity-card fade-in">
-              <div className="activity-header">
-                <i className="fas fa-calendar-alt"></i>
-                <h3>Événements Culturels</h3>
-              </div>
-              <div className="activity-content">
-                <p>Organisation d'événements culturels pour maintenir le lien avec nos racines sénégalaises tout en célébrant la diversité.</p>
-              </div>
-            </div>
-            <div className="activity-card fade-in">
-              <div className="activity-header">
-                <i className="fas fa-briefcase"></i>
-                <h3>Insertion Professionnelle</h3>
-              </div>
-              <div className="activity-content">
-                <p>Accompagnement dans la recherche de stages, d'emplois et création d'un réseau professionnel dans le secteur géomatique.</p>
-              </div>
-            </div>
-            <div className="activity-card fade-in">
-              <div className="activity-header">
-                <i className="fas fa-book-open"></i>
-                <h3>Publications & Recherche</h3>
-              </div>
-              <div className="activity-content">
-                <p>Encouragement de la recherche scientifique et publication d'articles sur les applications de la géomatique en Afrique.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Partnerships Section */}
-      <section id="partenariats">
-        <div className="container">
-          <h2 className="section-title fade-in">Nos Partenariats</h2>
-          <div className="partners-grid">
-            <div className="partner-card fade-in">
-              <i className="fas fa-university"></i>
-              <h3>Universités Sénégalaises et Françaises</h3>
-              <p>Partenariats avec les universités sénégalaises comme celle de <a href="https://www.ussein.sn/master-geomatique/" target="_blank" rel="noopener noreferrer">Elhadj Ibrahima Niass</a> proposant des formations en géomatique pour faciliter la collaboration et l'intégration de nos membres.</p>
-            </div>
-            <div className="partner-card fade-in">
-              <i className="fas fa-building"></i>
-              <h3>Entreprises Géomatiques</h3>
-              <p>Collaboration avec les entreprises du secteur pour offrir des opportunités de stages et d'emplois à nos membres.</p>
-            </div>
-            <div className="partner-card fade-in">
-              <i className="fas fa-flag"></i>
-              <h3>Institutions Sénégalaises</h3>
-              <p>Liens étroits avec les institutions sénégalaises <a href="https://anat.sn/" target="_blank" rel="noopener noreferrer">ANAT</a> et <a href="https://www.geosenegal.gouv.sn/" target="_blank" rel="noopener noreferrer">GeoSenegal</a> pour faciliter le transfert de compétences et les projets de développement.</p>
-            </div>
-            <div className="partner-card fade-in">
-              <i className="fas fa-globe"></i>
-              <h3>Organisations Internationales</h3>
-              <p>Partenariats avec les ONG et organisations internationales travaillant sur les questions de développement en Afrique.</p>
-            </div>
-            <div className="partner-card fade-in">
-              <i className="fas fa-users-cog"></i>
-              <h3>Associations Étudiantes</h3>
-              <p>Collaboration avec d'autres associations d'étudiants africains en France pour mutualiser nos ressources.</p>
-            </div>
-            <div className="partner-card fade-in">
-              <i className="fas fa-laptop-code"></i>
-              <h3>Entreprises Tech</h3>
-              <p>Partenariats avec les entreprises technologiques spécialisées dans les solutions géospatiales innovantes.</p>
-            </div>
-          </div>
-        </div>
-      </section>
 
       {/* Contact Section */}
       <section id="contact" className="contact">
@@ -489,12 +615,25 @@ function Home() {
                 <i className="fas fa-clock"></i>
                 <span>Disponible 7j/7</span>
               </div>
-              <h4 style={{marginTop: '2rem', marginBottom: '1rem'}}>Suivez-nous</h4>
-              <div className="social-links">
-                <a href="#" title="Facebook"><i className="fab fa-facebook"></i></a>
-                <a href="#" title="Twitter"><i className="fab fa-twitter"></i></a>
-                <a href="https://www.linkedin.com/company/association-des-s%C3%A9n%C3%A9galais-g%C3%A9omaticiens-de-france-agsf/?viewAsMember=true" title="LinkedIn" target="_blank" rel="noopener noreferrer"><i className="fab fa-linkedin"></i></a>
-                <a href="#" title="Instagram"><i className="fab fa-instagram"></i></a>
+              <div className="contact-socials">
+                <h4 className="contact-socials__title">Suivez-nous</h4>
+                <div className="contact-socials__icons">
+                  <a href="#" className="social-icon" target="_blank" rel="noopener noreferrer" aria-label="Facebook">
+                    <i className="fab fa-facebook-f"></i>
+                  </a>
+                  <a href="#" className="social-icon" target="_blank" rel="noopener noreferrer" aria-label="Twitter">
+                    <i className="fab fa-twitter"></i>
+                  </a>
+                  <a href="https://www.linkedin.com/company/association-des-s%C3%A9n%C3%A9galais-g%C3%A9omaticiens-de-france-agsf/?viewAsMember=true" className="social-icon" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn">
+                    <i className="fab fa-linkedin-in"></i>
+                  </a>
+                  <a href="#" className="social-icon" target="_blank" rel="noopener noreferrer" aria-label="Instagram">
+                    <i className="fab fa-instagram"></i>
+                  </a>
+                  <a href="#" className="social-icon" target="_blank" rel="noopener noreferrer" aria-label="YouTube">
+                    <i className="fab fa-youtube"></i>
+                  </a>
+                </div>
               </div>
             </div>
           </div>

@@ -5,6 +5,13 @@ import { Parser as Json2CsvParser } from 'json2csv'
 import ExcelJS from 'exceljs'
 import PDFDocument from 'pdfkit'
 import { notifyMemberEmail } from './notifications.service.js'
+import path from 'path'
+import fs from 'fs'
+import { fileURLToPath } from 'url'
+// Sharp sera importé dynamiquement dans la fonction si disponible
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 const MEMBER_FIELDS = 'id, prenom, nom, email, numero_membre, pays'
 const SENEGAL_KEYWORDS = ['senegal', 'sénégal']
@@ -1943,12 +1950,20 @@ export async function getAllCartesMembres({ page = 1, limit = 1000, search = '',
  * Génère le PDF de la carte membre
  */
 async function generateCarteMembrePDF(membre, carteData) {
-  // Format A4 paysage (comme dans CarteMembreGenerator)
-  // A4 = 297mm x 210mm en paysage
+  // Format A4 paysage (comme dans le design HTML)
+  // Utiliser une résolution plus élevée pour éviter le flou
   const doc = new PDFDocument({ 
     size: 'A4',
     layout: 'landscape',
-    margin: 0
+    margin: 0,
+    compress: false, // Désactiver la compression pour préserver la qualité maximale des images
+    // Augmenter la résolution pour une meilleure qualité
+    info: {
+      Title: 'Carte Membre ASGF',
+      Author: 'ASGF',
+      Subject: 'Carte de membre officielle',
+      Creator: 'ASGF Admin'
+    }
   })
   
   const chunks = []
@@ -1958,53 +1973,96 @@ async function generateCarteMembrePDF(membre, carteData) {
   const pageWidth = doc.page.width
   const pageHeight = doc.page.height
 
-  // Couleurs
-  const primaryColor = '#0d47a1' // Bleu ASGF
-  const accentColor = '#e53935' // Rouge ASGF
-  const textColor = '#020617'
-  const lightGray = '#f8fafc'
-  const borderGray = '#e2e8f0'
+  // Couleurs avec meilleur contraste pour netteté
+  const cardBg = '#ffffff'
+  const cardText = '#0f172a' // Noir plus foncé pour meilleur contraste
+  const cardTextSecondary = '#334155' // Gris plus foncé pour labels
+  const brandBlue = '#3b82f6'
+  const brandAmber = '#f59e0b'
+  const brandGreen = '#22c55e'
+  const lightGray = '#9ca3af' // Gris plus visible pour les lignes
 
   // Fond blanc
   doc.rect(0, 0, pageWidth, pageHeight)
-    .fill('#ffffff')
-
-  // Dégradé de fond (simulé)
-  doc.rect(0, 0, pageWidth, pageHeight)
-    .fillOpacity(0.1)
-    .fill('#3b82f6')
-
-  // En-tête
-  const headerHeight = 80
-  doc.rect(0, 0, pageWidth, headerHeight)
-    .fill('#ffffff')
+    .fill(cardBg)
   
+  // Dégradés de fond subtils (comme dans le CSS)
+  // IMPORTANT : toujours remettre l'opacité à 1 après avoir utilisé fillOpacity
+  // Dégradé bleu en haut gauche
+  doc.circle(pageWidth * 0.1, pageHeight * 0.15, 200)
+    .fillOpacity(0.15)
+    .fill('#93c5fd')
+    .fillOpacity(1) // remettre l'opacité à 1 pour le reste des éléments
+  
+  // Dégradé vert en bas droite
+  doc.circle(pageWidth * 0.9, pageHeight * 0.85, 200)
+    .fillOpacity(0.12)
+    .fill('#86efac')
+    .fillOpacity(1) // remettre l'opacité à 1 pour la suite
+
+  // En-tête avec logo (comme dans le design HTML)
+  const headerTop = 24
+  const headerLeft = 30
+  const logoSize = 48
+  
+  // Logo ASGF (si disponible)
+  // Depuis backend/services -> backend -> asgf-admin -> asgf-app
+  const logoPath = path.join(__dirname, '../../asgf-app/public/assets/images/Logo_officiel_ASGF.png')
+  let logoX = headerLeft
+  if (fs.existsSync(logoPath)) {
+    try {
+      doc.image(logoPath, logoX, headerTop, {
+        width: logoSize,
+        height: logoSize,
+        fit: [logoSize, logoSize]
+      })
+      logoX += logoSize + 14
+    } catch (err) {
+      logWarning('Erreur chargement logo', { error: err.message })
+    }
+  }
+  
+  // Nom de l'association (gras, 18px) - contraste amélioré
   doc.fontSize(18)
-    .fillColor(textColor)
+    .fillColor('#0f172a') // Presque noir pour netteté
     .font('Helvetica-Bold')
-    .text('Association des Sénégalais Géomaticiens de France', 30, 24, { width: pageWidth - 60 })
+    .text('Association des Sénégalais Géomaticiens de France', logoX, headerTop + 5, { 
+      width: pageWidth - logoX - 30 
+    })
   
-  doc.fontSize(12)
-    .fillColor('#475569')
-    .font('Helvetica')
-    .text('Carte de membre officielle', 30, 50, { width: pageWidth - 60 })
+  // "Carte de membre officielle" (gris, 15px) - contraste amélioré
+  doc.fontSize(15)
+    .fillColor('#475569') // Gris foncé pour meilleure lisibilité
+    .font('Helvetica-Bold')
+    .text('Carte de membre officielle', logoX, headerTop + 25, { 
+      width: pageWidth - logoX - 30 
+    })
+  
+  const headerHeight = headerTop + logoSize + 20
 
-  // Zone de contenu principale
-  const contentTop = headerHeight + 20
-  const contentHeight = pageHeight - contentTop - 60
-  const photoWidth = 200
-  const photoHeight = (photoWidth * 4) / 3 // Ratio 3:4
+  // Zone de contenu principale (comme dans le design HTML)
+  const contentTop = headerHeight
   const contentLeft = 30
-  const infoLeft = contentLeft + photoWidth + 30
-
-  // Photo du membre (à gauche)
-  const photoTop = contentTop + 20
+  const gap = 30
+  
+  // Photo (augmenter la taille pour meilleure qualité - 320px pour une meilleure résolution)
+  // Plus la photo est grande dans le PDF, meilleure sera la qualité finale
+  const photoWidth = 320
+  const photoHeight = (photoWidth * 4) / 3
+  const infoLeft = contentLeft + photoWidth + gap
+  const photoTop = contentTop
   const photoLeft = contentLeft
   
-  // Cadre photo
+  // Photo avec bordure arrondie (simulée avec rectangle + bordure blanche)
+  // Bordure blanche de 4px
   doc.rect(photoLeft, photoTop, photoWidth, photoHeight)
-    .stroke(borderGray)
-    .fill(lightGray)
+    .fill('#ffffff')
+  
+  // Ombre portée (simulée)
+  doc.rect(photoLeft + 2, photoTop + 2, photoWidth, photoHeight)
+    .fillOpacity(0.1)
+    .fill('#000000')
+    .fillOpacity(1) // très important : retourner à une opacité normale
 
   // Télécharger et inclure la photo si disponible
   const photoUrl = carteData.photo_url || membre?.photo_url || null
@@ -2028,7 +2086,23 @@ async function generateCarteMembrePDF(membre, carteData) {
         // C'est une URL, télécharger l'image
         logInfo('Téléchargement photo membre depuis URL', { photoUrl: photoUrl.substring(0, 100) })
         const fetch = (await import('node-fetch')).default
-        const photoResponse = await fetch(photoUrl)
+        
+        // Pour les URLs Supabase Storage, essayer de récupérer l'image en haute résolution
+        // En enlevant les paramètres de transformation qui peuvent réduire la qualité
+        let downloadUrl = photoUrl
+        // Si c'est une URL Supabase Storage avec transformation, récupérer l'original
+        if (photoUrl.includes('supabase.co/storage') && photoUrl.includes('transform')) {
+          // Enlever les paramètres de transformation pour récupérer l'image originale
+          downloadUrl = photoUrl.split('?')[0]
+          logInfo('URL Supabase détectée, récupération de l\'image originale sans transformation')
+        }
+        
+        const photoResponse = await fetch(downloadUrl, {
+          headers: {
+            'Accept': 'image/*',
+            // Certaines APIs nécessitent des headers spécifiques pour la meilleure qualité
+          }
+        })
         
         if (photoResponse.ok) {
           photoBuffer = await photoResponse.buffer()
@@ -2040,23 +2114,100 @@ async function generateCarteMembrePDF(membre, carteData) {
           } else if (photoUrl.includes('.webp')) {
             imageType = 'WEBP'
           }
-          logInfo('Photo téléchargée depuis URL', { imageType, size: photoBuffer.length })
+          logInfo('Photo téléchargée depuis URL', { 
+            imageType, 
+            size: photoBuffer.length,
+            sizeKB: (photoBuffer.length / 1024).toFixed(2),
+            originalUrl: photoUrl.substring(0, 100),
+            downloadUrl: downloadUrl.substring(0, 100)
+          })
         } else {
-          logWarning('Impossible de télécharger la photo', { status: photoResponse.status })
+          logWarning('Impossible de télécharger la photo', { 
+            status: photoResponse.status,
+            url: downloadUrl.substring(0, 100)
+          })
         }
       }
 
       // Ajouter l'image au PDF si disponible
+      // Utiliser Sharp pour redimensionner l'image en haute qualité avant insertion
       if (photoBuffer) {
         try {
-          doc.image(photoBuffer, photoLeft + 10, photoTop + 10, {
-            width: photoWidth - 20,
-            height: photoHeight - 20,
-            fit: [photoWidth - 20, photoHeight - 20],
-            align: 'center',
-            valign: 'center',
+          // Calculer les dimensions cibles dans le PDF (avec bordure blanche de 4px)
+          const imageWidth = photoWidth - 6
+          const imageHeight = photoHeight - 6
+          
+          // Pour éviter le flou, on redimensionne l'image à 2.5x la taille cible
+          // avec Sharp (qui utilise un algorithme de redimensionnement de haute qualité)
+          // puis on l'insère dans le PDF. Cela donne une meilleure qualité car PDFKit
+          // n'a pas besoin de redimensionner beaucoup.
+          const scaleFactor = 2.5 // Multiplier par 2.5 pour une meilleure qualité
+          const targetWidth = Math.round(imageWidth * scaleFactor)
+          const targetHeight = Math.round(imageHeight * scaleFactor)
+          
+          let processedImageBuffer = photoBuffer
+          
+          // Utiliser Sharp pour redimensionner l'image en haute qualité
+          // Import dynamique de Sharp pour éviter les erreurs si non installé
+          try {
+            const sharpModule = await import('sharp')
+            const sharp = sharpModule.default
+            
+            processedImageBuffer = await sharp(photoBuffer)
+                .resize(targetWidth, targetHeight, {
+                  fit: 'cover', // Couvrir toute la zone sans déformation
+                  position: 'center', // Centrer l'image
+                  kernel: sharp.kernel.lanczos3, // Algorithme de haute qualité pour le redimensionnement
+                  withoutEnlargement: false, // Permettre d'agrandir si l'image est plus petite
+                })
+                .jpeg({ 
+                  quality: 95, // Qualité JPEG élevée (95%)
+                  mozjpeg: true // Utiliser mozjpeg pour meilleure compression
+                })
+                .toBuffer()
+              
+              logInfo('Image redimensionnée avec Sharp', {
+                originalSize: photoBuffer.length,
+                processedSize: processedImageBuffer.length,
+                targetDimensions: `${targetWidth}x${targetHeight}`,
+                pdfDimensions: `${imageWidth}x${imageHeight}`,
+                scaleFactor
+              })
+            } catch (sharpError) {
+              // Si Sharp n'est pas installé ou échoue, utiliser l'image originale
+              if (sharpError.code === 'MODULE_NOT_FOUND' || sharpError.message?.includes('Cannot find module')) {
+                logWarning('Sharp non installé. Pour améliorer la qualité des images, installez Sharp avec: npm install sharp')
+              } else {
+                logWarning('Erreur Sharp, utilisation de l\'image originale', { error: sharpError.message })
+              }
+              processedImageBuffer = photoBuffer
+            }
+          
+          // Insérer l'image dans le PDF
+          // Si Sharp a été utilisé, l'image est déjà redimensionnée en haute qualité
+          // Sinon, on utilise fit pour préserver les proportions
+          if (processedImageBuffer !== photoBuffer) {
+            // Image traitée par Sharp, utiliser width/height directement
+            doc.image(processedImageBuffer, photoLeft + 3, photoTop + 3, {
+              width: imageWidth,
+              height: imageHeight
+            })
+          } else {
+            // Image non traitée, utiliser fit pour préserver les proportions
+            doc.image(processedImageBuffer, photoLeft + 3, photoTop + 3, {
+              fit: [imageWidth, imageHeight],
+              align: 'center',
+              valign: 'center'
+            })
+          }
+          
+          logInfo('Photo incluse dans le PDF avec succès', { 
+            imageType, 
+            dimensions: `${imageWidth}x${imageHeight}`,
+            bufferSize: processedImageBuffer.length,
+            originalPhotoSize: `${photoWidth}x${photoHeight}`,
+            processed: true
           })
-          logInfo('Photo incluse dans le PDF avec succès', { imageType })
         } catch (imageErr) {
           logWarning('Erreur ajout image au PDF', { error: imageErr.message })
           // Continuer sans photo
@@ -2070,19 +2221,22 @@ async function generateCarteMembrePDF(membre, carteData) {
     logInfo('Aucune photo fournie pour la carte membre')
   }
 
-  // Numéro de membre sous la photo
-  doc.fontSize(10)
-    .fillColor('#475569')
-    .font('Helvetica')
-    .text('Matricule', photoLeft, photoTop + photoHeight + 10, { 
+  // Matricule sous la photo - contraste amélioré
+  // On laisse un vrai espace entre la photo et le bloc matricule pour respirer
+  const matriculeY = photoTop + photoHeight + 16
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour label
+    .font('Helvetica-Bold')
+    .text('Matricule', photoLeft, matriculeY, { 
       width: photoWidth, 
       align: 'center' 
     })
   
+  // On laisse un écart vertical suffisant entre le label et la valeur
   doc.fontSize(16)
-    .fillColor(textColor)
+    .fillColor('#0f172a') // Presque noir pour valeur
     .font('Helvetica-Bold')
-    .text(carteData.numero_membre || membre?.numero_membre || 'XXXX-000', photoLeft, photoTop + photoHeight + 25, { 
+    .text(carteData.numero_membre || membre?.numero_membre || 'XXXX-000', photoLeft, matriculeY + 14, { 
       width: photoWidth, 
       align: 'center' 
     })
@@ -2099,55 +2253,58 @@ async function generateCarteMembrePDF(membre, carteData) {
   const ville = carteData.ville || membre?.ville || ''
   const section = pays ? `${pays}${ville ? ` / ${ville}` : ''}` : 'France'
 
-  // Nom du membre (grand)
+  // Nom du membre (40px, très foncé pour netteté)
   doc.fontSize(40)
-    .fillColor(textColor)
+    .fillColor('#0a0a0a') // Presque noir pour maximum de contraste
     .font('Helvetica-Bold')
-    .text(`${prenom} ${nom.toUpperCase()}`, infoLeft, contentTop + 20, { 
+    .text(`${prenom} ${nom.toUpperCase()}`, infoLeft, contentTop + 10, { 
       width: pageWidth - infoLeft - 30 
     })
-
-  // Fonction
+  
+  // Rôle/Fonction (20px, bleu, font-weight 600)
   if (fonction) {
     doc.fontSize(20)
-      .fillColor('#3b82f6')
-      .font('Helvetica')
-      .text(fonction, infoLeft, contentTop + 70, { 
+      .fillColor(brandBlue)
+      .font('Helvetica-Bold')
+      .text(fonction, infoLeft, contentTop + 56, { 
         width: pageWidth - infoLeft - 30 
       })
   }
 
-  // Informations détaillées
-  let infoY = contentTop + 120
+  // Informations détaillées (grille comme dans le CSS)
+  // On descend légèrement le bloc Statut/Section/Validité pour plus de respiration
+  let infoY = contentTop + 110
+  const gridGap = 16
+  const gridColWidth = (pageWidth - infoLeft - 30 - gridGap) / 2
 
-  // Statut
-  doc.fontSize(10)
-    .fillColor('#475569')
-    .font('Helvetica')
-    .text('STATUT', infoLeft, infoY, { width: 150 })
+  // Statut (label 12px, valeur 16px) - contraste amélioré
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour labels
+    .font('Helvetica-Bold')
+    .text('Statut', infoLeft, infoY, { width: gridColWidth })
   
   doc.fontSize(16)
-    .fillColor(textColor)
+    .fillColor('#0f172a') // Presque noir pour valeurs
     .font('Helvetica-Bold')
-    .text(statutCarte, infoLeft, infoY + 15, { width: 150 })
+    .text(statutCarte, infoLeft, infoY + 12, { width: gridColWidth })
 
   // Section
-  doc.fontSize(10)
-    .fillColor('#475569')
-    .font('Helvetica')
-    .text('SECTION', infoLeft + 200, infoY, { width: 150 })
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour labels
+    .font('Helvetica-Bold')
+    .text('Section', infoLeft + gridColWidth + gridGap, infoY, { width: gridColWidth })
   
   doc.fontSize(16)
-    .fillColor(textColor)
+    .fillColor('#0f172a') // Presque noir pour valeurs
     .font('Helvetica-Bold')
-    .text(section, infoLeft + 200, infoY + 15, { width: 150 })
+    .text(section, infoLeft + gridColWidth + gridGap, infoY + 12, { width: gridColWidth })
 
-  // Validité
-  infoY += 60
-  doc.fontSize(10)
-    .fillColor('#475569')
-    .font('Helvetica')
-    .text('VALIDITÉ', infoLeft, infoY, { width: pageWidth - infoLeft - 30 })
+  // Validité (sur 2 colonnes comme dans le CSS) - contraste amélioré
+  infoY += 40
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour labels
+    .font('Helvetica-Bold')
+    .text('Validité', infoLeft, infoY, { width: pageWidth - infoLeft - 30 })
   
   if (dateEmission && dateValidite) {
     const dateEmissionFR = new Date(dateEmission + 'T00:00:00').toLocaleDateString('fr-FR', { 
@@ -2161,20 +2318,70 @@ async function generateCarteMembrePDF(membre, carteData) {
       year: 'numeric' 
     })
     doc.fontSize(16)
-      .fillColor(textColor)
+      .fillColor('#0f172a') // Presque noir pour valeurs
       .font('Helvetica-Bold')
-      .text(`Du ${dateEmissionFR} au ${dateValiditeFR}`, infoLeft, infoY + 15, { 
+      .text(`${dateEmissionFR} au ${dateValiditeFR}`, infoLeft, infoY + 12, { 
         width: pageWidth - infoLeft - 30 
       })
   }
 
-  // Signature et date en bas
-  const footerY = pageHeight - 80
-  doc.fontSize(10)
-    .fillColor('#475569')
-    .font('Helvetica')
-    .text('Émis le', infoLeft, footerY, { width: 200 })
+  // Footer avec signatures et date (comme dans le design HTML)
+  // On remonte légèrement l'ensemble pour mieux séparer du texte de droite
+  const footerY = pageHeight - 90
+  const signatureLineLength = 140
+  const signatureSpacing = 200
+  const presidentX = infoLeft
+
+  // Signature image du Président (si disponible)
+  try {
+    const signaturePath = path.join(__dirname, '../../asgf-app/src/admin/img/signature_omar.png')
+    if (fs.existsSync(signaturePath)) {
+      const signatureWidth = 120
+      const signatureHeight = 40
+      // On décale légèrement la signature vers le haut pour qu'elle ne touche pas la zone matricule
+      const signatureY = footerY - 40
+      doc.image(signaturePath, presidentX + (signatureLineLength - signatureWidth) / 2, signatureY, {
+        width: signatureWidth,
+        height: signatureHeight,
+      })
+    }
+  } catch (err) {
+    logWarning('Erreur chargement signature président', { error: err.message })
+  }
+
+  // Ligne signature Président (gauche)
+  doc.moveTo(presidentX, footerY)
+    .lineTo(presidentX + signatureLineLength, footerY)
+    .lineWidth(2)
+    .strokeColor(lightGray)
+    .stroke()
   
+  doc.fontSize(11)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    .text('Le Président', presidentX, footerY + 6, { width: signatureLineLength, align: 'center' })
+  
+  // Nom du Président sous la ligne (ex: SOD)
+  doc.fontSize(11)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    .text('SOD', presidentX, footerY + 22, { width: signatureLineLength, align: 'center' })
+  
+  // Ligne signature Trésorier Général (droite)
+  const tresorierX = infoLeft + signatureSpacing
+  doc.moveTo(tresorierX, footerY)
+    .lineTo(tresorierX + signatureLineLength, footerY)
+    .lineWidth(2)
+    .strokeColor(lightGray)
+    .stroke()
+  
+  doc.fontSize(11)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    .text('Le Trésorier Général', tresorierX, footerY + 4, { width: signatureLineLength, align: 'center' })
+  
+  // Date d'émission et site web en bas à droite (12px, gras)
+  const footerRightX = pageWidth - 200
   if (dateEmission) {
     const dateEmissionFR = new Date(dateEmission + 'T00:00:00').toLocaleDateString('fr-FR', { 
       day: '2-digit', 
@@ -2182,14 +2389,30 @@ async function generateCarteMembrePDF(membre, carteData) {
       year: 'numeric' 
     })
     doc.fontSize(12)
-      .fillColor(textColor)
+      .fillColor(cardTextSecondary)
       .font('Helvetica-Bold')
-      .text(dateEmissionFR, infoLeft, footerY + 15, { width: 200 })
+      // On place la date plus bas que la ligne de signature du trésorier pour bien séparer
+      .text(`Émis le ${dateEmissionFR}`, footerRightX, footerY + 16, { width: 170, align: 'right' })
   }
-
-  // Barre de couleur en bas
-  doc.rect(0, pageHeight - 10, pageWidth, 10)
-    .fill('#3b82f6')
+  
+  doc.fontSize(12)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    // Et le site encore un peu plus bas pour laisser de l'air
+    .text('© www.votre-site.org', footerRightX, footerY + 32, { width: 170, align: 'right' })
+  
+  // Barre de couleur en bas (dégradé bleu-ambre-vert comme dans le CSS)
+  const barHeight = 10
+  doc.rect(0, pageHeight - barHeight, pageWidth, barHeight)
+    .fill(brandBlue)
+  
+  // Dégradé (simulé avec rectangles)
+  const barThird = pageWidth / 3
+  doc.rect(barThird, pageHeight - barHeight, barThird, barHeight)
+    .fill(brandAmber)
+  
+  doc.rect(barThird * 2, pageHeight - barHeight, barThird, barHeight)
+    .fill(brandGreen)
 
   doc.end()
 
@@ -2976,10 +3199,21 @@ export async function getTresorerieStats() {
       .select('*', { count: 'exact', head: true })
       .eq('statut_paiement', 'en_attente')
 
-    // Total paiements
+    // Total paiements (dons/subventions)
     const { count: totalPaiements } = await supabaseTresorerie
       .from('paiements')
       .select('*', { count: 'exact', head: true })
+
+    // Montant total des paiements validés (dons/subventions)
+    const { data: paiementsData } = await supabaseTresorerie
+      .from('paiements')
+      .select('montant, statut')
+      .eq('statut', 'valide')
+
+    let totalPaiementsDonsEur = 0
+    ;(paiementsData || []).forEach((pai) => {
+      totalPaiementsDonsEur += pai.montant || 0
+    })
 
     // Montant total des cotisations payées (conversion en EUR + breakdown)
     const { data: cotisationsData } = await supabaseTresorerie
@@ -3040,6 +3274,23 @@ export async function getTresorerieStats() {
       }
     })
 
+    // Revenus des cartes membres (cartes payées)
+    const { data: cartesMembresData } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('pays, statut_paiement')
+      .or('statut_paiement.eq.paye,statut_paiement.eq.oui')
+
+    let revenusCartesMembresEur = 0
+    let cartesPayees = 0
+    if (cartesMembresData && cartesMembresData.length > 0) {
+      cartesMembresData.forEach((carte) => {
+        const tarifInfo = getTarifInfoForCountry(carte.pays)
+        const montantEur = convertToEuro(tarifInfo.montant, tarifInfo)
+        revenusCartesMembresEur += montantEur
+        cartesPayees += 1
+      })
+    }
+
     // Total relances
     const { count: totalRelances } = await supabaseTresorerie
       .from('relances')
@@ -3063,11 +3314,17 @@ export async function getTresorerieStats() {
       }
     })
 
+    // Calcul du solde total (recettes - dépenses)
+    // Recettes = cotisations payées + dons/subventions + revenus cartes membres
+    const recettesTotal = montantTotalEur + totalPaiementsDonsEur + revenusCartesMembresEur
+    const soldeTotal = recettesTotal - depensesValideesEur
+
     return {
       total_cotisations: totalCotisations || 0,
       cotisations_payees: cotisationsPayees || 0,
       cotisations_en_attente: cotisationsEnAttente || 0,
       total_paiements: totalPaiements || 0,
+      total_paiements_dons_eur: totalPaiementsDonsEur,
       montant_total: montantTotalEur,
       montant_total_eur: montantTotalEur,
       montant_senegal_eur: montantSenegalEur,
@@ -3080,6 +3337,9 @@ export async function getTresorerieStats() {
       depenses_validees: depensesValidees,
       total_relances: totalRelances || 0,
       repartition_par_annee: repartitionParAnnee,
+      revenus_cartes_membres_eur: revenusCartesMembresEur,
+      cartes_membres_payees: cartesPayees,
+      solde_total_eur: soldeTotal,
     }
   } catch (err) {
     logError('getTresorerieStats exception', err)

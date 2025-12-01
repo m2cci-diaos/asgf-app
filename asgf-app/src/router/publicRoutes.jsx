@@ -9,6 +9,7 @@ import InscriptionFormation from '../public/pages/InscriptionFormation'
 import InscriptionFormationSuccess from '../public/pages/InscriptionFormationSuccess'
 import InscriptionWebinaire from '../public/pages/InscriptionWebinaire'
 import InscriptionWebinaireSuccess from '../public/pages/InscriptionWebinaireSuccess'
+import Projets from '../public/pages/Projets'
 
 const canonicalRoutes = [
   { path: '/', element: <Home /> },
@@ -21,6 +22,7 @@ const canonicalRoutes = [
   { path: '/webinaire/inscription/success', element: <InscriptionWebinaireSuccess /> },
   { path: '/adhesion', element: <Adhesion /> },
   { path: '/adhesion/success', element: <AdhesionSuccess /> },
+  { path: '/projets', element: <Projets /> },
 ]
 
 const legacyStaticRoutes = [

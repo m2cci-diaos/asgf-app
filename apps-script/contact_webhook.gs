@@ -14,6 +14,8 @@ const EVENT_TYPES = {
   FORMATION_STATUS: 'formation_status',
   FORMATION_INVITATION: 'formation_invitation',
   FORMATION_REMINDER: 'formation_reminder',
+  WEBINAIRE_INSCRIPTION: 'webinaire_inscription',
+  WEBINAIRE_STATUS: 'webinaire_status',
   WEBINAIRE_INVITATION: 'webinaire_invitation',
   WEBINAIRE_REMINDER: 'webinaire_reminder',
   MEMBER_EMAIL: 'member_email',
@@ -176,6 +178,12 @@ function doPost(e) {
           break
         case EVENT_TYPES.FORMATION_REMINDER:
           result = handleFormationReminder(body)
+          break
+        case EVENT_TYPES.WEBINAIRE_INSCRIPTION:
+          result = handleWebinaireInscription(body)
+          break
+        case EVENT_TYPES.WEBINAIRE_STATUS:
+          result = handleWebinaireStatus(body)
           break
         case EVENT_TYPES.WEBINAIRE_INVITATION:
           result = handleWebinaireInvitation(body)
@@ -341,7 +349,7 @@ function handleFormationInscription(body) {
     title: '🎓 Merci pour votre inscription',
     intro: `Bonjour ${prenom} ${nom},`,
     paragraphs: [
-      `Nous avons bien reçu votre demande pour la formation <strong>${sanitize(formationTitle)}</strong>.`,
+      `Nous avons bien reçu votre demande pour la formation <strong>${formationTitle}</strong>.`,
       'Elle va maintenant être examinée par notre équipe. Nous vous communiquerons la décision finale dans les plus brefs délais.',
     ],
     recap: [
@@ -415,15 +423,11 @@ function handleFormationStatus(body) {
 
   const paragraphs = isConfirmed
     ? [
-        `Bonne nouvelle ! Votre inscription à la formation <strong>${sanitize(
-          formationTitle
-        )}</strong> est confirmée.`,
+        `Bonne nouvelle ! Votre inscription à la formation <strong>${formationTitle}</strong> est confirmée.`,
         'Vous recevrez prochainement toutes les informations pratiques (lien de connexion, matériel, etc.).',
       ]
     : [
-        `Après étude de votre dossier, nous ne pouvons malheureusement pas retenir votre inscription pour la formation <strong>${sanitize(
-          formationTitle
-        )}</strong>.`,
+        `Après étude de votre dossier, nous ne pouvons malheureusement pas retenir votre inscription pour la formation <strong>${formationTitle}</strong>.`,
         'Nous restons à votre disposition pour échanger et serons ravis de vous accueillir sur une prochaine session.',
       ]
 
@@ -445,7 +449,10 @@ function handleFormationStatus(body) {
     footer,
   })
 
-  GmailApp.sendEmail(email, subject, `${intro}\n\n${paragraphs.join('\n')}`, {
+  // Créer une version texte plain en retirant les balises HTML
+  const plainText = `${intro}\n\n${paragraphs.map(p => p.replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}\n\n${footer}`
+  
+  GmailApp.sendEmail(email, subject, plainText, {
     htmlBody,
   })
 
@@ -476,28 +483,35 @@ function handleFormationInvitation(body) {
 
   const subject = `📩 Invitation à la formation "${formationTitle}"`
 
+  const paragraphs = [
+    `Votre inscription à la formation <strong>${formationTitle}</strong> est confirmée. Voici votre lien de connexion pour participer à la session.`,
+  ]
+  
+  const recap = [
+    { label: 'Formation', value: formationTitle },
+    { label: 'Session', value: dateLabel },
+  ]
+  
+  const footer = "Merci d'être à l'heure le jour J et de tester votre connexion en amont."
+
   const htmlBody = buildHtmlEmail({
     title: '📩 Votre lien de connexion',
     intro: `Bonjour ${prenom} ${nom},`,
-    paragraphs: [
-      `Votre inscription à la formation <strong>${sanitize(
-        formationTitle
-      )}</strong> est confirmée. Voici votre lien de connexion pour participer à la session.`,
-    ],
-    recap: [
-      { label: 'Formation', value: formationTitle },
-      { label: 'Session', value: dateLabel },
-    ],
+    paragraphs,
+    recap,
     messageBlock: accessLink
       ? `Lien de connexion : ${accessLink}`
       : "Le lien de connexion vous sera transmis ultérieurement par l'équipe ASGF.",
-    footer: "Merci d'être à l'heure le jour J et de tester votre connexion en amont.",
+    footer,
   })
 
+  // Créer une version texte plain en retirant les balises HTML
+  const plainText = `Bonjour ${prenom} ${nom},\n\n${paragraphs.map(p => p.replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}${accessLink ? `\n\nLien de connexion: ${accessLink}` : ''}\n\n${footer}`
+  
   GmailApp.sendEmail(
     email,
     subject,
-    `Bonjour ${prenom} ${nom},\n\nVoici votre lien de connexion pour la formation "${formationTitle}".`,
+    plainText,
     {
       htmlBody,
     }
@@ -540,42 +554,201 @@ function handleFormationReminder(body) {
 
   const paragraphs = is48h
     ? [
-        `Petit rappel : votre formation <strong>${sanitize(
-          formationTitle
-        )}</strong> aura lieu dans environ 48 heures.`,
+        `Petit rappel : votre formation <strong>${formationTitle}</strong> aura lieu dans environ 48 heures.`,
         'Pensez à vérifier votre matériel (connexion internet, micro, caméra le cas échéant).',
       ]
     : is2h
     ? [
-        `Ceci est un dernier rappel : la formation <strong>${sanitize(
-          formationTitle
-        )}</strong> commence très bientôt.`,
+        `Ceci est un dernier rappel : la formation <strong>${formationTitle}</strong> commence très bientôt.`,
         "Nous vous conseillons de vous connecter quelques minutes en avance pour être prêt à l'heure.",
       ]
     : [
-        `Rappel : la formation <strong>${sanitize(
-          formationTitle
-        )}</strong> approche.`,
+        `Rappel : la formation <strong>${formationTitle}</strong> approche.`,
       ]
+
+  const recap = [
+    { label: 'Formation', value: formationTitle },
+    { label: 'Date', value: dateLabel },
+  ]
+  
+  const footer = 'À très vite pour cette session avec la communauté ASGF.'
 
   const htmlBody = buildHtmlEmail({
     title: '⏰ Rappel de votre formation',
     intro: `Bonjour ${prenom} ${nom},`,
     paragraphs,
-    recap: [
-      { label: 'Formation', value: formationTitle },
-      { label: 'Date', value: dateLabel },
-    ],
+    recap,
     messageBlock: accessLink ? `Lien de connexion : ${accessLink}` : '',
-    footer: 'À très vite pour cette session avec la communauté ASGF.',
+    footer,
   })
 
+  // Créer une version texte plain en retirant les balises HTML
+  const plainText = `Bonjour ${prenom} ${nom},\n\n${paragraphs.map(p => p.replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}${accessLink ? `\n\nLien de connexion: ${accessLink}` : ''}\n\n${footer}`
+  
   GmailApp.sendEmail(
     email,
     subject,
-    `Bonjour ${prenom} ${nom},\n\nRappel concernant la formation "${formationTitle}".`,
+    plainText,
     { htmlBody }
   )
+
+  return jsonResponse({ success: true })
+}
+
+function handleWebinaireInscription(body) {
+  const {
+    prenom = '',
+    nom = '',
+    email = '',
+    webinaire_title: webinaireTitle = 'Webinaire ASGF',
+    webinaire_date: webinaireDate = '',
+    webinaire_time: webinaireTime = '',
+    pays = 'France',
+    whatsapp = '',
+  } = body
+
+  if (!email) {
+    throw new Error('Email manquant pour l\'inscription webinaire')
+  }
+
+  const dateLabel = webinaireDate
+    ? new Date(webinaireDate).toLocaleDateString('fr-FR', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    : 'À venir'
+
+  const participantPlain = [
+    `Bonjour ${prenom} ${nom},`,
+    '',
+    `Merci d'avoir déposé votre demande d'inscription au webinaire "${webinaireTitle}".`,
+    "Notre équipe va étudier votre demande et vous reviendra sous peu pour confirmer ou non votre participation.",
+    '',
+    `Date prévue : ${dateLabel}`,
+    webinaireTime ? `Heure : ${webinaireTime}` : '',
+    '',
+    'Merci pour votre confiance et à très bientôt,',
+    'Association des Géomaticiens Sénégalais de France',
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const participantHtml = buildHtmlEmail({
+    title: '🎥 Merci pour votre inscription',
+    intro: `Bonjour ${prenom} ${nom},`,
+    paragraphs: [
+      `Nous avons bien reçu votre demande pour le webinaire <strong>${webinaireTitle}</strong>.`,
+      'Elle va maintenant être examinée par notre équipe. Nous vous communiquerons la décision finale dans les plus brefs délais.',
+    ],
+    recap: [
+      { label: 'Webinaire', value: webinaireTitle },
+      { label: 'Date prévue', value: dateLabel },
+      webinaireTime ? { label: 'Heure', value: webinaireTime } : null,
+    ].filter(Boolean),
+    footer: 'Vous serez notifié par email dès que votre inscription sera validée ou refusée.',
+  })
+
+  GmailApp.sendEmail(email, `ASGF – Votre demande d'inscription au webinaire "${webinaireTitle}"`, participantPlain, {
+    htmlBody: participantHtml,
+  })
+
+  const adminHtml = buildHtmlEmail({
+    title: '📥 Nouvelle inscription webinaire',
+    intro: 'Une nouvelle demande vient d\'être enregistrée sur le site public.',
+    recap: [
+      { label: 'Participant', value: `${prenom} ${nom}` },
+      { label: 'Email', value: email },
+      { label: 'Webinaire', value: webinaireTitle },
+      { label: 'Date prévue', value: dateLabel },
+      webinaireTime ? { label: 'Heure', value: webinaireTime } : null,
+      pays ? { label: 'Pays', value: pays } : null,
+      whatsapp ? { label: 'WhatsApp', value: whatsapp } : null,
+    ].filter(Boolean),
+    footer: 'Merci de traiter cette demande depuis le back-office (valider ou refuser).',
+  })
+
+  GmailApp.sendEmail(
+    ASSOCIATION_EMAIL,
+    `ASGF • Nouvelle inscription au webinaire "${webinaireTitle}"`,
+    participantPlain,
+    { htmlBody: adminHtml, replyTo: email }
+  )
+
+  return jsonResponse({ success: true })
+}
+
+function handleWebinaireStatus(body) {
+  const {
+    prenom = '',
+    nom = '',
+    email = '',
+    webinaire_title: webinaireTitle = 'Webinaire ASGF',
+    webinaire_date: webinaireDate = '',
+    webinaire_time: webinaireTime = '',
+    webinaire_lien: webinaireLien = '',
+    status = 'pending',
+  } = body
+
+  if (!email) {
+    throw new Error('Email manquant pour la notification de statut webinaire')
+  }
+
+  const dateLabel = webinaireDate
+    ? new Date(webinaireDate).toLocaleDateString('fr-FR', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    : 'À venir'
+
+  const isConfirmed = status === 'confirmed'
+
+  const subject = isConfirmed
+    ? `✅ ASGF – Votre inscription au webinaire "${webinaireTitle}" est validée`
+    : `⛔ ASGF – Mise à jour concernant le webinaire "${webinaireTitle}"`
+
+  const intro = `Bonjour ${prenom} ${nom},`
+
+  const paragraphs = isConfirmed
+    ? [
+        `Bonne nouvelle ! Votre inscription au webinaire <strong>${webinaireTitle}</strong> est confirmée.`,
+        'Vous recevrez prochainement toutes les informations pratiques (lien de connexion, matériel, etc.).',
+      ]
+    : [
+        `Après étude de votre demande, nous ne pouvons malheureusement pas retenir votre inscription pour le webinaire <strong>${webinaireTitle}</strong>.`,
+        'Nous restons à votre disposition pour échanger et serons ravis de vous accueillir sur un prochain webinaire.',
+      ]
+
+  const footer = isConfirmed
+    ? 'Merci de noter la date dans votre agenda. À très vite !'
+    : 'Merci pour votre intérêt et votre compréhension.'
+
+  const recap = [
+    { label: 'Webinaire', value: webinaireTitle },
+    { label: 'Date', value: dateLabel },
+    webinaireTime ? { label: 'Heure', value: webinaireTime } : null,
+    { label: 'Statut', value: isConfirmed ? 'Confirmée ✅' : 'Non retenue ⛔' },
+  ].filter(Boolean)
+
+  const messageBlock = webinaireLien
+    ? `Lien de connexion : <a href="${webinaireLien}" style="color:${BRAND_COLOR};text-decoration:underline;">${webinaireLien}</a>`
+    : ''
+
+  const htmlBody = buildHtmlEmail({
+    title: isConfirmed ? '🎉 Inscription confirmée' : 'ℹ️ Mise à jour de votre inscription',
+    intro,
+    paragraphs,
+    recap,
+    messageBlock,
+    footer,
+  })
+
+  const plainText = `${intro}\n\n${paragraphs.map(p => p.replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}${webinaireLien ? `\n\nLien de connexion: ${webinaireLien}` : ''}\n\n${footer}`
+
+  GmailApp.sendEmail(email, subject, plainText, {
+    htmlBody,
+  })
 
   return jsonResponse({ success: true })
 }
@@ -606,7 +779,7 @@ function handleWebinaireInvitation(body) {
   const subject = `📩 Invitation au webinaire "${webinaireTitle}"`
 
   const paragraphs = [
-    `Votre inscription au webinaire <strong>${sanitize(webinaireTitle)}</strong> est confirmée.`,
+    `Votre inscription au webinaire <strong>${webinaireTitle}</strong> est confirmée.`,
     'Voici les informations de connexion pour rejoindre la session.',
   ]
 
@@ -618,6 +791,8 @@ function handleWebinaireInvitation(body) {
   if (webinaireTime) {
     recap.push({ label: 'Heure', value: webinaireTime })
   }
+  
+  const footer = "Merci d'être à l'heure le jour J et de tester votre connexion en amont."
 
   const htmlBody = buildHtmlEmail({
     title: '📩 Votre lien de connexion au webinaire',
@@ -627,13 +802,16 @@ function handleWebinaireInvitation(body) {
     messageBlock: accessLink
       ? `Lien de connexion : ${accessLink}`
       : "Le lien de connexion vous sera transmis ultérieurement par l'équipe ASGF.",
-    footer: "Merci d'être à l'heure le jour J et de tester votre connexion en amont.",
+    footer,
   })
 
+  // Créer une version texte plain en retirant les balises HTML
+  const plainText = `Bonjour ${prenom} ${nom},\n\n${paragraphs.map(p => p.replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}${accessLink ? `\n\nLien de connexion: ${accessLink}` : ''}\n\n${footer}`
+  
   GmailApp.sendEmail(
     email,
     subject,
-    `Bonjour ${prenom} ${nom},\n\nVoici votre lien de connexion pour le webinaire "${webinaireTitle}".`,
+    plainText,
     {
       htmlBody,
     }
@@ -677,22 +855,16 @@ function handleWebinaireReminder(body) {
 
   const paragraphs = is48h
     ? [
-        `Petit rappel : votre webinaire <strong>${sanitize(
-          webinaireTitle
-        )}</strong> aura lieu dans environ 48 heures.`,
+        `Petit rappel : votre webinaire <strong>${webinaireTitle}</strong> aura lieu dans environ 48 heures.`,
         'Pensez à vérifier votre matériel (connexion internet, micro, caméra le cas échéant).',
       ]
     : is2h
     ? [
-        `Ceci est un dernier rappel : le webinaire <strong>${sanitize(
-          webinaireTitle
-        )}</strong> commence très bientôt.`,
+        `Ceci est un dernier rappel : le webinaire <strong>${webinaireTitle}</strong> commence très bientôt.`,
         "Nous vous conseillons de vous connecter quelques minutes en avance pour être prêt à l'heure.",
       ]
     : [
-        `Rappel : le webinaire <strong>${sanitize(
-          webinaireTitle
-        )}</strong> approche.`,
+        `Rappel : le webinaire <strong>${webinaireTitle}</strong> approche.`,
       ]
 
   const recap = [
@@ -704,19 +876,24 @@ function handleWebinaireReminder(body) {
     recap.push({ label: 'Heure', value: webinaireTime })
   }
 
+  const footer = 'À très vite pour ce webinaire avec la communauté ASGF.'
+
   const htmlBody = buildHtmlEmail({
     title: '⏰ Rappel de votre webinaire',
     intro: `Bonjour ${prenom} ${nom},`,
     paragraphs,
     recap,
     messageBlock: accessLink ? `Lien de connexion : ${accessLink}` : '',
-    footer: 'À très vite pour ce webinaire avec la communauté ASGF.',
+    footer,
   })
 
+  // Créer une version texte plain en retirant les balises HTML
+  const plainText = `Bonjour ${prenom} ${nom},\n\n${paragraphs.map(p => p.replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}${accessLink ? `\n\nLien de connexion: ${accessLink}` : ''}\n\n${footer}`
+  
   GmailApp.sendEmail(
     email,
     subject,
-    `Bonjour ${prenom} ${nom},\n\nRappel concernant le webinaire "${webinaireTitle}".`,
+    plainText,
     { htmlBody }
   )
 
@@ -926,7 +1103,7 @@ function handleMemberEmail(body) {
 
       const htmlBody = buildHtmlEmail({
         title: subject,
-        intro: `Bonjour ${sanitize(prenom)} ${sanitize(nom)},`,
+        intro: `Bonjour ${prenom} ${nom},`,
         paragraphs: [],
         recap: [],
         messageBlock: rendered,
@@ -1239,72 +1416,132 @@ function handleFindPDFFile(body) {
   }
 }
 
-function buildHtmlEmail({
-  title,
-  intro,
-  paragraphs = [],
-  recap = [],
-  messageBlock = '',
-  footer = '',
-}) {
+function buildHtmlEmail(params) {
+  // Google Apps Script ne supporte pas les paramètres par défaut dans les destructurations
+  const title = params.title || ''
+  const intro = params.intro || ''
+  const paragraphs = params.paragraphs || []
+  const recap = params.recap || []
+  const messageBlock = params.messageBlock || ''
+  const footer = params.footer || ''
   const recapHtml = recap
     .map(
       ({ label, value }) => `
         <div style="margin-bottom:8px;">
-          <span style="font-weight:600;color:${BRAND_COLOR};">${label} :</span>
+          <span style="font-weight:600;color:${BRAND_COLOR};">${sanitize(label)} :</span>
           <span style="color:#0f172a;">${sanitize(value)}</span>
         </div>
       `
     )
     .join('')
 
-  const paragraphsHtml = paragraphs.map((p) => `<p style="margin:0 0 12px 0;color:#0f172a;">${sanitize(p)}</p>`).join('')
+  // Pour les paragraphes, on permet du HTML sécurisé (strong, em, br, a)
+  const paragraphsHtml = paragraphs.map((p) => {
+    const safeHtml = sanitizeHtml(p)
+    return `<p style="margin:0 0 12px 0;color:#0f172a;">${safeHtml}</p>`
+  }).join('')
 
-  // Pour messageBlock, on veut préserver les <br> mais sanitizer le reste
-  // On remplace d'abord les <br> par un placeholder, on sanitize, puis on remet les <br>
+  // Pour messageBlock, on permet du HTML sécurisé
   const messageHtml = messageBlock
-    ? (() => {
-        const placeholder = '___BR_PLACEHOLDER___'
-        const withPlaceholders = messageBlock.replace(/<br\s*\/?>/gi, placeholder)
-        const sanitized = sanitize(withPlaceholders)
-        const withBr = sanitized.replace(new RegExp(placeholder, 'g'), '<br/>')
-        return `
+    ? `
         <div style="margin-top:12px;padding:16px;border-left:4px solid ${ACCENT_COLOR};background:#f8fafc;color:#0f172a;border-radius:8px;">
-          ${withBr.replace(/\n/g, '<br/>')}
+          ${sanitizeHtml(messageBlock.replace(/\n/g, '<br/>'))}
         </div>
       `
-      })()
     : ''
 
   return `
-    <div style="font-family:'Inter',Helvetica,Arial,sans-serif;background:#f4f6fb;padding:32px;">
-      <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:20px;box-shadow:0 10px 25px rgba(13,71,161,0.15);overflow:hidden;">
-        <div style="background:${BRAND_COLOR};padding:28px 32px;color:white;">
-          <h1 style="margin:0;font-size:22px;">${sanitize(title)}</h1>
-        </div>
-        <div style="padding:32px;">
-          <p style="margin:0 0 16px 0;color:#0f172a;font-size:16px;">${sanitize(intro)}</p>
-          ${paragraphsHtml}
-          ${recapHtml}
-          ${messageHtml}
-          <p style="margin:24px 0 0 0;color:#475569;">${sanitize(footer)}</p>
-        </div>
-        <div style="background:#0f172a;color:#e2e8f0;padding:20px 32px;text-align:center;font-size:13px;">
-          Association des Géomaticiens Sénégalais de France<br/>
-          <span style="color:#94a3b8;">Ensemble, cartographions demain</span>
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body>
+      <div style="font-family:'Inter',Helvetica,Arial,sans-serif;background:#f4f6fb;padding:32px;">
+        <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:20px;box-shadow:0 10px 25px rgba(13,71,161,0.15);overflow:hidden;">
+          <div style="background:${BRAND_COLOR};padding:28px 32px;color:white;">
+            <h1 style="margin:0;font-size:22px;">${sanitize(title)}</h1>
+          </div>
+          <div style="padding:32px;">
+            <p style="margin:0 0 16px 0;color:#0f172a;font-size:16px;">${sanitize(intro)}</p>
+            ${paragraphsHtml}
+            ${recapHtml}
+            ${messageHtml}
+            <p style="margin:24px 0 0 0;color:#475569;">${sanitize(footer)}</p>
+          </div>
+          <div style="background:#0f172a;color:#e2e8f0;padding:20px 32px;text-align:center;font-size:13px;">
+            Association des Géomaticiens Sénégalais de France<br/>
+            <span style="color:#94a3b8;">Ensemble, cartographions demain</span>
+          </div>
         </div>
       </div>
-    </div>
+    </body>
+    </html>
   `
 }
 
+/**
+ * Sanitize du texte simple (échappe tout le HTML)
+ */
 function sanitize(text) {
-  return String(text || '')
+  if (!text) return ''
+  return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+}
+
+/**
+ * Sanitize du HTML en permettant certains tags sécurisés (strong, em, br, a, etc.)
+ * Cette fonction préserve les tags HTML autorisés et échappe le reste
+ */
+function sanitizeHtml(html) {
+  if (!html) return ''
+  let text = String(html)
+  
+  // Protéger les tags autorisés avec des placeholders
+  const placeholders = {}
+  const allowedTags = ['strong', 'em', 'br', 'a', 'p', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'code']
+  let placeholderIndex = 0
+  
+  // Fonction pour créer un placeholder unique
+  const createPlaceholder = () => {
+    const key = `__TAG_PLACEHOLDER_${placeholderIndex}__`
+    placeholderIndex++
+    return key
+  }
+  
+  // Remplacer les tags autorisés (avec leurs attributs) par des placeholders
+  allowedTags.forEach(tag => {
+    // Tags ouverts avec attributs possibles (surtout pour <a href="...">)
+    const openTagRegex = new RegExp(`<${tag}(\\s+[^>]*)?>`, 'gi')
+    text = text.replace(openTagRegex, (match) => {
+      const key = createPlaceholder()
+      placeholders[key] = match
+      return key
+    })
+    
+    // Tags de fermeture
+    const closeTagRegex = new RegExp(`</${tag}>`, 'gi')
+    text = text.replace(closeTagRegex, (match) => {
+      const key = createPlaceholder()
+      placeholders[key] = match
+      return key
+    })
+  })
+  
+  // Sanitizer le reste (échapper le HTML restant qui pourrait être malveillant)
+  text = sanitize(text)
+  
+  // Remettre les tags autorisés à leur place
+  Object.keys(placeholders).forEach(key => {
+    text = text.replace(key, placeholders[key])
+  })
+  
+  return text
 }
 
 function jsonResponse(payload) {

@@ -1,4 +1,5 @@
 // backend/controllers/auth.controller.js
+import { logAction, ACTION_TYPES, ENTITY_TYPES } from '../services/audit.service.js'
 import { supabase } from '../config/supabase.js'
 import { comparePassword, hashPassword } from '../utils/hashPassword.js'
 import { signAdminToken, verifyToken } from '../utils/jwt.js'
@@ -94,6 +95,19 @@ export async function loginAdmin(req, res) {
     }
 
     logInfo('Admin connecté', { id: admin.id, email: admin.email })
+
+    // Logger la connexion dans l'audit log
+    logAction({
+      adminId: admin.id,
+      adminEmail: admin.email,
+      adminNom: admin.nom || `${admin.prenom || ''} ${admin.nom || ''}`.trim(),
+      actionType: ACTION_TYPES.LOGIN,
+      entityType: ENTITY_TYPES.ADMIN,
+      module: 'auth',
+      metadata: { success: true },
+      ipAddress: req.ip || req.connection?.remoteAddress,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('Erreur audit log login (non bloquant):', err))
 
     return res.json({
       success: true,
@@ -288,6 +302,22 @@ export async function refreshToken(req, res) {
 export async function logout(req, res) {
   try {
     logInfo('Admin déconnecté', { id: req.admin?.id })
+    
+    // Logger la déconnexion dans l'audit log
+    if (req.admin) {
+      logAction({
+        adminId: req.admin.id,
+        adminEmail: req.admin.email,
+        adminNom: req.admin.nom || `${req.admin.prenom || ''} ${req.admin.nom || ''}`.trim(),
+        actionType: ACTION_TYPES.LOGOUT,
+        entityType: ENTITY_TYPES.ADMIN,
+        module: 'auth',
+        metadata: { success: true },
+        ipAddress: req.ip || req.connection?.remoteAddress,
+        userAgent: req.get('user-agent'),
+      }).catch(err => console.error('Erreur audit log logout (non bloquant):', err))
+    }
+    
     return res.json({
       success: true,
       message: 'Déconnexion réussie',

@@ -128,7 +128,7 @@
 
     /* Hero section mobile */
     .hero {
-        height: 100vh;
+        min-height: 100vh;
         padding-top: 120px;
         padding-bottom: 2rem;
         padding-left: 1rem;

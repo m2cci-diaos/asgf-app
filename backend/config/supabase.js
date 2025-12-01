@@ -89,3 +89,12 @@ export const supabasePublic = createClient(
     db: { schema: 'public' },
   }
 )
+
+// 👉 client pour le schéma "organisation" (table organisation.bureau_members)
+export const supabaseOrganisation = createClient(
+  supabaseUrl,
+  supabaseServiceKey,
+  {
+    db: { schema: 'organisation' },
+  }
+)

@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { createPortal } from "react-dom"
 import { useOutletContext } from "react-router-dom"
+import { updateLastActivity, getStoredActiveModule, setStoredActiveModule } from "../utils/auth"
 import {
   fetchPendingMembers,
   approveMember,
@@ -23,6 +24,9 @@ import {
   createRendezVous,
   fetchMentors,
   fetchMentees,
+  closeRelation,
+  fetchObjectifsByRelation,
+  fetchRendezVousByRelation,
   fetchCotisations,
   createCotisation,
   fetchPaiements,
@@ -56,6 +60,7 @@ import {
   downloadTresorerieReport,
   fetchRelances,
   fetchSecretariatStats,
+  fetchTresorerieStats,
   fetchReunions,
   createReunion,
   addParticipant,
@@ -82,6 +87,7 @@ import {
   updateFormateur,
   deleteFormateur,
   fetchWebinaireStats,
+  fetchAllDashboardStats,
   fetchWebinaires,
   createWebinaire,
   updateWebinaire,
@@ -118,6 +124,12 @@ import {
 } from "../utils/memberExports"
 import StudioContent from "../components/StudioContent"
 import CarteMembreGenerator from "../components/CarteMembreGenerator"
+import SecretariatDashboard from "./SecretariatDashboard"
+import RecrutementDashboard from "./RecrutementDashboard"
+import AuditLogContent from "../components/AuditLogContent"
+import CalendarContent from "../components/CalendarContent"
+import ProjetsContent from "../components/ProjetsContent"
+import RelationDrawer from "../components/mentorat/RelationDrawer"
 import "leaflet/dist/leaflet.css"
 import AdminSettingsPanel from "../components/AdminSettingsPanel"
 import logoASGF from "../img/Logo_officiel_ASGF.png"
@@ -305,7 +317,10 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
   const [pendingMembers, setPendingMembers] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const [activeModule, setActiveModule] = useState("dashboard")
+  const [activeModule, setActiveModule] = useState(() => {
+    // Restaurer le module actif depuis localStorage
+    return getStoredActiveModule()
+  })
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window === 'undefined') return true
     return window.innerWidth >= 1024
@@ -316,22 +331,71 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     () => ({
       dashboard: null,
       adhesions: 'adhesion',
-      members: 'adhesion',
+      members: 'adhesion', // Dépend de adhesion
       formations: 'formation',
       webinaires: 'webinaire',
-      studio: 'secretariat',
+      studio: 'secretariat', // Dépend de secretariat
       mentorat: 'mentorat',
       recrutement: 'recrutement',
       tresorerie: 'tresorerie',
       secretariat: 'secretariat',
+      projets: 'projets',
+      calendar: null, // Accessible à tous
       settings: '__settings__',
     }),
     []
   )
 
+  // Définir les dépendances entre modules
+  // Si un admin a accès au module parent, il a automatiquement accès au module enfant
+  const MODULE_DEPENDENCIES = useMemo(
+    () => ({
+      members: ['adhesion'], // members dépend de adhesion
+      studio: ['secretariat'], // studio dépend de secretariat
+      // Le secrétariat a besoin d'accéder aux membres pour ajouter des participants
+      // Cette dépendance est gérée côté backend dans requireModule
+    }),
+    []
+  )
+
+  // Fonction pour vérifier si un admin peut accéder à un module (y compris via dépendances)
+  const hasModuleAccess = useCallback(
+    (moduleKey) => {
+      if (!moduleKey) return true
+      if (admin?.is_master) return true
+      
+      const grantedModules = Array.isArray(admin?.modules) ? admin.modules : []
+      
+      // Vérifier l'accès direct
+      if (grantedModules.includes(moduleKey)) return true
+      
+      // Vérifier les dépendances inverses : si secretariat a besoin de adhesion
+      // et que l'admin a secretariat, il peut accéder à adhesion pour certaines opérations
+      if (moduleKey === 'adhesion') {
+        // Si l'admin a accès à secretariat, il peut lire les membres pour ajouter des participants
+        if (grantedModules.includes('secretariat')) return true
+      }
+      
+      // Pour les superadmins scoped
+      if (admin?.role_type === 'superadmin') {
+        const scopeList = Array.isArray(admin?.super_scope) ? admin.super_scope : []
+        if (scopeList.length === 0 || scopeList.includes(moduleKey)) return true
+        // Vérifier aussi les dépendances inverses pour superadmins
+        if (moduleKey === 'adhesion' && (scopeList.length === 0 || scopeList.includes('secretariat'))) {
+          return true
+        }
+      }
+      
+      return false
+    },
+    [admin]
+  )
+
   const MODULE_LABELS = useMemo(
     () => ({
       dashboard: 'Tableau de bord',
+      audit: 'Historique',
+      calendar: 'Calendrier',
       adhesions: 'Adhésions',
       members: 'Membres',
       formations: 'Formations',
@@ -341,6 +405,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
       recrutement: 'Recrutement',
       tresorerie: 'Trésorerie',
       secretariat: 'Secrétariat',
+      projets: 'Projets',
       settings: 'Paramètres',
     }),
     []
@@ -362,6 +427,23 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
   const canAccessModule = useCallback(
     (module) => {
       if (!module) return true
+      
+      // Dashboard : accessible à tous les admins authentifiés
+      if (module === 'dashboard') {
+        return true
+      }
+      
+      // Audit (Historique) : uniquement superadmins
+      if (module === 'audit') {
+        return Boolean(admin?.is_master || admin?.role_type === 'superadmin')
+      }
+      
+      // Calendar (Agenda) : accessible à tous les admins
+      if (module === 'calendar') {
+        return true
+      }
+      
+      // Settings : uniquement superadmins
       if (module === 'settings') {
         return Boolean(admin?.is_master || admin?.role_type === 'superadmin')
       }
@@ -369,19 +451,41 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
       const permissionKey = MODULE_PERMISSION_KEYS[module]
       if (!permissionKey) return true
 
+      // Superadmins masters ont accès à tout
       if (admin?.is_master) return true
 
+      const grantedModules = Array.isArray(admin?.modules) ? admin.modules : []
+      
+      // Vérifier l'accès direct au module
+      const hasDirectAccess = grantedModules.includes(permissionKey)
+      if (hasDirectAccess) return true
+
+      // Vérifier les dépendances : si le module dépend d'un autre, vérifier l'accès au module parent
+      const dependencies = MODULE_DEPENDENCIES[module] || []
+      for (const parentModule of dependencies) {
+        if (grantedModules.includes(parentModule)) {
+          return true // Accès via dépendance
+        }
+      }
+
+      // Pour les superadmins scoped, vérifier aussi dans super_scope
       if (admin?.role_type === 'superadmin') {
         const scopeList = Array.isArray(admin?.super_scope) ? admin.super_scope : []
         if (scopeList.length === 0 || scopeList.includes(permissionKey)) {
           return true
         }
+        
+        // Vérifier aussi les dépendances dans super_scope
+        for (const parentModule of dependencies) {
+          if (scopeList.length === 0 || scopeList.includes(parentModule)) {
+            return true
+          }
+        }
       }
 
-      const grantedModules = Array.isArray(admin?.modules) ? admin.modules : []
-      return grantedModules.includes(permissionKey)
+      return false
     },
-    [admin, MODULE_PERMISSION_KEYS]
+    [admin, MODULE_PERMISSION_KEYS, MODULE_DEPENDENCIES]
   )
 
   const hasAccessToActiveModule = useMemo(() => canAccessModule(activeModule), [activeModule, canAccessModule])
@@ -390,6 +494,10 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     (module) => {
       const allowed = canAccessModule(module)
       setActiveModule(module)
+      // Sauvegarder le module actif dans localStorage
+      setStoredActiveModule(module)
+      // Mettre à jour l'activité lors du changement de module
+      updateLastActivity()
       if (!allowed) {
         setAccessDeniedInfo({
           module,
@@ -420,6 +528,10 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     }
     
     console.log('✅ Token présent:', token.substring(0, 20) + '...')
+    
+    // Initialiser l'activité
+    updateLastActivity()
+    
     loadPendingMembers()
   }, [])
 
@@ -481,12 +593,75 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     return 'AD'
   }
 
-  // Stats calculées
+  // États pour les stats de toutes les sections
+  const [allStats, setAllStats] = useState({
+    adhesion: null,
+    formation: null,
+    webinaire: null,
+    tresorerie: null,
+    secretariat: null,
+    mentorat: null,
+    recrutement: null,
+  })
+  const [statsLoading, setStatsLoading] = useState(true)
+
+  // Charger toutes les stats pour tous les admins (même sans accès aux modules)
+  const loadAllStats = useCallback(async () => {
+    setStatsLoading(true)
+    try {
+      // Utiliser la nouvelle route qui charge toutes les stats en une seule requête
+      // Accessible à tous les admins authentifiés
+      const statsData = await fetchAllDashboardStats()
+
+      // Debug: vérifier les stats de trésorerie
+      if (statsData.tresorerie) {
+        console.log('✅ Stats trésorerie chargées:', statsData.tresorerie)
+        console.log('📊 Détails trésorerie:', {
+          solde_total_eur: statsData.tresorerie?.solde_total_eur,
+          montant_total_eur: statsData.tresorerie?.montant_total_eur,
+          total_paiements_dons_eur: statsData.tresorerie?.total_paiements_dons_eur,
+          depenses_validees_eur: statsData.tresorerie?.depenses_validees_eur,
+          toutes_les_proprietes: Object.keys(statsData.tresorerie || {})
+        })
+      }
+
+      // Debug: vérifier les stats d'adhésion
+      console.log('📊 Stats dashboard chargées:', {
+        adhesion: statsData.adhesion,
+        adhesion_keys: statsData.adhesion ? Object.keys(statsData.adhesion) : [],
+        total_membres: statsData.adhesion?.total_membres,
+        membres_approuves: statsData.adhesion?.membres_approuves,
+        membres_en_attente: statsData.adhesion?.membres_en_attente,
+      })
+
+      setAllStats(statsData)
+    } catch (err) {
+      console.warn('Erreur lors du chargement des stats:', err)
+      // En cas d'erreur, initialiser avec des valeurs null
+      setAllStats({
+        adhesion: null,
+        formation: null,
+        webinaire: null,
+        tresorerie: null,
+        secretariat: null,
+        mentorat: null,
+        recrutement: null,
+      })
+    } finally {
+      setStatsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadAllStats()
+  }, [loadAllStats])
+
+  // Stats calculées pour compatibilité
   const stats = {
-    totalMembers: 0, // À calculer depuis l'API
+    totalMembers: allStats.adhesion?.total_membres || 0,
     pendingAdhesions: pendingMembers.length,
-    activeFormations: 0, // À calculer depuis l'API
-    cardsGenerated: 0, // À calculer depuis l'API
+    activeFormations: allStats.formation?.total_formations || 0,
+    cardsGenerated: 0, // Supprimé - pas utile
   }
 
   // Fonction pour obtenir le titre et breadcrumb selon le module
@@ -520,13 +695,14 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
     const [mentees, setMentees] = useState([])
     const [formData, setFormData] = useState({})
     const [submitting, setSubmitting] = useState(false)
+    const [selectedRelation, setSelectedRelation] = useState(null) // Pour ouvrir le drawer
 
     const loadData = async () => {
       setLoading(true)
       try {
         const [statsData, relationsData] = await Promise.all([
           fetchMentoratStats(),
-          fetchRelations({ limit: 10 }),
+          fetchRelations({ limit: 100 }), // Charger plus de relations pour voir toutes
         ])
         setMentoratStats(statsData || {})
         // fetchRelations peut retourner un objet avec pagination ou directement un tableau
@@ -576,13 +752,41 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
       e.preventDefault()
       setSubmitting(true)
       try {
+        // 🔒 VÉRIFICATIONS DE DOUBLONS AVANT SOUMISSION (FRONTEND)
         if (showModal === 'mentor') {
+          // Vérifier si ce membre est déjà mentor
+          const existingMentor = mentors.find(m => m.membre_id === formData.membre_id)
+          if (existingMentor) {
+            alert('Ce membre est déjà enregistré comme mentor. Un membre ne peut être mentor qu\'une seule fois.')
+            setSubmitting(false)
+            return
+          }
           await createMentor(formData)
           alert('Mentor créé avec succès !')
         } else if (showModal === 'mentee') {
+          // Vérifier si ce membre est déjà mentoré
+          const existingMentee = mentees.find(m => m.membre_id === formData.membre_id)
+          if (existingMentee) {
+            alert('Ce membre est déjà enregistré comme mentoré. Un membre ne peut être mentoré qu\'une seule fois.')
+            setSubmitting(false)
+            return
+          }
           await createMentee(formData)
           alert('Mentoré créé avec succès !')
         } else if (showModal === 'relation') {
+          // Vérifier s'il existe déjà une relation ACTIVE pour ce duo
+          if (formData.statut_relation === 'active' || !formData.statut_relation) {
+            const existingActive = relations.find(r => 
+              r.mentor_id === formData.mentor_id && 
+              r.mentee_id === formData.mentee_id && 
+              r.statut_relation === 'active'
+            )
+            if (existingActive) {
+              alert('Une relation active existe déjà entre ce mentor et ce mentoré. Veuillez clôturer la relation existante avant d\'en créer une nouvelle.')
+              setSubmitting(false)
+              return
+            }
+          }
           await createRelation(formData)
           alert('Relation créée avec succès !')
         } else if (showModal === 'rendezvous') {
@@ -654,7 +858,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           <div>
                 <h3 className="card-title">Binômes mentor/mentoré</h3>
                 <p className="card-subtitle">
-                  {loading ? 'Chargement...' : `${relations.length} relation${relations.length > 1 ? 's' : ''} active${relations.length > 1 ? 's' : ''}`}
+                  {loading ? 'Chargement...' : `${relations.length} relation${relations.length > 1 ? 's' : ''}`}
             </p>
           </div>
               <div style={{ display: 'flex', gap: '10px' }}>
@@ -685,7 +889,7 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
               </div>
             ) : relations.length === 0 ? (
               <div className="empty-state">
-                <p>Aucune relation active</p>
+                <p>Aucune relation</p>
               </div>
             ) : (
               <div className="table-container">
@@ -702,8 +906,22 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                     {Array.isArray(relations) && relations.length > 0 ? (
                       relations.map((rel) => {
                         if (!rel || !rel.id) return null
+                        const getStatutBadgeClass = (statut) => {
+                          switch (statut) {
+                            case 'active': return 'approved' // vert
+                            case 'terminee': return 'warning' // orange
+                            case 'suspendue': return 'pending' // gris
+                            default: return 'pending'
+                          }
+                        }
                         return (
-                          <tr key={rel.id}>
+                          <tr 
+                            key={rel.id}
+                            onClick={() => setSelectedRelation(rel)}
+                            style={{ cursor: 'pointer' }}
+                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f8fafc'}
+                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                          >
                             <td>
                               {rel.mentor?.membre?.prenom || ''} {rel.mentor?.membre?.nom || ''}
                             </td>
@@ -714,9 +932,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                               {rel.date_debut ? new Date(rel.date_debut).toLocaleDateString('fr-FR') : '—'}
                             </td>
                             <td>
-                              <span className={`status-badge ${rel.statut_relation === 'active' ? 'approved' : 'pending'}`}>
+                              <span className={`status-badge ${getStatutBadgeClass(rel.statut_relation || 'active')}`}>
                                 {rel.statut_relation || 'active'}
-                </span>
+                              </span>
                             </td>
                           </tr>
                         )
@@ -980,10 +1198,9 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
                         onChange={(e) => setFormData({ ...formData, type: e.target.value })}
                       >
                         <option value="">Sélectionner</option>
-                        <option value="premier_contact">Premier contact</option>
-                        <option value="suivi">Suivi</option>
-                        <option value="bilan">Bilan</option>
-                        <option value="autre">Autre</option>
+                        <option value="visio">Visio</option>
+                        <option value="presentiel">Présentiel</option>
+                        <option value="telephone">Téléphone</option>
                       </select>
                     </div>
                     <div className="form-group">
@@ -1020,12 +1237,29 @@ function AdminDashboard({ admin: adminProp, onLogout: onLogoutProp }) {
           </div>,
           document.body
         )}
+
+        {/* Drawer pour les détails de relation */}
+        {selectedRelation && (
+          <RelationDrawer
+            relation={selectedRelation}
+            onClose={() => setSelectedRelation(null)}
+            onUpdate={() => {
+              setSelectedRelation(null)
+              loadData()
+            }}
+          />
+        )}
       </div>
     )
   }
 
-  // Composant pour le contenu Recrutement
+  // Composant pour le contenu Recrutement - Utilise le dashboard dédié
   const RecrutementContent = () => {
+    return <RecrutementDashboard />
+  }
+  
+  // Ancien composant RecrutementContent (remplacé par RecrutementDashboard)
+  const RecrutementContent_OLD = () => {
     const [recrutementStats, setRecrutementStats] = useState(null)
     const [candidatures, setCandidatures] = useState([])
     const [loading, setLoading] = useState(false)
@@ -4031,6 +4265,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     const [filterCotisationsMois, setFilterCotisationsMois] = useState('')
     const [filterCotisationsAnnee, setFilterCotisationsAnnee] = useState('')
     const [filterCotisationsStatut, setFilterCotisationsStatut] = useState('')
+    const [searchCotisations, setSearchCotisations] = useState('')
     const [filterPaiementsType, setFilterPaiementsType] = useState('')
     const [filterDepensesStatut, setFilterDepensesStatut] = useState('')
     const [editingPaiement, setEditingPaiement] = useState(null)
@@ -4217,9 +4452,14 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     }
 
     const memberQuery = filters.memberQuery.trim()
+    // Filtrage par recherche spécifique aux cotisations
+    const filteredCotisationsBySearch = useMemo(
+      () => filterByMemberQuery(cotisationsData, searchCotisations),
+      [cotisationsData, searchCotisations]
+    )
     const filteredCotisations = useMemo(
-      () => filterByMemberQuery(cotisationsData, memberQuery),
-      [cotisationsData, memberQuery]
+      () => filterByMemberQuery(filteredCotisationsBySearch, memberQuery),
+      [filteredCotisationsBySearch, memberQuery]
     )
     const filteredPaiements = useMemo(
       () => filterByMemberQuery(paiementsData, memberQuery),
@@ -4972,6 +5212,27 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
               borderRadius: '8px',
               border: '1px solid #e4e7ec'
             }}>
+              <div style={{ minWidth: '250px', flex: '1' }}>
+                <input
+                  type="text"
+                  placeholder="Rechercher par nom, prénom ou numéro membre..."
+                  value={searchCotisations}
+                  onChange={(e) => {
+                    setSearchCotisations(e.target.value)
+                    setPageCotisations(1)
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    border: '1px solid #e4e7ec',
+                    borderRadius: '6px',
+                    fontSize: '1rem',
+                    background: '#ffffff',
+                    color: '#0f172a',
+                    fontWeight: '500'
+                  }}
+                />
+              </div>
               <div style={{ minWidth: '150px' }}>
                 <select
                   value={filterCotisationsMois}
@@ -4984,9 +5245,10 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                     padding: '10px 14px',
                     border: '1px solid #e4e7ec',
                     borderRadius: '6px',
-                    fontSize: '14px',
+                    fontSize: '1rem',
                     background: '#ffffff',
-                    color: '#0f172a'
+                    color: '#0f172a',
+                    fontWeight: '500'
                   }}
                 >
                   <option value="">Tous les mois</option>
@@ -5009,9 +5271,10 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                     padding: '10px 14px',
                     border: '1px solid #e4e7ec',
                     borderRadius: '6px',
-                    fontSize: '14px',
+                    fontSize: '1rem',
                     background: '#ffffff',
-                    color: '#0f172a'
+                    color: '#0f172a',
+                    fontWeight: '500'
                   }}
                 />
               </div>
@@ -5027,9 +5290,10 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                     padding: '10px 14px',
                     border: '1px solid #e4e7ec',
                     borderRadius: '6px',
-                    fontSize: '14px',
+                    fontSize: '1rem',
                     background: '#ffffff',
-                    color: '#0f172a'
+                    color: '#0f172a',
+                    fontWeight: '500'
                   }}
                 >
                   <option value="">Tous les statuts</option>
@@ -5046,7 +5310,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
               </div>
             ) : cotisations.length === 0 ? (
               <div className="empty-state">
-                <p>{filterCotisationsMois || filterCotisationsAnnee || filterCotisationsStatut ? 'Aucune cotisation ne correspond aux filtres' : 'Aucune cotisation'}</p>
+                <p>{searchCotisations || filterCotisationsMois || filterCotisationsAnnee || filterCotisationsStatut ? 'Aucune cotisation ne correspond aux filtres' : 'Aucune cotisation'}</p>
               </div>
             ) : (
               <>
@@ -6423,10 +6687,17 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
       if (showModal) {
         const loadSelectData = async () => {
           try {
+            // Le secrétariat peut accéder aux membres pour ajouter des participants
+            // même sans permission explicite sur adhesion (géré par la dépendance)
             const membersData = await fetchAllMembers({ limit: 100 })
             setMembers(Array.isArray(membersData) ? membersData : [])
           } catch (err) {
             console.error('Erreur chargement données sélecteurs:', err)
+            // Si l'erreur est due à une permission, afficher un message clair
+            if (err.message?.includes('403') || err.message?.includes('Accès refusé')) {
+              console.warn('Accès aux membres refusé. Vérifiez les permissions du module adhesion ou secretariat.')
+            }
+            setMembers([])
           }
         }
         loadSelectData()
@@ -9268,6 +9539,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     const [filters, setFilters] = useState({ search: '', theme: '', statut: '' })
     const [selectedWebinaire, setSelectedWebinaire] = useState(null)
     const [presentateurs, setPresentateurs] = useState([])
+    const [allPresentateurs, setAllPresentateurs] = useState([])
     const [uploadingPhoto, setUploadingPhoto] = useState(false)
     const [photoPreview, setPhotoPreview] = useState(null)
     const [activeTab, setActiveTab] = useState('webinaires') // 'webinaires', 'inscriptions', 'presentateurs'
@@ -9282,13 +9554,28 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
           fetchWebinaireInscriptions({ page: 1, limit: 50 }),
         ])
         setStats(statsData || {})
-        setWebinaires(Array.isArray(webinairesData) ? webinairesData : [])
+        const webinairesList = Array.isArray(webinairesData) ? webinairesData : []
+        setWebinaires(webinairesList)
         setInscriptions(Array.isArray(inscriptionsData) ? inscriptionsData : [])
+        
+        // Charger tous les présentateurs de tous les webinaires
+        try {
+          const allPresentateursPromises = webinairesList.map(w => fetchPresentateurs(w.id))
+          const allPresentateursResults = await Promise.allSettled(allPresentateursPromises)
+          const allPresentateursList = allPresentateursResults
+            .filter(result => result.status === 'fulfilled')
+            .flatMap(result => result.value || [])
+          setAllPresentateurs(allPresentateursList)
+        } catch (err) {
+          console.error('Erreur chargement tous les présentateurs:', err)
+          setAllPresentateurs([])
+        }
       } catch (err) {
         console.error('Erreur chargement webinaires:', err)
         setStats({})
         setWebinaires([])
         setInscriptions([])
+        setAllPresentateurs([])
       } finally {
         setLoading(false)
       }
@@ -9346,10 +9633,11 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             await loadPresentateurs(selectedWebinaire)
           }
         }
+        // Recharger toutes les données après modification
+        await loadData()
         setShowModal(null)
         setFormData({})
         setEditingId(null)
-        await loadData()
       } catch (err) {
         alert(err.message || 'Erreur lors de l\'opération')
       } finally {
@@ -9480,11 +9768,11 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
         ? (presentInscriptions.length / confirmedInscriptions.length * 100)
         : 0
 
-      // Compter les présentateurs uniques
-      const allPresentateurs = new Set()
-      webinaires.forEach(w => {
-        if (w.presentateurs_count) {
-          allPresentateurs.add(w.id) // Approximation
+      // Compter les présentateurs uniques (par ID)
+      const uniquePresentateurs = new Set()
+      allPresentateurs.forEach(p => {
+        if (p.id) {
+          uniquePresentateurs.add(p.id)
         }
       })
 
@@ -9493,9 +9781,9 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
         confirmedInscriptions: confirmedInscriptions.length,
         presentInscriptions: presentInscriptions.length,
         tauxPresence,
-        totalPresentateurs: allPresentateurs.size
+        totalPresentateurs: uniquePresentateurs.size
       }
-    }, [webinaires, inscriptions])
+    }, [webinaires, inscriptions, allPresentateurs])
 
     useEffect(() => {
       if (!showModal) {
@@ -9808,7 +10096,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             {[
               { id: 'webinaires', label: '📹 Webinaires', count: webinaires.length },
               { id: 'inscriptions', label: '👥 Inscriptions', count: inscriptions.length },
-              { id: 'presentateurs', label: '👨‍🏫 Présentateurs', count: presentateurs.length }
+              { id: 'presentateurs', label: '👨‍🏫 Présentateurs', count: calculatedStats.totalPresentateurs }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -9907,6 +10195,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                         })
                         .map((webinaire) => {
                           const webinaireInscriptions = inscriptions.filter(i => i.webinaire_id === webinaire.id)
+                          const webinairePresentateursCount = allPresentateurs.filter(p => p.webinaire_id === webinaire.id).length
                           return (
                             <tr key={webinaire.id}>
                               <td style={{ fontWeight: '600' }}>{webinaire.titre || '—'}</td>
@@ -9935,7 +10224,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                   }}
                                   style={{ fontWeight: '600', color: '#0066CC' }}
                                 >
-                                  {webinaire.presentateurs_count || 0} présentateur{(webinaire.presentateurs_count || 0) > 1 ? 's' : ''}
+                                  {webinairePresentateursCount} présentateur{webinairePresentateursCount > 1 ? 's' : ''}
                                 </button>
                               </td>
                               <td>
@@ -10940,6 +11229,17 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
           </button>
 
           <button
+            className={`nav-item ${activeModule === 'projets' ? 'active' : ''} ${!canAccessModule('projets') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('projets')}
+            aria-disabled={!canAccessModule('projets')}
+          >
+            <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+            <span>Projets</span>
+          </button>
+
+          <button
             className={`nav-item ${activeModule === 'settings' ? 'active' : ''} ${!canAccessModule('settings') ? 'restricted' : ''}`}
             onClick={() => handleModuleSelect('settings')}
             aria-disabled={!canAccessModule('settings')}
@@ -10949,6 +11249,28 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
             <span>Paramètres</span>
+          </button>
+
+          <button
+            className={`nav-item ${activeModule === 'audit' ? 'active' : ''} ${!canAccessModule('audit') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('audit')}
+            aria-disabled={!canAccessModule('audit')}
+          >
+            <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <span>Historique</span>
+          </button>
+
+          <button
+            className={`nav-item ${activeModule === 'calendar' ? 'active' : ''} ${!canAccessModule('calendar') ? 'restricted' : ''}`}
+            onClick={() => handleModuleSelect('calendar')}
+            aria-disabled={!canAccessModule('calendar')}
+          >
+            <svg className="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <span>Calendrier</span>
           </button>
         </nav>
 
@@ -11001,7 +11323,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
 
         {/* Main Content Area */}
         <main className="admin-content page-transition">
-          {accessDeniedInfo && !hasAccessToActiveModule && (
+          {accessDeniedInfo && !hasAccessToActiveModule && activeModule !== 'dashboard' ? (
             <div className="access-denied-overlay">
               <div className="access-denied-card">
                 <h3>Accès refusé</h3>
@@ -11016,250 +11338,247 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                 </div>
               </div>
             </div>
-          )}
-          {activeModule === 'members' && <MembersContent />}
-          {activeModule === 'adhesions' && <AdhesionContent />}
-          {activeModule === 'formations' && <FormationsContent />}
-          {activeModule === 'webinaires' && <WebinairesContent />}
-          {activeModule === 'studio' && <StudioContent />}
-          {activeModule === 'mentorat' && <MentoratContent />}
-          {activeModule === 'recrutement' && <RecrutementContent />}
-          {activeModule === 'tresorerie' && <TresorerieContent />}
-          {activeModule === 'secretariat' && <SecretariatContent />}
-          {activeModule === 'settings' && <AdminSettingsPanel currentAdmin={admin} />}
-          {activeModule === 'dashboard' && (
+          ) : (
             <>
-              {/* KPI Cards */}
-              <section className="kpi-grid">
-            <div className="kpi-card">
-              <div className="kpi-icon blue">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                </svg>
-              </div>
-              <div className="kpi-content">
-                <p className="kpi-label">Membres totaux</p>
-                <p className="kpi-value">{stats.totalMembers}</p>
-              </div>
-            </div>
+              {/* Dashboard toujours accessible */}
+              {activeModule === 'dashboard' && (
+                <>
+                  {/* Vue d'ensemble de l'activité de l'association */}
+                  <section className="dashboard-overview">
+                    <h2 className="section-title">Vue d'ensemble de l'activité</h2>
+                    {statsLoading ? (
+                      <div className="loading-state">
+                        <div className="spinner"></div>
+                        <p>Chargement des statistiques...</p>
+                      </div>
+                    ) : (
+                      <div className="modules-grid">
+                        {/* Adhésions */}
+                        <div className={`module-card ${!canAccessModule('adhesions') ? 'disabled' : ''}`} onClick={() => canAccessModule('adhesions') && handleModuleSelect('adhesions')}>
+                          <div className="module-header">
+                            <div className="module-icon blue">
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                              </svg>
+                            </div>
+                            <h3 className="module-title">Adhésions</h3>
+                          </div>
+                          <div className="module-stats">
+                            <div className="stat-item">
+                              <span className="stat-label">Membres totaux</span>
+                              <span className="stat-value">{allStats.adhesion?.total_membres || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">En attente</span>
+                              <span className="stat-value orange">{allStats.adhesion?.membres_en_attente || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Approuvés</span>
+                              <span className="stat-value green">{allStats.adhesion?.membres_approuves || 0}</span>
+                            </div>
+                          </div>
+                        </div>
 
-            <div className="kpi-card">
-              <div className="kpi-icon orange">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="kpi-content">
-                <p className="kpi-label">Adhésions en attente</p>
-                <p className="kpi-value">{stats.pendingAdhesions}</p>
-              </div>
-            </div>
+                        {/* Formations */}
+                        <div className={`module-card ${!canAccessModule('formations') ? 'disabled' : ''}`} onClick={() => canAccessModule('formations') && handleModuleSelect('formations')}>
+                          <div className="module-header">
+                            <div className="module-icon green">
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                              </svg>
+                            </div>
+                            <h3 className="module-title">Formations</h3>
+                          </div>
+                          <div className="module-stats">
+                            <div className="stat-item">
+                              <span className="stat-label">Formations actives</span>
+                              <span className="stat-value">{allStats.formation?.total_formations || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Sessions</span>
+                              <span className="stat-value">{allStats.formation?.total_sessions || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Inscriptions</span>
+                              <span className="stat-value">{allStats.formation?.total_inscriptions || 0}</span>
+                            </div>
+                          </div>
+                        </div>
 
-            <div className="kpi-card">
-              <div className="kpi-icon green">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                </svg>
-              </div>
-              <div className="kpi-content">
-                <p className="kpi-label">Formations actives</p>
-                <p className="kpi-value">{stats.activeFormations}</p>
-              </div>
-            </div>
+                        {/* Webinaires */}
+                        <div className={`module-card ${!canAccessModule('webinaires') ? 'disabled' : ''}`} onClick={() => canAccessModule('webinaires') && handleModuleSelect('webinaires')}>
+                          <div className="module-header">
+                            <div className="module-icon purple">
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                              </svg>
+                            </div>
+                            <h3 className="module-title">Webinaires</h3>
+                          </div>
+                          <div className="module-stats">
+                            <div className="stat-item">
+                              <span className="stat-label">Webinaires</span>
+                              <span className="stat-value">{allStats.webinaire?.total_webinaires || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Inscriptions</span>
+                              <span className="stat-value">{allStats.webinaire?.total_inscriptions || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Présentateurs</span>
+                              <span className="stat-value">{allStats.webinaire?.total_presentateurs || 0}</span>
+                            </div>
+                          </div>
+                        </div>
 
-            <div className="kpi-card">
-              <div className="kpi-icon yellow">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
-                </svg>
-              </div>
-              <div className="kpi-content">
-                <p className="kpi-label">Cartes générées</p>
-                <p className="kpi-value">{stats.cardsGenerated}</p>
-              </div>
-            </div>
-          </section>
+                        {/* Trésorerie */}
+                        <div className={`module-card ${!canAccessModule('tresorerie') ? 'disabled' : ''}`} onClick={() => canAccessModule('tresorerie') && handleModuleSelect('tresorerie')}>
+                          <div className="module-header">
+                            <div className="module-icon yellow">
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                            </div>
+                            <h3 className="module-title">Trésorerie</h3>
+                          </div>
+                          <div className="module-stats">
+                            <div className="stat-item">
+                              <span className="stat-label">Solde total</span>
+                              <span className="stat-value" style={{ fontSize: '1.3rem', fontWeight: 800, color: '#22c55e' }}>
+                                {(() => {
+                                  const tresorerie = allStats.tresorerie || {}
+                                  const solde = tresorerie.solde_total_eur ?? tresorerie.solde_total ?? 0
+                                  return typeof solde === 'number' && !isNaN(solde) 
+                                    ? solde.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €' 
+                                    : '0,00 €'
+                                })()}
+                              </span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Recettes (cotisations + dons + cartes)</span>
+                              <span className="stat-value green">
+                                {(() => {
+                                  const tresorerie = allStats.tresorerie || {}
+                                  const cotisations = tresorerie.montant_total_eur ?? tresorerie.montant_total ?? 0
+                                  const dons = tresorerie.total_paiements_dons_eur ?? 0
+                                  const cartes = tresorerie.revenus_cartes_membres_eur ?? 0
+                                  const total = (typeof cotisations === 'number' && !isNaN(cotisations) ? cotisations : 0) + 
+                                               (typeof dons === 'number' && !isNaN(dons) ? dons : 0) +
+                                               (typeof cartes === 'number' && !isNaN(cartes) ? cartes : 0)
+                                  return total.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
+                                })()}
+                              </span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Dépenses validées</span>
+                              <span className="stat-value orange">
+                                {(() => {
+                                  const tresorerie = allStats.tresorerie || {}
+                                  const depenses = tresorerie.depenses_validees_eur ?? 0
+                                  return (typeof depenses === 'number' && !isNaN(depenses) ? depenses : 0).toLocaleString('fr-FR') + ' €'
+                                })()}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
 
-          {/* Charts Section */}
-          <section className="charts-grid">
-            <div className="chart-card">
-              <div className="card-header">
-                <h3 className="card-title">Évolution des adhésions</h3>
-                <button className="card-action">Voir tout</button>
-              </div>
-              <div className="chart-placeholder">
-                <p className="placeholder-text">Graphique en barres - Adhésions par mois</p>
-                <div className="chart-bars">
-                  {[65, 80, 45, 90, 70, 85, 95].map((height, i) => (
-                    <div key={i} className="bar" style={{ height: `${height}%` }}></div>
-                  ))}
-                </div>
-              </div>
-            </div>
+                        {/* Secrétariat */}
+                        <div className={`module-card ${!canAccessModule('secretariat') ? 'disabled' : ''}`} onClick={() => canAccessModule('secretariat') && handleModuleSelect('secretariat')}>
+                          <div className="module-header">
+                            <div className="module-icon teal">
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </div>
+                            <h3 className="module-title">Secrétariat</h3>
+                          </div>
+                          <div className="module-stats">
+                            <div className="stat-item">
+                              <span className="stat-label">Réunions</span>
+                              <span className="stat-value">{allStats.secretariat?.total_reunions || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Actions</span>
+                              <span className="stat-value">{allStats.secretariat?.total_actions || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Documents</span>
+                              <span className="stat-value">{allStats.secretariat?.total_documents || 0}</span>
+                            </div>
+                          </div>
+                        </div>
 
-            <div className="chart-card">
-              <div className="card-header">
-                <h3 className="card-title">Répartition géographique</h3>
-                <button className="card-action">Voir tout</button>
-              </div>
-              <div className="chart-placeholder">
-                <p className="placeholder-text">Graphique donut - France / Sénégal / Autres</p>
-                <div className="chart-donut">
-                  <div className="donut-segment france" style={{ '--percentage': '60%' }}></div>
-                  <div className="donut-segment senegal" style={{ '--percentage': '30%' }}></div>
-                  <div className="donut-segment autres" style={{ '--percentage': '10%' }}></div>
-                </div>
-                <div className="chart-legend">
-                  <div className="legend-item">
-                    <span className="legend-color france"></span>
-                    <span>France (60%)</span>
-                  </div>
-                  <div className="legend-item">
-                    <span className="legend-color senegal"></span>
-                    <span>Sénégal (30%)</span>
-                  </div>
-                  <div className="legend-item">
-                    <span className="legend-color autres"></span>
-                    <span>Autres (10%)</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
+                        {/* Mentorat */}
+                        <div className={`module-card ${!canAccessModule('mentorat') ? 'disabled' : ''}`} onClick={() => canAccessModule('mentorat') && handleModuleSelect('mentorat')}>
+                          <div className="module-header">
+                            <div className="module-icon indigo">
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                              </svg>
+                            </div>
+                            <h3 className="module-title">Mentorat</h3>
+                          </div>
+                          <div className="module-stats">
+                            <div className="stat-item">
+                              <span className="stat-label">Relations actives</span>
+                              <span className="stat-value">{allStats.mentorat?.relations_actives || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Mentors</span>
+                              <span className="stat-value">{allStats.mentorat?.total_mentors || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Mentés</span>
+                              <span className="stat-value">{allStats.mentorat?.total_mentees || 0}</span>
+                            </div>
+                          </div>
+                        </div>
 
-          {/* Table Section */}
-          <section className="table-section">
-            <div className="table-card">
-              <div className="card-header">
-                <div>
-                  <h3 className="card-title">Adhésions en attente de validation</h3>
-                  <p className="card-subtitle">
-                    {Array.isArray(pendingMembers) ? pendingMembers.length : 0} demande{Array.isArray(pendingMembers) && pendingMembers.length > 1 ? 's' : ''} en attente
-                    </p>
-                  </div>
-                <button
-                  onClick={loadPendingMembers}
-                  disabled={loading}
-                  className="refresh-btn"
-                >
-                  <svg className={`refresh-icon ${loading ? 'spinning' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  {loading ? 'Chargement...' : 'Actualiser'}
-                </button>
-              </div>
-
-              {error && !loading && (
-                <div className="error-banner">
-                  <svg className="error-icon" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {error}
-                </div>
+                        {/* Recrutement */}
+                        <div className={`module-card ${!canAccessModule('recrutement') ? 'disabled' : ''}`} onClick={() => canAccessModule('recrutement') && handleModuleSelect('recrutement')}>
+                          <div className="module-header">
+                            <div className="module-icon red">
+                              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                              </svg>
+                            </div>
+                            <h3 className="module-title">Recrutement</h3>
+                          </div>
+                          <div className="module-stats">
+                            <div className="stat-item">
+                              <span className="stat-label">Candidatures</span>
+                              <span className="stat-value">{allStats.recrutement?.total_candidatures || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">En cours</span>
+                              <span className="stat-value orange">{allStats.recrutement?.candidatures_en_cours || 0}</span>
+                            </div>
+                            <div className="stat-item">
+                              <span className="stat-label">Acceptées</span>
+                              <span className="stat-value green">{allStats.recrutement?.candidatures_acceptees || 0}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                </>
               )}
-
-              {loading && (!Array.isArray(pendingMembers) || pendingMembers.length === 0) && (
-                <div className="loading-state">
-                  <div className="spinner"></div>
-                  <p>Chargement des données...</p>
-                </div>
-              )}
-              {!loading && (!Array.isArray(pendingMembers) || pendingMembers.length === 0) && (
-                <div className="empty-state">
-                  <svg className="empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  <p>Aucune adhésion en attente</p>
-                </div>
-              )}
-              {!loading && Array.isArray(pendingMembers) && pendingMembers.length > 0 && (
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Nom</th>
-                        <th>Email</th>
-                        <th>Pays</th>
-                        <th>Statut</th>
-                        <th>Date</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Array.isArray(pendingMembers) && pendingMembers.length > 0 ? (
-                        pendingMembers.map((membre) => {
-                          if (!membre || !membre.id) return null
-                          return (
-                            <tr key={membre.id}>
-                              <td>
-                                <div className="table-cell-name">
-                                  <div className="name-avatar">
-                                    {(membre.prenom?.[0] || '?').toUpperCase()}
-                                  </div>
-                                  <div>
-                                    <div className="name-primary">
-                                      {membre.prenom || ''} {membre.nom || ''}
-                                    </div>
-                                    {membre.domaine && (
-                                      <div className="name-secondary">{membre.domaine}</div>
-                                    )}
-                                  </div>
-                                </div>
-                              </td>
-                              <td>{membre.email || '—'}</td>
-                              <td>
-                                <span className="country-badge">{membre.pays || '—'}</span>
-                              </td>
-                              <td>
-                                <span className="status-badge pending">En attente</span>
-                              </td>
-                              <td>
-                                {membre.created_at 
-                                  ? new Date(membre.created_at).toLocaleDateString('fr-FR')
-                                  : '—'}
-                              </td>
-                              <td>
-                                <div className="table-actions">
-                    <button
-                      onClick={() => handleApprove(membre.id)}
-                                    className="action-btn approve"
-                                    title="Valider"
-                    >
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                    </svg>
-                    </button>
-                    <button
-                      onClick={() => handleReject(membre.id)}
-                                    className="action-btn reject"
-                                    title="Rejeter"
-                    >
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                    </svg>
-                    </button>
-                  </div>
-                              </td>
-                            </tr>
-                          )
-                        })
-                      ) : (
-                        <tr>
-                          <td colSpan="6" className="text-center py-4">Aucune adhésion en attente</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-            </div>
-          )}
-            </div>
-        </section>
+              {/* Autres modules - seulement si accès autorisé */}
+              {activeModule === 'members' && hasAccessToActiveModule && <MembersContent />}
+              {activeModule === 'adhesions' && hasAccessToActiveModule && <AdhesionContent />}
+              {activeModule === 'formations' && hasAccessToActiveModule && <FormationsContent />}
+              {activeModule === 'webinaires' && hasAccessToActiveModule && <WebinairesContent />}
+              {activeModule === 'studio' && hasAccessToActiveModule && <StudioContent />}
+              {activeModule === 'mentorat' && hasAccessToActiveModule && <MentoratContent />}
+              {activeModule === 'recrutement' && hasAccessToActiveModule && <RecrutementContent />}
+              {activeModule === 'tresorerie' && hasAccessToActiveModule && <TresorerieContent />}
+              {activeModule === 'secretariat' && hasAccessToActiveModule && <SecretariatDashboard currentUser={admin} />}
+              {activeModule === 'projets' && hasAccessToActiveModule && <ProjetsContent />}
+              {activeModule === 'audit' && hasAccessToActiveModule && <AuditLogContent />}
+              {activeModule === 'calendar' && hasAccessToActiveModule && <CalendarContent />}
+              {activeModule === 'settings' && hasAccessToActiveModule && <AdminSettingsPanel currentAdmin={admin} />}
             </>
-          )}
-          {activeModule !== 'dashboard' && activeModule !== 'mentorat' && activeModule !== 'recrutement' && (
-            <div className="module-placeholder">
-              <p>Module "{moduleInfo.title}" en cours de développement</p>
-            </div>
           )}
       </main>
       </div>

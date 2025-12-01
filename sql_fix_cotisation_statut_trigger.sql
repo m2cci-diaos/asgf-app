@@ -44,3 +44,8 @@ CREATE TRIGGER trg_update_cotisation_statut
 COMMENT ON FUNCTION tresorerie.update_cotisation_statut() IS 
 'Met à jour automatiquement le statut_paiement selon la date_paiement, mais respecte les mises à jour explicites du statut (notamment lors de la validation manuelle)';
 
+
+
+
+
+

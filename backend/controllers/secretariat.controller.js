@@ -165,12 +165,22 @@ export async function getParticipants(req, res) {
 
 /**
  * POST /api/secretariat/participants
- * Ajoute un participant à une réunion
+ * Ajoute un ou plusieurs participants à une réunion
  */
 export async function addParticipant(req, res) {
   try {
+    // Si le body contient un tableau, ajouter plusieurs participants
+    if (Array.isArray(req.body)) {
+      const participants = await secretariatService.addMultipleParticipants(req.body)
+      return res.status(201).json({
+        success: true,
+        message: `${participants.length} participant(s) ajouté(s) avec succès`,
+        data: participants,
+      })
+    }
+    
+    // Sinon, ajouter un seul participant
     const participant = await secretariatService.addParticipant(req.body)
-
     return res.status(201).json({
       success: true,
       message: 'Participant ajouté avec succès',
@@ -274,20 +284,35 @@ export async function saveCompteRendu(req, res) {
 
 /**
  * GET /api/secretariat/reunions/:id/actions
- * Récupère toutes les actions d'une réunion
+ * GET /api/secretariat/actions
+ * Récupère toutes les actions d'une réunion ou toutes les actions
  */
 export async function getActions(req, res) {
   try {
-    const idValidation = validateId(req.params.id)
-    if (!idValidation.isValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Erreur de validation',
-        errors: idValidation.errors,
+    // Si reunion_id dans params, récupérer actions de la réunion
+    if (req.params.id) {
+      const idValidation = validateId(req.params.id)
+      if (!idValidation.isValid) {
+        return res.status(400).json({
+          success: false,
+          message: 'Erreur de validation',
+          errors: idValidation.errors,
+        })
+      }
+
+      const actions = await secretariatService.getActionsByReunion(req.params.id)
+      return res.json({
+        success: true,
+        data: actions,
       })
     }
 
-    const actions = await secretariatService.getActionsByReunion(req.params.id)
+    // Sinon, récupérer toutes les actions (avec filtres optionnels)
+    const actions = await secretariatService.getAllActions({
+      assigne_a: req.query.assigne_a,
+      statut: req.query.statut,
+      limit: req.query.limit || 50,
+    })
 
     return res.json({
       success: true,
@@ -351,6 +376,36 @@ export async function updateAction(req, res) {
     return res.status(500).json({
       success: false,
       message: err.message || 'Erreur lors de la mise à jour de l\'action',
+    })
+  }
+}
+
+/**
+ * DELETE /api/secretariat/actions/:id
+ * Supprime une action
+ */
+export async function deleteAction(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    await secretariatService.deleteAction(req.params.id)
+
+    return res.json({
+      success: true,
+      message: 'Action supprimée avec succès',
+    })
+  } catch (err) {
+    logError('deleteAction error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la suppression de l\'action',
     })
   }
 }
@@ -464,6 +519,188 @@ export async function getStats(req, res) {
     return res.status(500).json({
       success: false,
       message: err.message || 'Erreur lors de la récupération des statistiques',
+    })
+  }
+}
+
+/**
+ * PUT /api/secretariat/reunions/:id/participants/presence
+ * Met à jour la présence de plusieurs participants
+ */
+export async function updateParticipantsPresence(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const { participants } = req.body
+    if (!Array.isArray(participants)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le champ participants doit être un tableau',
+      })
+    }
+
+    const updated = await secretariatService.updateParticipantsPresence(req.params.id, participants)
+
+    return res.json({
+      success: true,
+      message: 'Présence mise à jour avec succès',
+      data: updated,
+    })
+  } catch (err) {
+    logError('updateParticipantsPresence error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la mise à jour de la présence',
+    })
+  }
+}
+
+/**
+ * GET /api/secretariat/reunions/:id/generate-pdf
+ * POST /api/secretariat/comptes-rendus/reunions/:id/pdf
+ * Génère un PDF pour une réunion
+ */
+export async function generateReunionPDF(req, res) {
+  try {
+    const reunionId = req.params.id
+    const idValidation = validateId(reunionId)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const pdfBuffer = await secretariatService.generateReunionPDF(reunionId)
+
+    // Définir les en-têtes pour le téléchargement
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="reunion-${reunionId}.pdf"`)
+    res.setHeader('Content-Length', pdfBuffer.length)
+
+    return res.send(pdfBuffer)
+  } catch (err) {
+    logError('generateReunionPDF error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la génération du PDF',
+    })
+  }
+}
+
+/**
+ * POST /api/secretariat/rapport-presidence
+ * Génère un rapport pour la présidence
+ */
+export async function generateRapportPresidence(req, res) {
+  try {
+    const { periode_type, periode_debut, periode_fin, options, send_email } = req.body
+
+    if (!periode_type || !periode_debut || !periode_fin) {
+      return res.status(400).json({
+        success: false,
+        message: 'periode_type, periode_debut et periode_fin sont requis',
+      })
+    }
+
+    const rapportService = await import('../services/secretariat.rapports.service.js')
+    const result = await rapportService.generateRapportPresidence({
+      periode_type,
+      periode_debut,
+      periode_fin,
+      options: options || {},
+      genere_par: req.user?.id,
+    })
+
+    // TODO: Si send_email est true, envoyer l'email au Président
+    if (send_email) {
+      // await sendEmailToPresident(result)
+      logInfo('Email au Président demandé (non implémenté)', { rapportId: result.id })
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Rapport généré avec succès',
+      data: result,
+    })
+  } catch (err) {
+    logError('generateRapportPresidence error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la génération du rapport',
+    })
+  }
+}
+
+/**
+ * GET /api/secretariat/rapport-presidence
+ * Récupère les rapports présidence
+ */
+export async function getRapportsPresidence(req, res) {
+  try {
+    const pagination = validatePagination(req.query)
+    if (!pagination.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: pagination.errors,
+      })
+    }
+
+    const rapportService = await import('../services/secretariat.rapports.service.js')
+    const result = await rapportService.getRapportsPresidence({
+      page: pagination.data.page,
+      limit: pagination.data.limit,
+    })
+
+    return res.json({
+      success: true,
+      data: result.rapports,
+      pagination: result.pagination,
+    })
+  } catch (err) {
+    logError('getRapportsPresidence error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la récupération des rapports',
+    })
+  }
+}
+
+/**
+ * GET /api/secretariat/members/by-email
+ * Trouve un membre par email
+ */
+export async function findMemberByEmail(req, res) {
+  try {
+    const { email } = req.query
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email requis',
+      })
+    }
+
+    const member = await secretariatService.findMemberByEmail(email)
+
+    return res.json({
+      success: true,
+      data: member,
+    })
+  } catch (err) {
+    logError('findMemberByEmail error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la recherche du membre',
     })
   }
 }

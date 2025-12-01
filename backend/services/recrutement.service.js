@@ -1,6 +1,21 @@
 // backend/services/recrutement.service.js
 import { supabaseRecrutement, supabaseAdhesion, supabaseMentorat } from '../config/supabase.js'
-import { logError, logInfo } from '../utils/logger.js'
+import { createClient } from '@supabase/supabase-js'
+import { logError, logInfo, logWarning } from '../utils/logger.js'
+import PDFDocument from 'pdfkit'
+import path from 'path'
+import fs from 'fs'
+import dotenv from 'dotenv'
+
+dotenv.config()
+
+// Client Supabase pour le Storage (sans schéma spécifique car le storage est global)
+// Utiliser le même client que supabaseRecrutement mais sans spécifier de schéma pour le storage
+const supabaseUrl = process.env.VITE_SUPABASE_URL
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE
+const supabaseStorage = supabaseUrl && supabaseServiceKey
+  ? createClient(supabaseUrl, supabaseServiceKey)
+  : null
 
 // ========== CANDIDATURES ==========
 
@@ -179,9 +194,36 @@ export async function getCandidatureById(candidatureId) {
 
 /**
  * Crée une nouvelle candidature
+ * Vérifie les doublons évidents (même membre, même entreprise, même poste, dans ±7 jours)
  */
 export async function createCandidature(candidatureData) {
   try {
+    // Vérifier les doublons évidents
+    const dateCandidature = candidatureData.date_candidature
+      ? new Date(candidatureData.date_candidature)
+      : new Date()
+    const dateDebut = new Date(dateCandidature)
+    dateDebut.setDate(dateDebut.getDate() - 7)
+    const dateFin = new Date(dateCandidature)
+    dateFin.setDate(dateFin.getDate() + 7)
+
+    const { data: existingCandidatures, error: checkError } = await supabaseRecrutement
+      .from('candidatures')
+      .select('id, date_candidature, titre_poste, entreprise')
+      .eq('membre_id', candidatureData.membre_id)
+      .eq('entreprise', candidatureData.entreprise)
+      .eq('titre_poste', candidatureData.titre_poste)
+      .gte('date_candidature', dateDebut.toISOString().split('T')[0])
+      .lte('date_candidature', dateFin.toISOString().split('T')[0])
+
+    if (checkError) {
+      logError('createCandidature: Erreur vérification doublons', checkError)
+    } else if (existingCandidatures && existingCandidatures.length > 0) {
+      const duplicateError = new Error('Une candidature similaire existe déjà pour ce membre. Vérifiez avant de continuer.')
+      duplicateError.code = 'DUPLICATE_CANDIDATURE'
+      throw duplicateError
+    }
+
     const { data, error } = await supabaseRecrutement
       .from('candidatures')
       .insert({
@@ -264,6 +306,7 @@ export async function getSuivisByCandidature(candidatureId) {
 
 /**
  * Crée un nouveau suivi pour une candidature
+ * Gère les erreurs de doublon (index unique partiel)
  */
 export async function createSuiviCandidature(suiviData) {
   try {
@@ -279,6 +322,12 @@ export async function createSuiviCandidature(suiviData) {
       .single()
 
     if (error) {
+      // Erreur de violation de contrainte unique (code 23505)
+      if (error.code === '23505') {
+        const duplicateError = new Error('Un suivi identique existe déjà pour cette candidature.')
+        duplicateError.code = 'DUPLICATE_SUIVI'
+        throw duplicateError
+      }
       logError('createSuiviCandidature error', error)
       throw new Error('Erreur lors de la création du suivi')
     }
@@ -506,29 +555,267 @@ export async function getRecommandationById(recommandationId) {
 
 /**
  * Crée une nouvelle recommandation
+ * Gère les doublons (contrainte unique mentor_id/mentee_id)
+ * Génère le PDF si demandé
  */
 export async function createRecommandation(recommandationData) {
   try {
+    let lienPdf = recommandationData.lien_pdf || null
+
+    // Générer le PDF si demandé
+    if (recommandationData.generate_pdf && recommandationData.texte) {
+      try {
+        lienPdf = await generateRecommandationPDF(recommandationData)
+        logInfo('PDF recommandation généré', { lienPdf })
+      } catch (pdfErr) {
+        logError('Erreur génération PDF recommandation', pdfErr)
+        // Ne pas bloquer la création si le PDF échoue
+      }
+    }
+
     const { data, error } = await supabaseRecrutement
       .from('recommandations')
       .insert({
         mentor_id: recommandationData.mentor_id,
         mentee_id: recommandationData.mentee_id,
         texte: recommandationData.texte,
-        lien_pdf: recommandationData.lien_pdf || null,
+        lien_pdf: lienPdf,
       })
       .select()
       .single()
 
     if (error) {
+      // Erreur de violation de contrainte unique (code 23505)
+      if (error.code === '23505') {
+        const duplicateError = new Error('Une recommandation existe déjà pour ce binôme mentor/mentoré.')
+        duplicateError.code = 'DUPLICATE_RECOMMANDATION'
+        throw duplicateError
+      }
       logError('createRecommandation error', error)
       throw new Error('Erreur lors de la création de la recommandation')
     }
 
-    logInfo('Recommandation créée', { id: data.id })
+    logInfo('Recommandation créée', { id: data.id, lienPdf })
     return data
   } catch (err) {
     logError('createRecommandation exception', err)
+    throw err
+  }
+}
+
+/**
+ * Génère un PDF pour une recommandation
+ */
+async function generateRecommandationPDF(recommandationData) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Récupérer les données du mentor et mentoré
+      const { data: mentor } = await supabaseMentorat
+        .from('mentors')
+        .select('*')
+        .eq('id', recommandationData.mentor_id)
+        .maybeSingle()
+
+      const { data: mentee } = await supabaseMentorat
+        .from('mentees')
+        .select('*')
+        .eq('id', recommandationData.mentee_id)
+        .maybeSingle()
+
+      let mentorMembre = null
+      let menteeMembre = null
+
+      if (mentor?.membre_id) {
+        const { data: membre } = await supabaseAdhesion
+          .from('members')
+          .select('id, prenom, nom, email, numero_membre')
+          .eq('id', mentor.membre_id)
+          .maybeSingle()
+        mentorMembre = membre
+      }
+
+      if (mentee?.membre_id) {
+        const { data: membre } = await supabaseAdhesion
+          .from('members')
+          .select('id, prenom, nom, email, numero_membre')
+          .eq('id', mentee.membre_id)
+          .maybeSingle()
+        menteeMembre = membre
+      }
+
+      // Créer le PDF
+      const doc = new PDFDocument({
+        size: 'A4',
+        margin: 50,
+      })
+
+      const chunks = []
+      doc.on('data', (chunk) => chunks.push(chunk))
+      doc.on('end', () => {
+        const pdfBuffer = Buffer.concat(chunks)
+        // Uploader dans Supabase Storage
+        uploadRecommandationPDF(pdfBuffer, recommandationData.mentor_id, recommandationData.mentee_id)
+          .then((url) => resolve(url))
+          .catch((err) => reject(err))
+      })
+
+      // En-tête
+      const logoPath = path.join(process.cwd(), 'asgf-app/public/assets/images/Logo_officiel_ASGF.png')
+      if (fs.existsSync(logoPath)) {
+        try {
+          doc.image(logoPath, 50, 30, { width: 60, height: 60 })
+        } catch (err) {
+          logError('Erreur chargement logo', err)
+        }
+      }
+
+      doc.fontSize(22)
+        .fillColor('#0d47a1')
+        .font('Helvetica-Bold')
+        .text('RECOMMANDATION', 50, 100, { align: 'center' })
+
+      doc.fontSize(12)
+        .fillColor('#424242')
+        .font('Helvetica')
+        .text('Association des Sénégalais Géomaticiens en France (ASGF)', 50, 130, { align: 'center' })
+
+      // Informations mentor
+      doc.fontSize(14)
+        .fillColor('#1a1a1a')
+        .font('Helvetica-Bold')
+        .text('Mentor:', 50, 180)
+        .font('Helvetica')
+        .text(
+          mentorMembre
+            ? `${mentorMembre.prenom} ${mentorMembre.nom}`
+            : 'Mentor non identifié',
+          50,
+          200
+        )
+
+      // Informations mentoré
+      doc.font('Helvetica-Bold')
+        .text('Mentoré:', 50, 230)
+        .font('Helvetica')
+        .text(
+          menteeMembre
+            ? `${menteeMembre.prenom} ${menteeMembre.nom}`
+            : 'Mentoré non identifié',
+          50,
+          250
+        )
+
+      // Date
+      doc.font('Helvetica')
+        .fontSize(10)
+        .fillColor('#666666')
+        .text(
+          `Date: ${new Date().toLocaleDateString('fr-FR', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          })}`,
+          50,
+          280
+        )
+
+      // Texte de la recommandation
+      doc.fontSize(11)
+        .fillColor('#1a1a1a')
+        .font('Helvetica')
+        .text('Recommandation:', 50, 320)
+        .font('Helvetica')
+        .text(recommandationData.texte, 50, 340, {
+          width: doc.page.width - 100,
+          align: 'justify',
+          lineGap: 5,
+        })
+
+      // Finaliser le PDF
+      doc.end()
+    } catch (err) {
+      reject(err)
+    }
+  })
+}
+
+/**
+ * Upload le PDF de recommandation dans Supabase Storage
+ */
+async function uploadRecommandationPDF(pdfBuffer, mentorId, menteeId) {
+  try {
+    if (!supabaseStorage) {
+      logWarning('Supabase Storage non configuré, upload PDF ignoré')
+      return null
+    }
+
+    const fileName = `recommandations/recommandation-${mentorId}-${menteeId}-${Date.now()}.pdf`
+    
+    logInfo('Upload PDF recommandation vers Supabase Storage', {
+      fileName,
+      size: `${(pdfBuffer.length / 1024).toFixed(2)} KB`,
+      mentorId,
+      menteeId,
+    })
+
+    const bucketName = 'recommandations'
+
+    // Vérifier si le bucket existe, sinon essayer de le créer
+    const { data: buckets, error: listError } = await supabaseStorage.storage.listBuckets()
+    if (!listError) {
+      const bucketExists = buckets?.some(b => b.name === bucketName)
+      if (!bucketExists) {
+        logWarning('Bucket "recommandations" n\'existe pas, tentative de création...')
+        const { data: bucketData, error: createError } = await supabaseStorage.storage.createBucket(bucketName, {
+          public: true, // Public pour simplifier l'accès (peut être sécurisé plus tard avec RLS)
+          fileSizeLimit: 10485760, // 10MB
+          allowedMimeTypes: ['application/pdf'],
+        })
+        if (createError) {
+          logError('Impossible de créer le bucket "recommandations"', createError)
+          throw new Error(`Le bucket "recommandations" n'existe pas et ne peut pas être créé automatiquement. Veuillez le créer dans Supabase Dashboard > Storage. Erreur: ${createError.message}`)
+        }
+        logInfo('Bucket "recommandations" créé avec succès')
+      }
+    }
+
+    // Uploader le PDF
+    const { data, error } = await supabaseStorage.storage
+      .from(bucketName)
+      .upload(fileName, pdfBuffer, {
+        contentType: 'application/pdf',
+        upsert: false, // Ne pas écraser si le fichier existe déjà
+      })
+
+    if (error) {
+      // Si l'erreur indique que le bucket n'existe pas
+      if (error.message?.includes('Bucket not found') || error.message?.includes('not found')) {
+        logError('Bucket "recommandations" introuvable', error)
+        throw new Error('Le bucket "recommandations" n\'existe pas dans Supabase Storage. Veuillez le créer dans Supabase Dashboard > Storage.')
+      }
+      logError('Erreur upload PDF recommandation vers Supabase Storage', error)
+      throw new Error(`Erreur lors de l'upload du PDF: ${error.message}`)
+    }
+
+    // Obtenir l'URL publique du fichier
+    const { data: urlData } = supabaseStorage.storage
+      .from(bucketName)
+      .getPublicUrl(fileName)
+
+    if (!urlData?.publicUrl) {
+      logError('Impossible d\'obtenir l\'URL publique du PDF', { fileName })
+      throw new Error('Impossible d\'obtenir l\'URL publique du PDF')
+    }
+
+    logInfo('PDF recommandation uploadé avec succès', {
+      fileName,
+      publicUrl: urlData.publicUrl,
+      size: `${(pdfBuffer.length / 1024).toFixed(2)} KB`,
+    })
+
+    return urlData.publicUrl
+  } catch (err) {
+    logError('Erreur upload PDF recommandation', err)
     throw err
   }
 }

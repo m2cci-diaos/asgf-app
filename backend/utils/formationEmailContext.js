@@ -40,3 +40,8 @@ export async function getFormationEmailContext(formationId, sessionId) {
 
 
 
+
+
+
+
+

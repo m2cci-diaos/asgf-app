@@ -11,6 +11,8 @@ import {
 import { validateId, validatePagination, isValidEmail } from '../utils/validators.js'
 import { logError, logInfo, logWarning } from '../utils/logger.js'
 import { notifyMemberEmail } from '../services/notifications.service.js'
+import { logAction, ACTION_TYPES, ENTITY_TYPES } from '../services/audit.service.js'
+import { supabaseAdhesion } from '../config/supabase.js'
 
 /**
  * GET /api/adhesion/members
@@ -91,6 +93,24 @@ export async function approveMemberController(req, res) {
     }
 
     const member = await approveMember(req.params.id, adminId)
+    
+    // Logger l'action dans l'audit log
+    if (req.admin) {
+      logAction({
+        adminId: req.admin.id,
+        adminEmail: req.admin.email,
+        adminNom: req.admin.nom || `${req.admin.prenom || ''} ${req.admin.nom || ''}`.trim(),
+        actionType: ACTION_TYPES.APPROVE,
+        entityType: ENTITY_TYPES.MEMBER,
+        entityId: req.params.id,
+        entityName: `${member.prenom || ''} ${member.nom || ''}`.trim() || member.email,
+        module: 'adhesions',
+        metadata: { email: member.email },
+        ipAddress: req.ip || req.connection?.remoteAddress,
+        userAgent: req.get('user-agent'),
+      }).catch(err => console.error('Erreur audit log (non bloquant):', err))
+    }
+    
     return res.json({
       success: true,
       message: 'Membre approuvé avec succès',
@@ -129,6 +149,24 @@ export async function rejectMemberController(req, res) {
     }
 
     const member = await rejectMember(req.params.id, adminId)
+    
+    // Logger l'action dans l'audit log
+    if (req.admin) {
+      logAction({
+        adminId: req.admin.id,
+        adminEmail: req.admin.email,
+        adminNom: req.admin.nom || `${req.admin.prenom || ''} ${req.admin.nom || ''}`.trim(),
+        actionType: ACTION_TYPES.REJECT,
+        entityType: ENTITY_TYPES.MEMBER,
+        entityId: req.params.id,
+        entityName: `${member.prenom || ''} ${member.nom || ''}`.trim() || member.email,
+        module: 'adhesions',
+        metadata: { email: member.email },
+        ipAddress: req.ip || req.connection?.remoteAddress,
+        userAgent: req.get('user-agent'),
+      }).catch(err => console.error('Erreur audit log (non bloquant):', err))
+    }
+    
     return res.json({
       success: true,
       message: 'Membre rejeté avec succès',
@@ -350,7 +388,36 @@ export async function updateMemberController(req, res) {
       })
     }
 
+    // Récupérer les données avant modification pour le log
+    const { data: oldMember, error: fetchError } = await supabaseAdhesion
+      .from('members')
+      .select('*')
+      .eq('id', req.params.id)
+      .single()
+    
+    if (fetchError) {
+      logWarning('Impossible de récupérer le membre avant modification', { id: req.params.id, error: fetchError })
+    }
+    
     const member = await updateMember(req.params.id, memberData)
+    
+    // Logger l'action dans l'audit log
+    if (req.admin) {
+      logAction({
+        adminId: req.admin.id,
+        adminEmail: req.admin.email,
+        adminNom: req.admin.nom || `${req.admin.prenom || ''} ${req.admin.nom || ''}`.trim(),
+        actionType: ACTION_TYPES.UPDATE,
+        entityType: ENTITY_TYPES.MEMBER,
+        entityId: req.params.id,
+        entityName: `${member.prenom || ''} ${member.nom || ''}`.trim() || member.email,
+        module: 'members',
+        changes: oldMember ? { before: oldMember, after: member } : null,
+        ipAddress: req.ip || req.connection?.remoteAddress,
+        userAgent: req.get('user-agent'),
+      }).catch(err => console.error('Erreur audit log (non bloquant):', err))
+    }
+    
     return res.json({
       success: true,
       message: 'Membre mis à jour avec succès',
@@ -388,7 +455,36 @@ export async function deleteMemberController(req, res) {
       })
     }
 
+    // Récupérer les données avant suppression pour le log
+    const { data: oldMember, error: fetchError } = await supabaseAdhesion
+      .from('members')
+      .select('*')
+      .eq('id', req.params.id)
+      .single()
+    
+    if (fetchError) {
+      logWarning('Impossible de récupérer le membre avant suppression', { id: req.params.id, error: fetchError })
+    }
+    
     const member = await deleteMember(req.params.id)
+    
+    // Logger l'action dans l'audit log
+    if (req.admin) {
+      logAction({
+        adminId: req.admin.id,
+        adminEmail: req.admin.email,
+        adminNom: req.admin.nom || `${req.admin.prenom || ''} ${req.admin.nom || ''}`.trim(),
+        actionType: ACTION_TYPES.DELETE,
+        entityType: ENTITY_TYPES.MEMBER,
+        entityId: req.params.id,
+        entityName: oldMember ? `${oldMember.prenom || ''} ${oldMember.nom || ''}`.trim() || oldMember.email : 'Membre supprimé',
+        module: 'members',
+        changes: oldMember ? { deleted: oldMember } : null,
+        ipAddress: req.ip || req.connection?.remoteAddress,
+        userAgent: req.get('user-agent'),
+      }).catch(err => console.error('Erreur audit log (non bloquant):', err))
+    }
+    
     return res.json({
       success: true,
       message: 'Membre supprimé avec succès',

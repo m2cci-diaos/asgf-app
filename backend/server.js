@@ -20,6 +20,11 @@ import webinaireRoutes from './routes/webinaire.routes.js'
 import geocodeRoutes from './routes/geocode.routes.js'
 import contactRoutes from './routes/contact.routes.js'
 import publicRoutes from './routes/public.routes.js'
+import projetsRoutes from './routes/projets.routes.js'
+import bureauRoutes from './routes/bureau.routes.js'
+import auditRoutes from './routes/audit.routes.js'
+import calendarRoutes from './routes/calendar.routes.js'
+import dashboardRoutes from './routes/dashboard.routes.js'
 import {
   sendFormationInvitationController,
   sendFormationReminderController,
@@ -56,6 +61,11 @@ app.use('/api/webinaire', webinaireRoutes)
 app.use('/api/geocode', geocodeRoutes)
 app.use('/api/contact', contactRoutes)
 app.use('/api/public', publicRoutes)
+app.use('/api/public/projets', projetsRoutes)
+app.use('/api', bureauRoutes)
+app.use('/api/admin/audit', auditRoutes)
+app.use('/api/admin/calendar', calendarRoutes)
+app.use('/api/admin/dashboard', dashboardRoutes)
 
 // Routes directes pour les invitations / rappels de formation
 // (assure que ces endpoints existent même si le routeur formation évolue)
@@ -89,6 +99,12 @@ console.log('  - /api/webinaire')
 console.log('  - /api/geocode')
 console.log('  - /api/contact')
 console.log('  - /api/public')
+console.log('  - /api/public/projets')
+console.log('  - /api/bureau (public)')
+console.log('  - /api/admin/bureau (admin)')
+console.log('  - /api/admin/audit')
+console.log('  - /api/admin/calendar')
+console.log('  - /api/admin/dashboard')
 
 // Routes de compatibilité pour l'ancien endpoint /admin/members
 import {

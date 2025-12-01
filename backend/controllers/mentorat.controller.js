@@ -385,6 +385,38 @@ export async function updateRelation(req, res) {
   }
 }
 
+/**
+ * POST /api/mentorat/relations/:id/close
+ * Clôture une relation (statut 'terminée' + date_fin)
+ */
+export async function closeRelation(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const commentaire = req.body.commentaire || null
+    const relation = await mentoratService.closeRelation(req.params.id, commentaire)
+
+    return res.json({
+      success: true,
+      message: 'Relation clôturée avec succès',
+      data: relation,
+    })
+  } catch (err) {
+    logError('closeRelation error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la clôture de la relation',
+    })
+  }
+}
+
 // ========== OBJECTIFS ==========
 
 /**

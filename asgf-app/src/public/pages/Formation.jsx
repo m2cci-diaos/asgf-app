@@ -283,7 +283,8 @@ function Formation() {
             icon: getCategoryIcon(formation.categorie),
             mode: formation.mode || 'En ligne',
             prix: formation.prix,
-            prochaineSession: prochaineSession ? prochaineSession.date_debut : formation.prochaine_session,
+            // Utiliser uniquement les dates des sessions réelles, pas le champ prochaine_session
+            prochaineSession: prochaineSession ? prochaineSession.date_debut : null,
             formateur: formateurData ? {
               nom: formateurData.nom,
               prenom: formateurData.prenom,
@@ -403,9 +404,15 @@ function Formation() {
       )
     }
 
+    // Vérifier si la formation a une session ouverte ou une date
+    const hasSession = sessions.some(s => s.formation_id === formation.id && s.statut === 'ouverte')
+    const hasDate = formation.prochaineSession && new Date(formation.prochaineSession).getTime() > 0
+    // Désactiver seulement si pas de session ET pas de date (affiche "À venir")
+    const isDisabled = !hasSession && !hasDate
+
     return (
       <div 
-        className="formation-card fade-in visible" 
+        className={`formation-card fade-in visible ${isDisabled ? 'formation-card--disabled' : ''}`}
         data-category={formation.category}
       >
         <div className="formation-image">
@@ -515,13 +522,22 @@ function Formation() {
               {badges}
               <span style={{marginLeft: '0.5rem', fontSize: '0.85rem', color: '#666'}}>{formation.level}</span>
             </div>
-            <Link 
-              to={`/formation/inscription/${formation.slug || formation.id}`}
-              className="formation-btn"
-              state={{ formationId: formation.id, formationSlug: formation.slug }}
-            >
-              S'inscrire
-            </Link>
+            {isDisabled ? (
+              <span 
+                className="formation-btn formation-btn--disabled"
+                style={{ cursor: 'not-allowed', opacity: 0.6 }}
+              >
+                À venir
+              </span>
+            ) : (
+              <Link 
+                to={`/formation/inscription/${formation.slug || formation.id}`}
+                className="formation-btn"
+                state={{ formationId: formation.id, formationSlug: formation.slug }}
+              >
+                S'inscrire
+              </Link>
+            )}
           </div>
         </div>
       </div>

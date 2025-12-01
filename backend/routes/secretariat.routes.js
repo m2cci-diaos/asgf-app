@@ -1,25 +1,17 @@
 // backend/routes/secretariat.routes.js
 import { Router } from 'express'
-import {
-  listReunions,
-  getReunion,
-  createReunion,
-  updateReunion,
-  getParticipants,
-  addParticipant,
-  updateParticipant,
-  getCompteRendu,
-  saveCompteRendu,
-  getActions,
-  createAction,
-  updateAction,
-  listDocuments,
-  createDocument,
-  updateDocument,
-  getStats,
-} from '../controllers/secretariat.controller.js'
 import { requireAuth, requireModule } from '../middlewares/auth.js'
 import { MODULES } from '../config/constants.js'
+import { getStats, findMemberByEmail } from '../controllers/secretariat.controller.js'
+import { listMembersController } from '../controllers/adhesion.controller.js'
+
+// Import des routes modulaires
+import reunionsRoutes from './secretariat/reunions.js'
+import participantsRoutes from './secretariat/participants.js'
+import comptesRendusRoutes from './secretariat/comptesRendus.js'
+import actionsRoutes from './secretariat/actions.js'
+import documentsRoutes from './secretariat/documents.js'
+import rapportsRoutes from './secretariat/rapports.js'
 
 const router = Router()
 
@@ -29,32 +21,22 @@ router.use(requireAuth)
 // Vérifier l'accès au module Secrétariat
 router.use(requireModule(MODULES.SECRETARIAT))
 
-// Routes pour les réunions
-router.get('/reunions', listReunions)
-router.get('/reunions/:id', getReunion)
-router.post('/reunions', createReunion)
-router.put('/reunions/:id', updateReunion)
-
-// Routes pour les participants
-router.get('/reunions/:id/participants', getParticipants)
-router.post('/participants', addParticipant)
-router.put('/participants/:id', updateParticipant)
-
-// Routes pour les comptes rendus
-router.get('/reunions/:id/compte-rendu', getCompteRendu)
-router.post('/comptes-rendus', saveCompteRendu)
-
-// Routes pour les actions
-router.get('/reunions/:id/actions', getActions)
-router.post('/actions', createAction)
-router.put('/actions/:id', updateAction)
-
-// Routes pour les documents
-router.get('/documents', listDocuments)
-router.post('/documents', createDocument)
-router.put('/documents/:id', updateDocument)
+// Routes modulaires
+router.use('/reunions', reunionsRoutes)
+router.use('/participants', participantsRoutes)
+router.use('/comptes-rendus', comptesRendusRoutes)
+router.use('/actions', actionsRoutes)
+router.use('/documents', documentsRoutes)
+router.use('/rapports', rapportsRoutes)
 
 // Route pour les statistiques
 router.get('/stats', getStats)
+
+// Route pour trouver un membre par email
+router.get('/members/by-email', findMemberByEmail)
+
+// Route pour lister les membres (accessible depuis secretariat pour ajouter des participants)
+// Utilise le même contrôleur que adhesion mais avec les permissions de secretariat
+router.get('/members', listMembersController)
 
 export default router

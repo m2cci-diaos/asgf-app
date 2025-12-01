@@ -334,6 +334,25 @@ export function FormationStyles() {
         transform: translateY(-10px);
         box-shadow: 0 20px 40px rgba(0,0,0,0.15);
       }
+      .formation-card--disabled {
+        opacity: 0.6;
+        filter: grayscale(0.7);
+      }
+      .formation-card--disabled:hover {
+        transform: none;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        cursor: default;
+      }
+      .formation-btn--disabled {
+        background: #ccc !important;
+        color: #666 !important;
+        cursor: not-allowed !important;
+        pointer-events: none;
+      }
+      .formation-btn--disabled:hover {
+        transform: none !important;
+        box-shadow: none !important;
+      }
       .formation-image {
         width: 100%;
         height: 200px;

@@ -23,7 +23,9 @@ const CarteMembreGenerator = ({ memberData = null, onClose = null }) => {
       setPhotoDataUrl(memberData.photo_url)
     }
   }, [memberData?.photo_url])
-  const [logoDataUrl, setLogoDataUrl] = useState(null)
+  // Logo ASGF : on utilise directement le logo officiel placé dans /public
+  // Avec Vite, les fichiers du dossier public sont servis à la racine : /assets/...
+  const [logoDataUrl] = useState('/assets/images/Logo_officiel_ASGF.png')
   const [generating, setGenerating] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
 
@@ -463,28 +465,7 @@ const CarteMembreGenerator = ({ memberData = null, onClose = null }) => {
             Conseil : portrait 3:4, visage centré, fond clair.
           </div>
 
-          <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#94a3b8', margin: '12px 0 6px', marginTop: '16px' }}>
-            Logo de l'association (png/svg)
-          </label>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => handleFileSelect(e, setLogoDataUrl)}
-            style={{
-              width: '100%',
-              height: '44px',
-              borderRadius: '8px',
-              border: '1px solid #334155',
-              background: '#0f172a',
-              color: '#e2e8f0',
-              padding: '0 14px',
-              fontSize: '14px',
-              outline: 'none'
-            }}
-          />
-          <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '8px' }}>
-            Conseil : logo carré, fond transparent de préférence.
-          </div>
+          {/* Logo de l'association : plus de champ upload, on utilise directement le logo officiel */}
 
           <button
             onClick={generatePDF}

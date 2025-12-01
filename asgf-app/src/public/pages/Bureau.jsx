@@ -1,8 +1,38 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BureauStyles } from '../components/PageStyles'
 
+const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+
 function Bureau() {
+  const [direction, setDirection] = useState([])
+  const [poles, setPoles] = useState([])
+  const [autres, setAutres] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchBureau = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/bureau`)
+        if (!res.ok) throw new Error('Erreur chargement bureau')
+        const data = await res.json()
+        setDirection(data.direction || [])
+        setPoles(data.pole || [])
+        setAutres(data.autre || [])
+      } catch (err) {
+        console.error('Erreur chargement bureau', err)
+        // En cas d'erreur, on laisse les tableaux vides
+        setDirection([])
+        setPoles([])
+        setAutres([])
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchBureau()
+  }, [])
+
   useEffect(() => {
     // Scroll vers le haut de la page au chargement - méthode très agressive
     const scrollToTop = () => {
@@ -78,123 +108,7 @@ function Bureau() {
       observer.disconnect()
       timeouts.forEach(id => clearTimeout(id))
     }
-  }, [])
-
-  const members = {
-    direction: [
-      {
-        name: 'DIAO Serigne Omar',
-        role: 'Président',
-        image: '/assets/images/membres/diao-serigne-omar-removebg.png',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://www.linkedin.com/in/serigne-omar-diao-045117172/',
-        phone: '+33 6 52 45 47 85',
-        isPresident: true
-      },
-      {
-        name: 'TAMBADOU Alhassane',
-        role: 'Vice-Président',
-        image: '/assets/images/membres/tambadou-alhassane.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://www.linkedin.com/in/alhassane-tambadou-a3232b25a/',
-        phone: '+33 6 62 08 16 21'
-      },
-      {
-        name: 'NDIAYE Oumar',
-        role: 'Membre du Bureau Exécutif',
-        image: '/assets/images/membres/ndiaye-oumar-removebg.png',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'www.linkedin.com/in/alhassane-tambadou-a3232b25a/',
-        phone: '+33 6 62 08 16 21'
-      },
-      {
-        name: 'GAKOU Moustapha',
-        role: 'Secrétaire Général',
-        image: '/assets/images/membres/gakou-moustapha.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/gaikou-moustapha'
-      },
-      {
-        name: 'NIASSE Mame Khady',
-        role: 'Trésorière',
-        image: '/assets/images/membres/niasse-mama-sady.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/niasse-mama-sady'
-      }
-    ],
-    poles: [
-      {
-        name: 'BA Poullo',
-        role: 'Responsable pôle formation',
-        image: '/assets/images/membres/ba-poullo.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/ba-poullo'
-      },
-      {
-        name: 'Sène Abdou',
-        role: 'Co-responsable pôle formation',
-        image: '/assets/images/membres/sene-abdou.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/sene-abdou'
-      },
-      {
-        name: 'FALL Amadou',
-        role: 'Communications et réseaux',
-        image: '/assets/images/membres/fall-amadou.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/fall-amadou'
-      },
-      {
-        name: 'FALL Khadim R.',
-        role: 'Communications et réseaux',
-        image: '/assets/images/membres/fall-khadim.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/fall-khadim'
-      },
-      {
-        name: 'GUEYE M. Lamine',
-        role: 'Responsable - Partenariats et Relations extérieurs',
-        image: '/assets/images/membres/lamine-gueye-removebg.png',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/gueye-lamine'
-      },
-      {
-        name: 'SECK Adji Bousso',
-        role: 'Responsable - Recrutement et accompagnements',
-        image: '/assets/images/membres/seck-adji-bousso.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/seck-adji-bousso'
-      },
-      {
-        name: 'DEMBA Boubacar',
-        role: 'Responsable Innovations et Projets SIG',
-        image: '/assets/images/membres/demba-boubacar.jpeg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/demba-boubacar'
-      },
-      {
-        name: 'Mbaye A. Bamba',
-        role: 'Partenariats et Relations extérieurs au Sénégal',
-        image: '/assets/images/membres/mbaye-bamba.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/mbaye-bamba'
-      },
-      {
-        name: 'Diallo Cheikh Oumar',
-        role: 'Responsable - pôle Webinaires & Publications',
-        image: '/assets/images/membres/diallo-cheikh-oumar.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://linkedin.com/in/diallo-cheikh-oumar'
-      },
-      {
-        name: 'DIOUF Astou',
-        role: 'Adjointe - Secrétaire Générale',
-        image: '/assets/images/membres/diouf-astou.jpg',
-        email: 'association.geomaticiens.sf@gmail.com',
-        linkedin: 'https://www.linkedin.com/in/astou-diouf-86467a280/'
-      }
-    ]
-  }
+  }, [direction, poles, autres]) // Re-exécuter quand les données changent
 
   const MemberCard = ({ member, isPresident = false }) => {
     const handleImageError = (e) => {
@@ -204,37 +118,49 @@ function Bureau() {
       }
     }
 
+    const displayName = member.nom_affichage || `${member.nom.toUpperCase()} ${member.prenom}`
+    const photoUrl = member.photo_url || null
+
     return (
-      <div className={`member-card fade-in ${isPresident ? 'president-card' : ''}`}>
-        {isPresident && (
+      <div className={`member-card fade-in ${isPresident || member.highlight ? 'president-card' : ''}`}>
+        {(isPresident || member.highlight) && (
           <div className="president-badge">
-            <i className="fas fa-crown"></i> Président
+            <i className="fas fa-crown"></i> {member.role_long}
           </div>
         )}
         <div className="member-photo">
-          <img 
-            src={member.image} 
-            alt={member.name} 
-            onError={handleImageError}
-          />
-          <div className="photo-placeholder" style={{display: 'none'}}>
-            <i className="fas fa-user"></i>
-          </div>
+          {photoUrl ? (
+            <img 
+              src={photoUrl} 
+              alt={displayName} 
+              onError={handleImageError}
+            />
+          ) : (
+            <div className="photo-placeholder" style={{display: 'flex'}}>
+              <i className="fas fa-user"></i>
+            </div>
+          )}
         </div>
-        <h3 className="member-name">{member.name}</h3>
-        <div className="member-role">{member.role}</div>
+        <h3 className="member-name">{displayName}</h3>
+        <div className="member-role">{member.role_long}</div>
+        {member.pole_nom && (
+          <div className="member-pole" style={{fontSize: '0.9rem', color: '#64748b', marginTop: '0.25rem'}}>
+            {member.pole_nom}
+          </div>
+        )}
         <div className="member-contact">
           {member.email && (
             <a href={`mailto:${member.email}`} className="contact-link email" title="Email">
               <i className="fas fa-envelope"></i>
             </a>
           )}
-          {member.linkedin && (
-            <a href={member.linkedin.startsWith('http') ? member.linkedin : `https://${member.linkedin}`} 
-               className="contact-link linkedin" 
-               title="LinkedIn" 
-               target="_blank" 
-               rel="noopener noreferrer">
+          {member.linkedin_url && (
+            <a 
+              href={member.linkedin_url.startsWith('http') ? member.linkedin_url : `https://${member.linkedin_url}`} 
+              className="contact-link linkedin" 
+              title="LinkedIn" 
+              target="_blank" 
+              rel="noopener noreferrer">
               <i className="fab fa-linkedin-in"></i>
             </a>
           )}
@@ -259,33 +185,60 @@ function Bureau() {
           <p>Découvrez les membres passionnés qui dirigent le ASGF et œuvrent chaque jour pour développer l'excellence géomatique africaine.</p>
         </div>
 
-        <div className="team-category">
-          <div className="category-header fade-in">
-            <h2><i className="fas fa-crown"></i> Équipe de Direction</h2>
-            <p>Les leaders qui guident notre vision et nos actions</p>
+        {loading ? (
+          <div style={{textAlign: 'center', padding: '3rem'}}>
+            <div className="spinner" style={{margin: '0 auto'}}></div>
+            <p>Chargement des membres du bureau...</p>
           </div>
-          <div className="bureau-grid">
-            {members.direction.map((member, index) => (
-              <MemberCard 
-                key={index} 
-                member={member} 
-                isPresident={index === 0}
-              />
-            ))}
-          </div>
-        </div>
+        ) : (
+          <>
+            {direction.length > 0 && (
+              <div className="team-category">
+                <div className="category-header fade-in">
+                  <h2><i className="fas fa-crown"></i> Équipe de Direction</h2>
+                  <p>Les leaders qui guident notre vision et nos actions</p>
+                </div>
+                <div className="bureau-grid">
+                  {direction.map((member) => (
+                    <MemberCard 
+                      key={member.id} 
+                      member={member} 
+                      isPresident={member.highlight || member.role_court === 'PRESIDENT'}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
-        <div className="team-category">
-          <div className="category-header fade-in">
-            <h2><i className="fas fa-bullhorn"></i> Responsables de pôles</h2>
-            <p>Une équipe qui cartographie l'avenir ensemble</p>
-          </div>
-          <div className="bureau-grid">
-            {members.poles.map((member, index) => (
-              <MemberCard key={index} member={member} />
-            ))}
-          </div>
-        </div>
+            {poles.length > 0 && (
+              <div className="team-category">
+                <div className="category-header fade-in">
+                  <h2><i className="fas fa-bullhorn"></i> Responsables de pôles</h2>
+                  <p>Une équipe qui cartographie l'avenir ensemble</p>
+                </div>
+                <div className="bureau-grid">
+                  {poles.map((member) => (
+                    <MemberCard key={member.id} member={member} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {autres.length > 0 && (
+              <div className="team-category">
+                <div className="category-header fade-in">
+                  <h2><i className="fas fa-users"></i> Autres membres</h2>
+                  <p>Membres actifs de l'équipe</p>
+                </div>
+                <div className="bureau-grid">
+                  {autres.map((member) => (
+                    <MemberCard key={member.id} member={member} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
 
         <div className="section-intro fade-in" style={{marginTop: '4rem', background: 'white', padding: '3rem', borderRadius: '20px', boxShadow: '0 15px 35px rgba(0,0,0,0.1)'}}>
           <h2 style={{color: 'var(--primary-color)', marginBottom: '1rem'}}>
@@ -293,11 +246,7 @@ function Bureau() {
           </h2>
           <p style={{marginBottom: '2rem'}}>
             Vous êtes passionné(e) par la géomatique et souhaitez contribuer au développement de l'ASGF ? 
-            Nous recherchons régulièrement des membres motivés pour renforcer notre équipe. Cliquez sur le lien suivant{' '}
-            <a href="https://script.google.com/macros/s/AKfycbyzFRPUDYyDTtkMqvp4QTMgmabj3pNoupQlI2ixCvimCq0gLcvfjaxVKoea6W6V3rzl-A/exec" 
-               title="S'inscrire" 
-               target="_blank" 
-               rel="noopener noreferrer">pour vous inscrire</a>
+            Nous recherchons régulièrement des membres motivés pour renforcer notre équipe.
           </p>
           <Link to="/adhesion" className="cta-button">
             <i className="fas fa-user-plus"></i> Devenir Membre
