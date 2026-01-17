@@ -40,3 +40,6 @@ INSERT INTO public.projets (projet_id, titre, description, icon, color) VALUES
 ('dashboard-energie', 'Dashboard Énergie (Pétrole et gaz)', 'Création d''un tableau de bord interactif pour le suivi et l''analyse des données énergétiques (pétrole et gaz) au Sénégal.', '⚡', '#f59e0b')
 ON CONFLICT (projet_id) DO NOTHING;
 
+
+
+

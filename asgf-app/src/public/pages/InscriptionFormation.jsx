@@ -4,6 +4,8 @@ import { FormationStyles } from '../components/PageStyles'
 import { supabaseFormation } from '../config/supabase.config'
 
 const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://wooyxkfdzehvedvivhhd.supabase.co'
+const PUBLIC_FORMATION_INSCRIPTION_URL = `${SUPABASE_URL}/functions/v1/public-formation-inscription`
 
 // Styles pour le spinner CSS
 const spinnerStyle = `
@@ -88,6 +90,13 @@ function InscriptionFormation() {
 
         setFormation(formationData)
 
+        // Vérifier si les inscriptions sont fermées et afficher l'alerte
+        if (formationData.is_registration_open === false) {
+          setTimeout(() => {
+            alert("Les inscriptions à cette formation sont clôturées.\n\nJe vous invite à rejoindre l'ASGF via l'onglet Adhésion pour bénéficier des formations gratuites et être informé en priorité des prochaines sessions.\n\nhttps://association-asgf.fr/adhesion")
+          }, 500)
+        }
+
         // Récupérer les sessions ouvertes pour cette formation
         const { data: sessionsData, error: sessionsError } = await supabaseFormation
           .from('sessions')
@@ -164,6 +173,13 @@ function InscriptionFormation() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    
+    // Vérifier si les inscriptions sont ouvertes
+    if (formation && formation.is_registration_open === false) {
+      alert("Les inscriptions à cette formation sont clôturées.\n\nJe vous invite à rejoindre l'ASGF via l'onglet Adhésion pour bénéficier des formations gratuites et être informé en priorité des prochaines sessions.\n\nhttps://association-asgf.fr/adhesion")
+      return
+    }
+    
     if (!validate()) return
 
     setIsSubmitting(true)
@@ -187,7 +203,7 @@ function InscriptionFormation() {
         source: 'site web'
       }
 
-      const response = await fetch(`${API_URL}/api/public/formation/inscriptions`, {
+      const response = await fetch(PUBLIC_FORMATION_INSCRIPTION_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

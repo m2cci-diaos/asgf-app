@@ -4,6 +4,8 @@ import { WebinairesStyles } from '../components/PageStyles'
 import { supabaseWebinaire } from '../config/supabase.config'
 
 const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://wooyxkfdzehvedvivhhd.supabase.co'
+const PUBLIC_WEBINAIRE_INSCRIPTION_URL = `${SUPABASE_URL}/functions/v1/public-webinaire-inscription`
 
 // Styles pour le spinner CSS
 const spinnerStyle = `
@@ -155,8 +157,8 @@ function InscriptionWebinaire() {
         source: 'site web'
       }
 
-      // Utiliser l'API backend publique pour créer l'inscription (envoie automatiquement un email)
-      const response = await fetch(`${API_URL}/api/public/webinaire/inscriptions`, {
+      // Utiliser la fonction Supabase Edge publique pour créer l'inscription (envoie automatiquement un email)
+      const response = await fetch(PUBLIC_WEBINAIRE_INSCRIPTION_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

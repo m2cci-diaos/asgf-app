@@ -83,6 +83,36 @@ const CarteMembreGenerator = ({ memberData = null, onClose = null }) => {
         photo_url: photoDataUrl ? 'Présente' : 'Absente',
       })
 
+      // Générer le PDF côté client avec html2canvas et jsPDF
+      if (!cardRef.current) {
+        throw new Error("Référence de la carte non disponible")
+      }
+
+      console.log('🎨 Génération du canvas de la carte...')
+      const canvas = await html2canvas(cardRef.current, {
+        scale: 2, // Meilleure qualité
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      })
+
+      console.log('📄 Conversion du canvas en PDF...')
+      const imgData = canvas.toDataURL('image/png')
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4',
+      })
+
+      const imgWidth = 297 // Largeur A4 en mm
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+      pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight)
+      
+      // Convertir le PDF en base64
+      const pdfBase64 = pdf.output('datauristring').split(',')[1] // Extraire juste la partie base64
+      console.log(`✅ PDF généré, taille base64: ${(pdfBase64.length / 1024).toFixed(2)} KB`)
+
       // Préparer les données pour le backend
       const carteData = {
         numero_membre: formData.memberId,
@@ -95,9 +125,10 @@ const CarteMembreGenerator = ({ memberData = null, onClose = null }) => {
         ville: formData.section?.split(' / ')[1] || '',
         statut_carte: formData.status,
         photo_url: photoDataUrl, // URL de la photo (base64 data URL ou URL publique)
+        pdf_base64: pdfBase64, // PDF généré en base64
       }
 
-      // Appeler l'API backend pour générer et sauvegarder la carte
+      // Appeler l'API backend pour sauvegarder la carte et uploader le PDF
       const { createCarteMembre } = await import('../services/api')
       const result = await createCarteMembre(carteData)
 
@@ -110,7 +141,7 @@ const CarteMembreGenerator = ({ memberData = null, onClose = null }) => {
           window.open(result.lien_pdf, '_blank')
         }
       } else {
-        alert("✅ Carte membre créée avec succès !\n\n⚠️ Le PDF n'a pas pu être généré. Vérifiez les logs du backend.")
+        alert("✅ Carte membre créée avec succès !\n\n⚠️ Le PDF n'a pas pu être uploadé vers Google Drive. La carte a été créée mais le PDF n'est pas disponible.")
       }
 
       // Fermer le générateur si une fonction onClose est fournie

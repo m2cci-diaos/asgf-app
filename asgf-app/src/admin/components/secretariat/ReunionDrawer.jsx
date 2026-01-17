@@ -10,6 +10,7 @@ import {
   fetchActions,
   createAction,
   updateAction,
+  deleteAction,
   generateReunionPDF,
   fetchAllMembers,
   updateReunion,
@@ -30,6 +31,11 @@ export default function ReunionDrawer({ reunion, onClose, onUpdate, currentUser 
   const [showAddParticipant, setShowAddParticipant] = useState(false)
   const [showAddAction, setShowAddAction] = useState(false)
   const [editing, setEditing] = useState(false)
+  // État local pour les modifications en cours (évite les rechargements)
+  const [localParticipants, setLocalParticipants] = useState({})
+  // Participants sélectionnés pour modification en masse
+  const [selectedParticipants, setSelectedParticipants] = useState([])
+  const [showBulkEdit, setShowBulkEdit] = useState(false)
 
   // Charger les données
   useEffect(() => {
@@ -47,7 +53,18 @@ export default function ReunionDrawer({ reunion, onClose, onUpdate, currentUser 
         fetchActions(reunion.id).catch(() => []),
       ])
       
-      setParticipants(Array.isArray(parts) ? parts : [])
+      const partsArray = Array.isArray(parts) ? parts : []
+      setParticipants(partsArray)
+      // Réinitialiser l'état local avec les données fraîches
+      const localState = {}
+      partsArray.forEach(p => {
+        localState[p.id] = {
+          statut_invitation: p.statut_invitation || 'envoye',
+          presence: p.presence || '',
+          commentaire: p.commentaire || ''
+        }
+      })
+      setLocalParticipants(localState)
       setCompteRendu(cr)
       setActions(Array.isArray(acts) ? acts : [])
       
@@ -63,36 +80,121 @@ export default function ReunionDrawer({ reunion, onClose, onUpdate, currentUser 
     }
   }
 
-  // Gérer statut invitation inline
+  // Mettre à jour l'état local (sans recharger)
+  const updateLocalParticipant = (participantId, field, value) => {
+    setLocalParticipants(prev => ({
+      ...prev,
+      [participantId]: {
+        ...(prev[participantId] || {}),
+        [field]: value
+      }
+    }))
+  }
+
+  // Gérer statut invitation inline (sauvegarde différée)
   const handleStatusChange = async (participantId, newStatus) => {
-    try {
-      await updateParticipant(participantId, { statut_invitation: newStatus })
-      loadData()
-    } catch (err) {
-      alert('Erreur : ' + err.message)
-    }
+    updateLocalParticipant(participantId, 'statut_invitation', newStatus)
+    // Sauvegarder après un délai pour éviter trop de requêtes
+    setTimeout(async () => {
+      try {
+        await updateParticipant(participantId, { statut_invitation: newStatus })
+      } catch (err) {
+        console.error('Erreur sauvegarde statut:', err)
+        // Revenir à l'ancienne valeur en cas d'erreur
+        loadData()
+      }
+    }, 500)
   }
 
-  // Gérer présence inline
+  // Gérer présence inline (sauvegarde différée)
   const handlePresenceChange = async (participantId, newPresence) => {
-    try {
-      await updateParticipant(participantId, { 
-        presence: newPresence || null,
-        motif_absence: newPresence === 'absent' ? null : null // Réinitialiser motif si on change la présence
-      })
-      loadData()
-    } catch (err) {
-      alert('Erreur : ' + err.message)
+    const presenceValue = newPresence || null
+    updateLocalParticipant(participantId, 'presence', presenceValue)
+    // Sauvegarder après un délai
+    setTimeout(async () => {
+      try {
+        await updateParticipant(participantId, { 
+          presence: presenceValue,
+          motif_absence: presenceValue === 'absent' ? null : null
+        })
+      } catch (err) {
+        console.error('Erreur sauvegarde présence:', err)
+        loadData()
+      }
+    }, 500)
+  }
+
+  // Gérer commentaire inline (sauvegarde différée)
+  const handleCommentChange = async (participantId, newComment) => {
+    updateLocalParticipant(participantId, 'commentaire', newComment || '')
+    // Sauvegarder après un délai plus long pour le commentaire
+    setTimeout(async () => {
+      try {
+        await updateParticipant(participantId, { commentaire: newComment || null })
+      } catch (err) {
+        console.error('Erreur sauvegarde commentaire:', err)
+        loadData()
+      }
+    }, 1000)
+  }
+
+  // Toggle sélection d'un participant
+  const toggleParticipantSelection = (participantId) => {
+    setSelectedParticipants(prev => 
+      prev.includes(participantId)
+        ? prev.filter(id => id !== participantId)
+        : [...prev, participantId]
+    )
+  }
+
+  // Sélectionner/désélectionner tous
+  const toggleSelectAll = () => {
+    if (selectedParticipants.length === participants.length) {
+      setSelectedParticipants([])
+    } else {
+      setSelectedParticipants(participants.map(p => p.id))
     }
   }
 
-  // Gérer commentaire inline
-  const handleCommentChange = async (participantId, newComment) => {
+  // Appliquer des valeurs en masse aux participants sélectionnés
+  const handleBulkUpdate = async (field, value) => {
+    if (selectedParticipants.length === 0) {
+      alert('Veuillez sélectionner au moins un participant')
+      return
+    }
+
     try {
-      await updateParticipant(participantId, { commentaire: newComment || null })
-      // Ne pas recharger immédiatement pour une meilleure UX
+      // Mettre à jour l'état local immédiatement
+      const updates = {}
+      selectedParticipants.forEach(id => {
+        updates[id] = {
+          ...(localParticipants[id] || {}),
+          [field]: value
+        }
+      })
+      setLocalParticipants(prev => ({ ...prev, ...updates }))
+
+      // Sauvegarder tous les participants en batch
+      const updatePromises = selectedParticipants.map(participantId => {
+        const updateData = {}
+        if (field === 'statut_invitation') {
+          updateData.statut_invitation = value
+        } else if (field === 'presence') {
+          updateData.presence = value || null
+          updateData.motif_absence = value === 'absent' ? null : null
+        } else if (field === 'commentaire') {
+          updateData.commentaire = value || null
+        }
+        return updateParticipant(participantId, updateData)
+      })
+
+      await Promise.all(updatePromises)
+      alert(`${selectedParticipants.length} participant(s) mis à jour avec succès`)
+      setSelectedParticipants([])
+      setShowBulkEdit(false)
     } catch (err) {
-      alert('Erreur : ' + err.message)
+      alert('Erreur lors de la mise à jour: ' + err.message)
+      loadData() // Recharger en cas d'erreur
     }
   }
 
@@ -380,6 +482,13 @@ export default function ReunionDrawer({ reunion, onClose, onUpdate, currentUser 
               onStatusChange={handleStatusChange}
               onPresenceChange={handlePresenceChange}
               onCommentChange={handleCommentChange}
+              selectedParticipants={selectedParticipants}
+              toggleParticipantSelection={toggleParticipantSelection}
+              toggleSelectAll={toggleSelectAll}
+              handleBulkUpdate={handleBulkUpdate}
+              showBulkEdit={showBulkEdit}
+              setShowBulkEdit={setShowBulkEdit}
+              localParticipants={localParticipants}
               onAddParticipants={handleAddParticipants}
               showAdd={showAddParticipant}
               onShowAdd={() => {
@@ -743,7 +852,14 @@ function ParticipantsTab({
   onHideAdd,
   members,
   stats,
-  onReload
+  onReload,
+  selectedParticipants = [],
+  toggleParticipantSelection,
+  toggleSelectAll,
+  handleBulkUpdate,
+  showBulkEdit = false,
+  setShowBulkEdit,
+  localParticipants = {}
 }) {
   const [selectedMembers, setSelectedMembers] = useState([])
   const [search, setSearch] = useState('')
@@ -973,13 +1089,155 @@ function ParticipantsTab({
           description="Ajoutez des participants à cette réunion"
         />
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
-                <th style={{ textAlign: 'left', padding: '0.75rem', fontSize: '0.875rem', fontWeight: '600', color: '#64748b' }}>
-                  Nom & Prénom
-                </th>
+        <div>
+          {/* Barre d'actions en masse */}
+          {selectedParticipants && selectedParticipants.length > 0 && (
+            <div style={{ 
+              marginBottom: '1rem', 
+              padding: '0.75rem', 
+              backgroundColor: '#eff6ff', 
+              borderRadius: '0.5rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '1rem',
+              flexWrap: 'wrap'
+            }}>
+              <span style={{ fontWeight: '600', color: '#1e40af' }}>
+                {selectedParticipants.length} participant(s) sélectionné(s)
+              </span>
+              {setShowBulkEdit && (
+                <>
+                  <button
+                    onClick={() => setShowBulkEdit(!showBulkEdit)}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      backgroundColor: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '0.375rem',
+                      cursor: 'pointer',
+                      fontSize: '0.875rem',
+                      fontWeight: '500'
+                    }}
+                  >
+                    ✏️ Modifier en masse
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (toggleParticipantSelection) {
+                        // Réinitialiser la sélection en désélectionnant tous les participants
+                        selectedParticipants.forEach(id => toggleParticipantSelection(id))
+                      }
+                    }}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      backgroundColor: '#94a3b8',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '0.375rem',
+                      cursor: 'pointer',
+                      fontSize: '0.875rem'
+                    }}
+                  >
+                    Annuler
+                  </button>
+
+                  {showBulkEdit && handleBulkUpdate && (
+                    <div style={{
+                      width: '100%',
+                      padding: '0.75rem',
+                      backgroundColor: 'white',
+                      borderRadius: '0.375rem',
+                      border: '1px solid #cbd5e1',
+                      marginTop: '0.5rem'
+                    }}>
+                      <div style={{ marginBottom: '0.75rem' }}>
+                        <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', fontWeight: '500' }}>
+                          Statut invitation:
+                        </label>
+                        <select
+                          onChange={(e) => e.target.value && handleBulkUpdate('statut_invitation', e.target.value)}
+                          style={{
+                            padding: '0.375rem 0.75rem',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '0.375rem',
+                            fontSize: '0.875rem',
+                            width: '100%'
+                          }}
+                        >
+                          <option value="">Sélectionner...</option>
+                          <option value="envoye">Envoyée</option>
+                          <option value="acceptee">Acceptée</option>
+                          <option value="refusee">Refusée</option>
+                        </select>
+                      </div>
+                      <div style={{ marginBottom: '0.75rem' }}>
+                        <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', fontWeight: '500' }}>
+                          Présence:
+                        </label>
+                        <select
+                          onChange={(e) => e.target.value !== '' && handleBulkUpdate('presence', e.target.value || null)}
+                          style={{
+                            padding: '0.375rem 0.75rem',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '0.375rem',
+                            fontSize: '0.875rem',
+                            width: '100%'
+                          }}
+                        >
+                          <option value="">Sélectionner...</option>
+                          <option value="present">Présent</option>
+                          <option value="absent">Absent</option>
+                          <option value="null">Non renseigné</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', fontWeight: '500' }}>
+                          Commentaire:
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Commentaire pour tous les participants sélectionnés..."
+                          onBlur={(e) => e.target.value && handleBulkUpdate('commentaire', e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && e.target.value) {
+                              handleBulkUpdate('commentaire', e.target.value)
+                              e.target.blur()
+                            }
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '0.375rem 0.75rem',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '0.375rem',
+                            fontSize: '0.875rem'
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                  {toggleSelectAll && (
+                    <th style={{ textAlign: 'left', padding: '0.75rem', fontSize: '0.875rem', fontWeight: '600', color: '#64748b', width: '40px' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedParticipants && selectedParticipants.length === participants.length && participants.length > 0}
+                        onChange={toggleSelectAll}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </th>
+                  )}
+                  <th style={{ textAlign: 'left', padding: '0.75rem', fontSize: '0.875rem', fontWeight: '600', color: '#64748b' }}>
+                    Nom & Prénom
+                  </th>
                 <th style={{ textAlign: 'left', padding: '0.75rem', fontSize: '0.875rem', fontWeight: '600', color: '#64748b' }}>
                   Statut invitation
                 </th>
@@ -999,12 +1257,41 @@ function ParticipantsTab({
                   ? `${participant.prenom_externe} ${participant.nom_externe}`
                   : 'Participant externe'
 
+                const isSelected = selectedParticipants && selectedParticipants.includes(participant.id)
+                // Utiliser l'état local si disponible, sinon les données originales
+                const localData = localParticipants[participant.id] || {}
+                const statutInvitation = localData.statut_invitation !== undefined 
+                  ? localData.statut_invitation 
+                  : (participant.statut_invitation || 'envoye')
+                const presence = localData.presence !== undefined 
+                  ? localData.presence 
+                  : (participant.presence || '')
+                const commentaire = localData.commentaire !== undefined 
+                  ? localData.commentaire 
+                  : (participant.commentaire || '')
+
                 return (
-                  <tr key={participant.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                  <tr 
+                    key={participant.id} 
+                    style={{ 
+                      borderBottom: '1px solid #f1f5f9',
+                      backgroundColor: isSelected ? '#eff6ff' : 'white'
+                    }}
+                  >
+                    {toggleParticipantSelection && (
+                      <td style={{ padding: '0.75rem' }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleParticipantSelection(participant.id)}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      </td>
+                    )}
                     <td style={{ padding: '0.75rem', color: '#1e293b' }}>{nom}</td>
                     <td style={{ padding: '0.75rem' }}>
                       <select
-                        value={participant.statut_invitation || 'envoye'}
+                        value={statutInvitation}
                         onChange={(e) => onStatusChange(participant.id, e.target.value)}
                         style={{
                           padding: '0.375rem 0.75rem',
@@ -1022,7 +1309,7 @@ function ParticipantsTab({
                     </td>
                     <td style={{ padding: '0.75rem' }}>
                       <select
-                        value={participant.presence || ''}
+                        value={presence}
                         onChange={(e) => onPresenceChange(participant.id, e.target.value || null)}
                         style={{
                           padding: '0.375rem 0.75rem',
@@ -1042,9 +1329,8 @@ function ParticipantsTab({
                     <td style={{ padding: '0.75rem' }}>
                       <input
                         type="text"
-                        value={participant.commentaire || ''}
+                        value={commentaire}
                         onChange={(e) => onCommentChange(participant.id, e.target.value)}
-                        onBlur={() => onReload?.()}
                         placeholder="Ajouter un commentaire..."
                         style={{
                           width: '100%',
@@ -1062,6 +1348,7 @@ function ParticipantsTab({
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>
@@ -1364,12 +1651,39 @@ function ActionsTab({ actions, loading, reunionId, onUpdate, currentUser }) {
 
 // Vue tableau actions
 function ActionsTableView({ actions, onUpdate }) {
+  const [editingAction, setEditingAction] = useState(null)
+  const [members, setMembers] = useState([])
+
+  useEffect(() => {
+    fetchAllMembers({ limit: 200 }).then(mems => {
+      setMembers(Array.isArray(mems) ? mems : [])
+    })
+  }, [])
+
   const handleStatusChange = async (actionId, newStatus) => {
     try {
-      // Import dynamique pour éviter les problèmes de scope
-      const { updateAction } = await import('../../services/api')
       await updateAction(actionId, { statut: newStatus })
       onUpdate()
+    } catch (err) {
+      alert('Erreur : ' + err.message)
+    }
+  }
+
+  const handleEditAction = (action) => {
+    setEditingAction({
+      ...action,
+      assignees: action.assignees || (action.assigne_a ? [action.assigne_a] : [])
+    })
+  }
+
+  const handleDeleteAction = async (actionId) => {
+    if (!confirm('Êtes-vous sûr de vouloir supprimer cette action ?')) {
+      return
+    }
+    try {
+      await deleteAction(actionId)
+      onUpdate()
+      alert('Action supprimée avec succès')
     } catch (err) {
       alert('Erreur : ' + err.message)
     }
@@ -1396,12 +1710,16 @@ function ActionsTableView({ actions, onUpdate }) {
             <th style={{ textAlign: 'left', padding: '0.75rem', fontSize: '0.875rem', fontWeight: '600', color: '#64748b' }}>
               Deadline
             </th>
+            <th style={{ textAlign: 'left', padding: '0.75rem', fontSize: '0.875rem', fontWeight: '600', color: '#64748b' }}>
+              Actions
+            </th>
           </tr>
         </thead>
         <tbody>
           {actions.map(action => {
             const deadline = action.deadline ? new Date(action.deadline) : null
             const isOverdue = deadline && deadline < new Date() && action.statut !== 'termine'
+            const assignees = action.assignees_members || (action.membre ? [action.membre] : [])
             
             return (
               <tr key={action.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
@@ -1409,13 +1727,31 @@ function ActionsTableView({ actions, onUpdate }) {
                   {action.intitule}
                 </td>
                 <td style={{ padding: '0.75rem', color: '#64748b' }}>
-                  {action.membre 
-                    ? `${action.membre.prenom} ${action.membre.nom}`
-                    : 'Non assigné'}
+                  {assignees.length > 0 ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                      {assignees.map((m, idx) => (
+                        <span
+                          key={m.id || idx}
+                          style={{
+                            backgroundColor: '#eff6ff',
+                            color: '#1e40af',
+                            padding: '0.25rem 0.5rem',
+                            borderRadius: '0.25rem',
+                            fontSize: '0.75rem',
+                            fontWeight: '500'
+                          }}
+                        >
+                          {m.prenom} {m.nom}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{ color: '#94a3b8' }}>Non assigné</span>
+                  )}
                 </td>
                 <td style={{ padding: '0.75rem' }}>
                   <select
-                    value={action.statut || 'en_cours'}
+                    value={action.statut || 'en cours'}
                     onChange={(e) => handleStatusChange(action.id, e.target.value)}
                     style={{
                       padding: '0.375rem 0.75rem',
@@ -1426,7 +1762,7 @@ function ActionsTableView({ actions, onUpdate }) {
                       cursor: 'pointer'
                     }}
                   >
-                    <option value="en_cours">En cours</option>
+                    <option value="en cours">En cours</option>
                     <option value="termine">Terminé</option>
                     <option value="annule">Annulé</option>
                   </select>
@@ -1443,25 +1779,246 @@ function ActionsTableView({ actions, onUpdate }) {
                     <span style={{ color: '#94a3b8' }}>—</span>
                   )}
                 </td>
+                <td style={{ padding: '0.75rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      onClick={() => handleEditAction(action)}
+                      style={{
+                        padding: '0.375rem 0.75rem',
+                        backgroundColor: '#3b82f6',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.375rem',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        fontWeight: '500'
+                      }}
+                    >
+                      ✏️ Modifier
+                    </button>
+                    <button
+                      onClick={() => handleDeleteAction(action.id)}
+                      style={{
+                        padding: '0.375rem 0.75rem',
+                        backgroundColor: '#dc2626',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.375rem',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        fontWeight: '500'
+                      }}
+                    >
+                      🗑️ Supprimer
+                    </button>
+                  </div>
+                </td>
               </tr>
             )
           })}
         </tbody>
       </table>
+
+      {editingAction && (
+        <EditActionModal
+          action={editingAction}
+          members={members}
+          onClose={() => setEditingAction(null)}
+          onSuccess={() => {
+            setEditingAction(null)
+            onUpdate()
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+// Modal d'édition d'action
+function EditActionModal({ action, members, onClose, onSuccess }) {
+  const [formData, setFormData] = useState({
+    intitule: action.intitule || '',
+    assignees: action.assignees || [],
+    statut: action.statut || 'en cours',
+    deadline: action.deadline || '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setSubmitting(true)
+    try {
+      await updateAction(action.id, {
+        intitule: formData.intitule,
+        assignees: formData.assignees,
+        statut: formData.statut || 'en cours',
+        deadline: formData.deadline || null,
+      })
+      onSuccess()
+    } catch (err) {
+      alert('Erreur : ' + err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return createPortal(
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        zIndex: 2000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '1rem'
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          backgroundColor: 'white',
+          borderRadius: '0.75rem',
+          padding: '2rem',
+          maxWidth: '500px',
+          width: '100%',
+          maxHeight: '90vh',
+          overflowY: 'auto'
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 style={{ fontSize: '1.25rem', fontWeight: '600', color: '#1e293b', marginBottom: '1.5rem' }}>
+          Modifier l'action
+        </h2>
+        
+        <form onSubmit={handleSubmit}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#1e293b', marginBottom: '0.5rem' }}>
+                Intitulé *
+              </label>
+              <input
+                type="text"
+                required
+                value={formData.intitule}
+                onChange={(e) => setFormData({ ...formData, intitule: e.target.value })}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '0.375rem',
+                  fontSize: '0.875rem'
+                }}
+                placeholder="Ex: Préparer le budget 2025"
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#1e293b', marginBottom: '0.5rem' }}>
+                Assigné(s) à (optionnel)
+              </label>
+              <MemberMultiSelect
+                members={members}
+                selectedIds={formData.assignees || []}
+                onChange={(selectedIds) => setFormData({ ...formData, assignees: selectedIds })}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#1e293b', marginBottom: '0.5rem' }}>
+                Statut
+              </label>
+              <select
+                value={formData.statut || 'en cours'}
+                onChange={(e) => setFormData({ ...formData, statut: e.target.value })}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '0.375rem',
+                  fontSize: '0.875rem',
+                  backgroundColor: 'white'
+                }}
+              >
+                <option value="en cours">En cours</option>
+                <option value="termine">Terminé</option>
+                <option value="annule">Annulé</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#1e293b', marginBottom: '0.5rem' }}>
+                Deadline
+              </label>
+              <input
+                type="date"
+                value={formData.deadline}
+                onChange={(e) => setFormData({ ...formData, deadline: e.target.value })}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '0.375rem',
+                  fontSize: '0.875rem'
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+              <button
+                type="button"
+                onClick={onClose}
+                style={{
+                  padding: '0.625rem 1.25rem',
+                  backgroundColor: 'white',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '0.375rem',
+                  color: '#475569',
+                  fontWeight: '500',
+                  cursor: 'pointer'
+                }}
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                style={{
+                  padding: '0.625rem 1.25rem',
+                  backgroundColor: '#3b82f6',
+                  border: 'none',
+                  borderRadius: '0.375rem',
+                  color: 'white',
+                  fontWeight: '500',
+                  cursor: submitting ? 'not-allowed' : 'pointer',
+                  opacity: submitting ? 0.6 : 1
+                }}
+              >
+                {submitting ? 'Enregistrement...' : 'Enregistrer'}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>,
+    document.body
   )
 }
 
 // Vue Kanban actions
 function ActionsKanbanView({ actions, onUpdate }) {
   const columns = [
-    { id: 'en_cours', label: 'En cours', color: '#f97316' },
+    { id: 'en cours', label: 'En cours', color: '#f97316' },
     { id: 'termine', label: 'Terminé', color: '#10b981' },
     { id: 'annule', label: 'Annulé', color: '#ef4444' },
   ]
 
   const getActionsByStatus = (status) => {
-    return actions.filter(a => (a.statut || 'en_cours') === status)
+    return actions.filter(a => (a.statut || 'en cours') === status)
   }
 
   return (
@@ -1504,9 +2061,49 @@ function ActionsKanbanView({ actions, onUpdate }) {
                     <p style={{ fontWeight: '500', color: '#1e293b', marginBottom: '0.5rem' }}>
                       {action.intitule}
                     </p>
-                    {action.membre && (
-                      <p style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>
-                        {action.membre.prenom} {action.membre.nom}
+                    {(action.assignees_members && action.assignees_members.length > 0) || action.membre ? (
+                      <div style={{ 
+                        fontSize: '0.875rem', 
+                        color: '#64748b', 
+                        marginBottom: '0.25rem',
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '0.25rem'
+                      }}>
+                        {action.assignees_members && action.assignees_members.length > 0 ? (
+                          action.assignees_members.map((m, idx) => (
+                            <span
+                              key={m.id || idx}
+                              style={{
+                                backgroundColor: '#eff6ff',
+                                color: '#1e40af',
+                                padding: '0.125rem 0.5rem',
+                                borderRadius: '0.25rem',
+                                fontSize: '0.75rem',
+                                fontWeight: '500'
+                              }}
+                            >
+                              {m.prenom} {m.nom}
+                            </span>
+                          ))
+                        ) : action.membre ? (
+                          <span
+                            style={{
+                              backgroundColor: '#eff6ff',
+                              color: '#1e40af',
+                              padding: '0.125rem 0.5rem',
+                              borderRadius: '0.25rem',
+                              fontSize: '0.75rem',
+                              fontWeight: '500'
+                            }}
+                          >
+                            {action.membre.prenom} {action.membre.nom}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p style={{ fontSize: '0.875rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+                        Non assigné
                       </p>
                     )}
                     {deadline && (
@@ -1533,12 +2130,220 @@ function ActionsKanbanView({ actions, onUpdate }) {
   )
 }
 
+// Composant de sélection multiple de membres avec recherche
+function MemberMultiSelect({ members, selectedIds, onChange }) {
+  const [searchTerm, setSearchTerm] = useState('')
+  const [isOpen, setIsOpen] = useState(false)
+
+  const filteredMembers = members.filter(m => {
+    const fullName = `${m.prenom} ${m.nom} ${m.numero_membre}`.toLowerCase()
+    return fullName.includes(searchTerm.toLowerCase())
+  })
+
+  const toggleMember = (memberId) => {
+    const newSelected = selectedIds.includes(memberId)
+      ? selectedIds.filter(id => id !== memberId)
+      : [...selectedIds, memberId]
+    onChange(newSelected)
+  }
+
+  const selectedMembers = members.filter(m => selectedIds.includes(m.id))
+
+  return (
+    <div style={{ position: 'relative' }}>
+      {/* Input de recherche et affichage des sélectionnés */}
+      <div
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          width: '100%',
+          padding: '0.625rem',
+          border: '1px solid #e2e8f0',
+          borderRadius: '0.375rem',
+          fontSize: '0.875rem',
+          backgroundColor: 'white',
+          cursor: 'pointer',
+          minHeight: '40px',
+          display: 'flex',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '0.25rem'
+        }}
+      >
+        {selectedMembers.length > 0 ? (
+          selectedMembers.map(m => (
+            <span
+              key={m.id}
+              style={{
+                backgroundColor: '#3b82f6',
+                color: 'white',
+                padding: '0.25rem 0.5rem',
+                borderRadius: '0.25rem',
+                fontSize: '0.75rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.25rem'
+              }}
+            >
+              {m.prenom} {m.nom}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleMember(m.id)
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'white',
+                  cursor: 'pointer',
+                  padding: 0,
+                  marginLeft: '0.25rem',
+                  fontSize: '0.875rem',
+                  fontWeight: 'bold'
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))
+        ) : (
+          <span style={{ color: '#94a3b8' }}>Rechercher et sélectionner des membres...</span>
+        )}
+      </div>
+
+      {/* Dropdown avec recherche et liste */}
+      {isOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            marginTop: '0.25rem',
+            backgroundColor: 'white',
+            border: '1px solid #e2e8f0',
+            borderRadius: '0.375rem',
+            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+            zIndex: 1000,
+            maxHeight: '300px',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+        >
+          {/* Barre de recherche */}
+          <div style={{ padding: '0.5rem', borderBottom: '1px solid #e2e8f0' }}>
+            <input
+              type="text"
+              placeholder="Rechercher un membre..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: '100%',
+                padding: '0.5rem',
+                border: '1px solid #e2e8f0',
+                borderRadius: '0.375rem',
+                fontSize: '0.875rem'
+              }}
+              autoFocus
+            />
+          </div>
+
+          {/* Liste des membres avec checkboxes */}
+          <div style={{ overflowY: 'auto', maxHeight: '250px' }}>
+            {filteredMembers.length > 0 ? (
+              filteredMembers.map(m => {
+                const isSelected = selectedIds.includes(m.id)
+                return (
+                  <label
+                    key={m.id}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '0.75rem',
+                      cursor: 'pointer',
+                      backgroundColor: isSelected ? '#eff6ff' : 'white',
+                      borderBottom: '1px solid #f1f5f9',
+                      transition: 'background-color 0.15s'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = '#f8fafc'
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = 'white'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleMember(m.id)}
+                      style={{
+                        marginRight: '0.75rem',
+                        width: '1rem',
+                        height: '1rem',
+                        cursor: 'pointer'
+                      }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: '500', color: '#1e293b' }}>
+                        {m.prenom} {m.nom}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                        {m.numero_membre}
+                      </div>
+                    </div>
+                  </label>
+                )
+              })
+            ) : (
+              <div style={{ padding: '1rem', textAlign: 'center', color: '#94a3b8' }}>
+                Aucun membre trouvé
+              </div>
+            )}
+          </div>
+
+          {/* Footer avec compteur */}
+          {selectedIds.length > 0 && (
+            <div style={{
+              padding: '0.5rem',
+              borderTop: '1px solid #e2e8f0',
+              backgroundColor: '#f8fafc',
+              fontSize: '0.75rem',
+              color: '#3b82f6',
+              fontWeight: '500',
+              textAlign: 'center'
+            }}>
+              {selectedIds.length} membre(s) sélectionné(s)
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Overlay pour fermer le dropdown */}
+      {isOpen && (
+        <div
+          onClick={() => setIsOpen(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 999
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
 // Modal ajout action
 function AddActionModal({ reunionId, onClose, onSuccess }) {
   const [formData, setFormData] = useState({
     intitule: '',
-    assigne_a: '',
-    statut: 'en_cours',
+    assignees: [], // Array pour multi-assignation
+    statut: 'en cours',
     deadline: '',
   })
   const [members, setMembers] = useState([])
@@ -1555,8 +2360,11 @@ function AddActionModal({ reunionId, onClose, onSuccess }) {
     setSubmitting(true)
     try {
       await createAction({
-        reunion_id: reunionId,
-        ...formData,
+        reunion_id: reunionId || null, // Peut être null pour actions indépendantes
+        intitule: formData.intitule,
+        assignees: formData.assignees, // Array de member IDs
+        statut: formData.statut || 'en cours',
+        deadline: formData.deadline || null,
       })
       onSuccess()
     } catch (err) {
@@ -1623,11 +2431,22 @@ function AddActionModal({ reunionId, onClose, onSuccess }) {
 
             <div>
               <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#1e293b', marginBottom: '0.5rem' }}>
-                Assigné à
+                Assigné(s) à (optionnel)
+              </label>
+              <MemberMultiSelect
+                members={members}
+                selectedIds={formData.assignees || []}
+                onChange={(selectedIds) => setFormData({ ...formData, assignees: selectedIds })}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#1e293b', marginBottom: '0.5rem' }}>
+                Statut
               </label>
               <select
-                value={formData.assigne_a}
-                onChange={(e) => setFormData({ ...formData, assigne_a: e.target.value })}
+                value={formData.statut || 'en cours'}
+                onChange={(e) => setFormData({ ...formData, statut: e.target.value })}
                 style={{
                   width: '100%',
                   padding: '0.625rem',
@@ -1637,12 +2456,9 @@ function AddActionModal({ reunionId, onClose, onSuccess }) {
                   backgroundColor: 'white'
                 }}
               >
-                <option value="">Sélectionner un membre</option>
-                {members.map(m => (
-                  <option key={m.id} value={m.id}>
-                    {m.prenom} {m.nom} ({m.numero_membre})
-                  </option>
-                ))}
+                <option value="en cours">En cours</option>
+                <option value="termine">Terminé</option>
+                <option value="annule">Annulé</option>
               </select>
             </div>
 

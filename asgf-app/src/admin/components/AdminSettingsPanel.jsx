@@ -491,7 +491,7 @@ const AdminSettingsPanel = ({ currentAdmin }) => {
       <div className="settings-page__header">
         <h1 className="settings-page__title">Paramètres</h1>
         <p className="settings-page__subtitle">Admin / Paramètres</p>
-      </div>
+          </div>
 
       {/* Onglets principaux */}
       <div className="settings-tabs">
@@ -668,14 +668,14 @@ const AdminSettingsPanel = ({ currentAdmin }) => {
         <div className="settings-card__header">
           <h2 className="settings-card__title">Administrateurs existants</h2>
           <p className="settings-card__subtitle">Contrôlez les accès, modules et suspensions.</p>
-        </div>
-        <input
-          type="search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Recherche par email ou numéro"
-          className="settings-search"
-        />
+          </div>
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Recherche par email ou numéro"
+            className="settings-search"
+          />
 
         {feedback && feedback.type === 'success' && (
           <div className="settings-feedback success">{feedback.message}</div>

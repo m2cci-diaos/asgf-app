@@ -409,10 +409,11 @@ function Formation() {
     const hasDate = formation.prochaineSession && new Date(formation.prochaineSession).getTime() > 0
     // Désactiver seulement si pas de session ET pas de date (affiche "À venir")
     const isDisabled = !hasSession && !hasDate
+    const isRegistrationClosed = formation.is_registration_open === false
 
     return (
       <div 
-        className={`formation-card fade-in visible ${isDisabled ? 'formation-card--disabled' : ''}`}
+        className={`formation-card fade-in visible ${isDisabled || isRegistrationClosed ? 'formation-card--disabled' : ''}`}
         data-category={formation.category}
       >
         <div className="formation-image">
@@ -528,6 +529,17 @@ function Formation() {
                 style={{ cursor: 'not-allowed', opacity: 0.6 }}
               >
                 À venir
+              </span>
+            ) : isRegistrationClosed ? (
+              <span 
+                className="formation-btn formation-btn--disabled"
+                style={{ cursor: 'not-allowed', opacity: 0.6 }}
+                onClick={(e) => {
+                  e.preventDefault()
+                  alert("Les inscriptions à cette formation sont clôturées.\n\nJe vous invite à rejoindre l'ASGF via l'onglet Adhésion pour bénéficier des formations gratuites et être informé en priorité des prochaines sessions.\n\nhttps://association-asgf.fr/adhesion")
+                }}
+              >
+                Inscriptions clôturées
               </span>
             ) : (
               <Link 

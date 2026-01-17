@@ -104,3 +104,6 @@ COMMENT ON TABLE secretariat.rapports_presidence IS 'Rapports générés pour la
 
 
 
+
+
+

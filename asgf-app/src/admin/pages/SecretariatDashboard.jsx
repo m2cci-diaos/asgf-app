@@ -11,6 +11,7 @@ import {
   createDocument,
   fetchAllMembers,
   findMemberByEmail,
+  createAction,
   updateAction,
   deleteAction,
 } from '../services/api'
@@ -19,6 +20,214 @@ import StatusBadge from '../components/secretariat/StatusBadge'
 import EmptyState from '../components/secretariat/EmptyState'
 import ReunionTimeline from '../components/secretariat/ReunionTimeline'
 import ReunionDrawer from '../components/secretariat/ReunionDrawer'
+
+// Composant de sélection multiple de membres avec recherche
+function MemberMultiSelect({ members, selectedIds, onChange }) {
+  const [searchTerm, setSearchTerm] = useState('')
+  const [isOpen, setIsOpen] = useState(false)
+
+  const filteredMembers = members.filter(m => {
+    const fullName = `${m.prenom} ${m.nom} ${m.numero_membre}`.toLowerCase()
+    return fullName.includes(searchTerm.toLowerCase())
+  })
+
+  const toggleMember = (memberId) => {
+    const newSelected = selectedIds.includes(memberId)
+      ? selectedIds.filter(id => id !== memberId)
+      : [...selectedIds, memberId]
+    onChange(newSelected)
+  }
+
+  const selectedMembers = members.filter(m => selectedIds.includes(m.id))
+
+  return (
+    <div style={{ position: 'relative' }}>
+      {/* Input de recherche et affichage des sélectionnés */}
+      <div
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          width: '100%',
+          padding: '0.625rem',
+          border: '1px solid #e2e8f0',
+          borderRadius: '0.375rem',
+          fontSize: '0.875rem',
+          backgroundColor: 'white',
+          cursor: 'pointer',
+          minHeight: '40px',
+          display: 'flex',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '0.25rem'
+        }}
+      >
+        {selectedMembers.length > 0 ? (
+          selectedMembers.map(m => (
+            <span
+              key={m.id}
+              style={{
+                backgroundColor: '#3b82f6',
+                color: 'white',
+                padding: '0.25rem 0.5rem',
+                borderRadius: '0.25rem',
+                fontSize: '0.75rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.25rem'
+              }}
+            >
+              {m.prenom} {m.nom}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleMember(m.id)
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'white',
+                  cursor: 'pointer',
+                  padding: 0,
+                  marginLeft: '0.25rem',
+                  fontSize: '0.875rem',
+                  fontWeight: 'bold'
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))
+        ) : (
+          <span style={{ color: '#94a3b8' }}>Rechercher et sélectionner des membres...</span>
+        )}
+      </div>
+
+      {/* Dropdown avec recherche et liste */}
+      {isOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            marginTop: '0.25rem',
+            backgroundColor: 'white',
+            border: '1px solid #e2e8f0',
+            borderRadius: '0.375rem',
+            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+            zIndex: 1000,
+            maxHeight: '300px',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+        >
+          {/* Barre de recherche */}
+          <div style={{ padding: '0.5rem', borderBottom: '1px solid #e2e8f0' }}>
+            <input
+              type="text"
+              placeholder="Rechercher un membre..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: '100%',
+                padding: '0.5rem',
+                border: '1px solid #e2e8f0',
+                borderRadius: '0.375rem',
+                fontSize: '0.875rem'
+              }}
+              autoFocus
+            />
+          </div>
+
+          {/* Liste des membres avec checkboxes */}
+          <div style={{ overflowY: 'auto', maxHeight: '250px' }}>
+            {filteredMembers.length > 0 ? (
+              filteredMembers.map(m => {
+                const isSelected = selectedIds.includes(m.id)
+                return (
+                  <label
+                    key={m.id}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '0.75rem',
+                      cursor: 'pointer',
+                      backgroundColor: isSelected ? '#eff6ff' : 'white',
+                      borderBottom: '1px solid #f1f5f9',
+                      transition: 'background-color 0.15s'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = '#f8fafc'
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = 'white'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleMember(m.id)}
+                      style={{
+                        marginRight: '0.75rem',
+                        width: '1rem',
+                        height: '1rem',
+                        cursor: 'pointer'
+                      }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: '500', color: '#1e293b' }}>
+                        {m.prenom} {m.nom}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                        {m.numero_membre}
+                      </div>
+                    </div>
+                  </label>
+                )
+              })
+            ) : (
+              <div style={{ padding: '1rem', textAlign: 'center', color: '#94a3b8' }}>
+                Aucun membre trouvé
+              </div>
+            )}
+          </div>
+
+          {/* Footer avec compteur */}
+          {selectedIds.length > 0 && (
+            <div style={{
+              padding: '0.5rem',
+              borderTop: '1px solid #e2e8f0',
+              backgroundColor: '#f8fafc',
+              fontSize: '0.75rem',
+              color: '#3b82f6',
+              fontWeight: '500',
+              textAlign: 'center'
+            }}>
+              {selectedIds.length} membre(s) sélectionné(s)
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Overlay pour fermer le dropdown */}
+      {isOpen && (
+        <div
+          onClick={() => setIsOpen(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 999
+          }}
+        />
+      )}
+    </div>
+  )
+}
 
 /**
  * Dashboard Secrétariat Professionnel
@@ -43,11 +252,91 @@ export default function SecretariatDashboard({ currentUser }) {
   const [actionsLoading, setActionsLoading] = useState(false)
   const [actionsFilter, setActionsFilter] = useState({ statut: '', assigne_a: '' })
   const [editingAction, setEditingAction] = useState(null)
+  const [creatingAction, setCreatingAction] = useState(false)
   const [actionFormData, setActionFormData] = useState({})
   const [members, setMembers] = useState([])
   const [reunionFormData, setReunionFormData] = useState({})
   const [documentFormData, setDocumentFormData] = useState({})
   const [submitting, setSubmitting] = useState(false)
+
+  // Fonction pour obtenir les dates selon la période
+  const getDateRange = (periodType) => {
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    
+    let startDate, endDate
+    
+    switch (periodType) {
+      case 'semaine':
+        // Cette semaine (lundi à dimanche)
+        const dayOfWeek = today.getDay()
+        const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek // Ajuster pour lundi = 0
+        startDate = new Date(today)
+        startDate.setDate(today.getDate() + diff)
+        endDate = new Date(startDate)
+        endDate.setDate(startDate.getDate() + 6)
+        endDate.setHours(23, 59, 59, 999)
+        break
+        
+      case 'mois':
+        // Ce mois
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1)
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
+        break
+        
+      case 'mois_precedent':
+        // Mois précédent (du 1er au dernier jour du mois précédent)
+        // Si on est en janvier (mois 0), le mois précédent est décembre de l'année précédente
+        if (now.getMonth() === 0) {
+          startDate = new Date(now.getFullYear() - 1, 11, 1)
+          endDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999)
+        } else {
+          startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+          // Dernier jour du mois précédent
+          endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999)
+        }
+        break
+        
+      case 'annee':
+        // Cette année
+        startDate = new Date(now.getFullYear(), 0, 1)
+        endDate = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999)
+        break
+        
+      case 'annee_precedente':
+        // Année précédente
+        startDate = new Date(now.getFullYear() - 1, 0, 1)
+        endDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999)
+        break
+        
+      default:
+        // Par défaut: ce mois
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1)
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
+    }
+    
+    return { startDate, endDate }
+  }
+
+  // Filtrer les réunions selon la période sélectionnée
+  const filterReunionsByPeriod = (reunionsList, periodType) => {
+    if (!periodType || periodType === 'all') return reunionsList
+    
+    const { startDate, endDate } = getDateRange(periodType)
+    
+    // Normaliser les dates pour la comparaison
+    const start = new Date(startDate)
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(endDate)
+    end.setHours(23, 59, 59, 999)
+    
+    return reunionsList.filter(r => {
+      if (!r.date_reunion) return false
+      const reunionDate = new Date(r.date_reunion)
+      reunionDate.setHours(0, 0, 0, 0)
+      return reunionDate >= start && reunionDate <= end
+    })
+  }
 
   // Charger les données
   const loadData = useCallback(async () => {
@@ -58,15 +347,19 @@ export default function SecretariatDashboard({ currentUser }) {
       
       const [statsData, reunionsData] = await Promise.all([
         fetchSecretariatStats(),
-        fetchReunions({ limit: 50 }),
+        fetchReunions({ limit: 500 }), // Augmenter la limite pour avoir assez de données pour filtrer
       ])
 
       setStats(statsData || {})
       
       const allReunions = Array.isArray(reunionsData) ? reunionsData : []
-      setReunions(allReunions)
+      
+      // Toujours appliquer le filtre de période pour les réunions récentes
+      const filteredReunions = filterReunionsByPeriod(allReunions, period)
+      
+      setReunions(filteredReunions)
 
-      // Filtrer réunions à venir
+      // Filtrer réunions à venir (toujours sans filtre de période)
       const aVenir = allReunions.filter(r => {
         const dateReunion = r.date_reunion ? new Date(r.date_reunion).toISOString().split('T')[0] : null
         return dateReunion && dateReunion >= today
@@ -146,7 +439,7 @@ export default function SecretariatDashboard({ currentUser }) {
     if (currentUser) {
       loadData()
     }
-  }, [currentUser]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentUser, period]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Gérer ouverture drawer
   const handleReunionClick = async (reunion) => {
@@ -216,10 +509,17 @@ export default function SecretariatDashboard({ currentUser }) {
   // Gérer l'édition d'une action
   const handleEditAction = (action) => {
     setEditingAction(action)
+    // Utiliser assignees_members si disponible, sinon assigne_a pour rétrocompatibilité
+    const assignees = action.assignees_members 
+      ? action.assignees_members.map(m => m.id)
+      : (action.assignees && action.assignees.length > 0)
+        ? action.assignees
+        : (action.assigne_a ? [action.assigne_a] : [])
+    
     setActionFormData({
       intitule: action.intitule || '',
-      statut: action.statut || 'en_cours',
-      assigne_a: action.assigne_a || '',
+      statut: action.statut || 'en cours',
+      assignees: assignees,
       deadline: action.deadline ? action.deadline.split('T')[0] : '',
     })
   }
@@ -236,7 +536,7 @@ export default function SecretariatDashboard({ currentUser }) {
       const updates = {
         intitule: actionFormData.intitule,
         statut: actionFormData.statut,
-        assigne_a: actionFormData.assigne_a || null,
+        assignees: actionFormData.assignees || [],
         deadline: actionFormData.deadline || null,
       }
       await updateAction(editingAction.id, updates)
@@ -346,7 +646,9 @@ export default function SecretariatDashboard({ currentUser }) {
           >
             <option value="semaine">Cette semaine</option>
             <option value="mois">Ce mois</option>
+            <option value="mois_precedent">Mois précédent</option>
             <option value="annee">Cette année</option>
+            <option value="annee_precedente">Année précédente</option>
           </select>
           
           <button
@@ -542,7 +844,14 @@ export default function SecretariatDashboard({ currentUser }) {
             ) : reunions.length === 0 ? (
               <EmptyState
                 title="Aucune réunion"
-                description="Créez votre première réunion pour commencer"
+                description={
+                  period === 'semaine' ? 'Aucune réunion trouvée pour cette semaine' :
+                  period === 'mois' ? 'Aucune réunion trouvée pour ce mois' :
+                  period === 'mois_precedent' ? 'Aucune réunion trouvée pour le mois précédent' :
+                  period === 'annee' ? 'Aucune réunion trouvée pour cette année' :
+                  period === 'annee_precedente' ? 'Aucune réunion trouvée pour l\'année précédente' :
+                  'Créez votre première réunion pour commencer'
+                }
               />
             ) : (
               <div style={{ overflowX: 'auto' }}>
@@ -590,6 +899,13 @@ export default function SecretariatDashboard({ currentUser }) {
                         fontSize: '0.875rem',
                         fontWeight: '600',
                         color: '#64748b'
+                      }}>Groupe de travail</th>
+                      <th style={{ 
+                        textAlign: 'left', 
+                        padding: '0.75rem', 
+                        fontSize: '0.875rem',
+                        fontWeight: '600',
+                        color: '#64748b'
                       }}>Statut</th>
                     </tr>
                   </thead>
@@ -628,6 +944,30 @@ export default function SecretariatDashboard({ currentUser }) {
                           </td>
                           <td style={{ padding: '0.75rem', color: '#64748b' }}>
                             {reunion.pole || '—'}
+                          </td>
+                          <td style={{ padding: '0.75rem' }}>
+                            {reunion.groupe_travail ? (
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.25rem',
+                                padding: '0.25rem 0.5rem',
+                                backgroundColor: '#eff6ff',
+                                color: '#1e40af',
+                                borderRadius: '0.25rem',
+                                fontSize: '0.75rem',
+                                fontWeight: '500'
+                              }}>
+                                👥 {reunion.groupe_travail.nom}
+                                {reunion.groupe_travail.projet && (
+                                  <span style={{ color: '#64748b' }}>
+                                    • {reunion.groupe_travail.projet.titre}
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              '—'
+                            )}
                           </td>
                           <td style={{ padding: '0.75rem' }}>
                             <StatusBadge status={statut} size="sm" />
@@ -707,7 +1047,7 @@ export default function SecretariatDashboard({ currentUser }) {
                         </p>
                       )}
                       <div style={{ marginTop: '0.5rem' }}>
-                        <StatusBadge status={action.statut || 'en_cours'} size="sm" />
+                        <StatusBadge status={action.statut || 'en cours'} size="sm" />
                       </div>
                     </div>
                   )
@@ -749,22 +1089,66 @@ export default function SecretariatDashboard({ currentUser }) {
                       backgroundColor: '#f8fafc'
                     }}
                   >
-                    <p style={{ 
-                      fontWeight: '500', 
-                      color: '#1e293b',
-                      marginBottom: '0.25rem'
-                    }}>
-                      {doc.titre}
-                    </p>
-                    <p style={{ 
-                      fontSize: '0.875rem', 
-                      color: '#64748b',
-                      marginBottom: '0.5rem'
-                    }}>
-                      {doc.categorie} • {doc.created_at 
-                        ? new Date(doc.created_at).toLocaleDateString('fr-FR')
-                        : '—'}
-                    </p>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                      <div style={{ flex: 1 }}>
+                        <p style={{ 
+                          fontWeight: '500', 
+                          color: '#1e293b',
+                          marginBottom: '0.25rem'
+                        }}>
+                          {doc.titre}
+                        </p>
+                        {doc.description && (
+                          <p style={{ 
+                            fontSize: '0.875rem', 
+                            color: '#64748b',
+                            marginBottom: '0.25rem'
+                          }}>
+                            {doc.description}
+                          </p>
+                        )}
+                        <p style={{ 
+                          fontSize: '0.75rem', 
+                          color: '#94a3b8',
+                          marginBottom: '0.5rem'
+                        }}>
+                          {doc.categorie} • {doc.created_at 
+                            ? new Date(doc.created_at).toLocaleDateString('fr-FR')
+                            : '—'}
+                          {doc.type_document && ` • ${doc.type_document}`}
+                        </p>
+                        {/* Affiliations */}
+                        {(doc.reunion || doc.reunion_id) && (
+                          <div style={{ 
+                            display: 'flex', 
+                            flexWrap: 'wrap', 
+                            gap: '0.5rem', 
+                            marginTop: '0.5rem' 
+                          }}>
+                            {doc.reunion && (
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.25rem',
+                                padding: '0.25rem 0.5rem',
+                                backgroundColor: '#eff6ff',
+                                color: '#1e40af',
+                                borderRadius: '0.25rem',
+                                fontSize: '0.75rem',
+                                fontWeight: '500'
+                              }}>
+                                📅 Réunion: {doc.reunion.titre}
+                                {doc.reunion.groupe_travail && (
+                                  <span style={{ color: '#64748b' }}>
+                                    • {doc.reunion.groupe_travail.nom}
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                     {doc.lien_pdf && (
                       <a
                         href={doc.lien_pdf}
@@ -1056,11 +1440,30 @@ export default function SecretariatDashboard({ currentUser }) {
                   }}
                 >
                   <option value="">Sélectionner</option>
-                  <option value="pv">Procès-verbal</option>
-                  <option value="compte_rendu">Compte rendu</option>
-                  <option value="rapport">Rapport</option>
-                  <option value="autre">Autre</option>
+                  <option value="Procès-verbal">Procès-verbal</option>
+                  <option value="Compte rendu">Compte rendu</option>
+                  <option value="Rapport">Rapport</option>
+                  <option value="Autre">Autre</option>
                 </select>
+              </div>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
+                  Description
+                </label>
+                <textarea
+                  value={documentFormData.description || ''}
+                  onChange={(e) => setDocumentFormData({ ...documentFormData, description: e.target.value })}
+                  placeholder="Description du document (optionnel)"
+                  rows="3"
+                  style={{
+                    width: '100%',
+                    padding: '0.5rem',
+                    borderRadius: '0.375rem',
+                    border: '1px solid #e2e8f0',
+                    fontFamily: 'inherit',
+                    resize: 'vertical',
+                  }}
+                />
               </div>
               <div style={{ marginBottom: '1rem' }}>
                 <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
@@ -1071,7 +1474,46 @@ export default function SecretariatDashboard({ currentUser }) {
                   required
                   value={documentFormData.lien_pdf || ''}
                   onChange={(e) => setDocumentFormData({ ...documentFormData, lien_pdf: e.target.value })}
-                  placeholder="URL du document PDF"
+                  placeholder="https://..."
+                  style={{
+                    width: '100%',
+                    padding: '0.5rem',
+                    borderRadius: '0.375rem',
+                    border: '1px solid #e2e8f0',
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
+                  Lier à une réunion (optionnel)
+                </label>
+                <select
+                  value={documentFormData.reunion_id || ''}
+                  onChange={(e) => setDocumentFormData({ ...documentFormData, reunion_id: e.target.value || null })}
+                  style={{
+                    width: '100%',
+                    padding: '0.5rem',
+                    borderRadius: '0.375rem',
+                    border: '1px solid #e2e8f0',
+                  }}
+                >
+                  <option value="">Aucune (document indépendant)</option>
+                  {reunions.map((reunion) => (
+                    <option key={reunion.id} value={reunion.id}>
+                      {reunion.titre} - {reunion.date_reunion ? new Date(reunion.date_reunion).toLocaleDateString('fr-FR') : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
+                  Type de document (optionnel)
+                </label>
+                <input
+                  type="text"
+                  value={documentFormData.type_document || ''}
+                  onChange={(e) => setDocumentFormData({ ...documentFormData, type_document: e.target.value })}
+                  placeholder="Ex: PDF, Word, Excel..."
                   style={{
                     width: '100%',
                     padding: '0.5rem',
@@ -1206,20 +1648,51 @@ export default function SecretariatDashboard({ currentUser }) {
               <h2 style={{ fontSize: '1.5rem', fontWeight: '600', color: '#1e293b' }}>
                 Toutes les actions
               </h2>
-              <button
-                onClick={() => setShowActionsModal(false)}
-                style={{
-                  padding: '0.5rem',
-                  backgroundColor: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  color: '#64748b',
-                  fontSize: '1.5rem',
-                  lineHeight: 1
-                }}
-              >
-                ×
-              </button>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <button
+                  onClick={() => {
+                    setCreatingAction(true)
+                    setEditingAction(null)
+                    setActionFormData({
+                      intitule: '',
+                      assignees: [],
+                      statut: 'en cours',
+                      deadline: null,
+                      reunion_id: null
+                    })
+                  }}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    backgroundColor: '#3b82f6',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '0.375rem',
+                    cursor: 'pointer',
+                    fontSize: '0.875rem',
+                    fontWeight: '500'
+                  }}
+                >
+                  + Ajouter action
+                </button>
+                <button
+                  onClick={() => {
+                    setShowActionsModal(false)
+                    setCreatingAction(false)
+                    setEditingAction(null)
+                  }}
+                  style={{
+                    padding: '0.5rem',
+                    backgroundColor: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: '#64748b',
+                    fontSize: '1.5rem',
+                    lineHeight: 1
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             </div>
 
             {/* Filtres */}
@@ -1239,10 +1712,151 @@ export default function SecretariatDashboard({ currentUser }) {
               >
                 <option value="">Tous les statuts</option>
                 <option value="a_faire">À faire</option>
-                <option value="en_cours">En cours</option>
+                <option value="en cours">En cours</option>
                 <option value="termine">Terminé</option>
               </select>
             </div>
+
+            {/* Formulaire de création */}
+            {creatingAction && (
+              <div style={{
+                padding: '1.5rem',
+                border: '2px solid #10b981',
+                borderRadius: '0.5rem',
+                marginBottom: '1.5rem',
+                backgroundColor: '#f0fdf4'
+              }}>
+                <h3 style={{ fontSize: '1.125rem', fontWeight: '600', marginBottom: '1rem', color: '#1e293b' }}>
+                  Créer une nouvelle action (indépendante)
+                </h3>
+                <form onSubmit={async (e) => {
+                  e.preventDefault()
+                  setSubmitting(true)
+                  try {
+                    await createAction({
+                      intitule: actionFormData.intitule,
+                      assignees: actionFormData.assignees || [],
+                      statut: actionFormData.statut || 'en cours',
+                      deadline: actionFormData.deadline || null,
+                      reunion_id: null // Action indépendante
+                    })
+                    alert('Action créée avec succès !')
+                    setCreatingAction(false)
+                    setActionFormData({})
+                    loadAllActions()
+                  } catch (err) {
+                    alert('Erreur : ' + err.message)
+                  } finally {
+                    setSubmitting(false)
+                  }
+                }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500', color: '#475569' }}>
+                        Intitulé *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={actionFormData.intitule || ''}
+                        onChange={(e) => setActionFormData({ ...actionFormData, intitule: e.target.value })}
+                        style={{
+                          width: '100%',
+                          padding: '0.625rem',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '0.375rem',
+                          fontSize: '0.875rem'
+                        }}
+                        placeholder="Ex: Préparer le budget 2025"
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500', color: '#475569' }}>
+                        Assigné(s) à (optionnel)
+                      </label>
+                      <MemberMultiSelect
+                        members={members}
+                        selectedIds={actionFormData.assignees || []}
+                        onChange={(selectedIds) => setActionFormData({ ...actionFormData, assignees: selectedIds })}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500', color: '#475569' }}>
+                        Statut
+                      </label>
+                      <select
+                        value={actionFormData.statut || 'en cours'}
+                        onChange={(e) => setActionFormData({ ...actionFormData, statut: e.target.value })}
+                        style={{
+                          width: '100%',
+                          padding: '0.625rem',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '0.375rem',
+                          fontSize: '0.875rem'
+                        }}
+                      >
+                        <option value="en cours">En cours</option>
+                        <option value="termine">Terminé</option>
+                        <option value="annule">Annulé</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500', color: '#475569' }}>
+                        Deadline (optionnel)
+                      </label>
+                      <input
+                        type="date"
+                        value={actionFormData.deadline || ''}
+                        onChange={(e) => setActionFormData({ ...actionFormData, deadline: e.target.value || null })}
+                        style={{
+                          width: '100%',
+                          padding: '0.625rem',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '0.375rem',
+                          fontSize: '0.875rem'
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreatingAction(false)
+                          setActionFormData({})
+                        }}
+                        style={{
+                          padding: '0.5rem 1rem',
+                          backgroundColor: 'white',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '0.375rem',
+                          color: '#475569',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Annuler
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        style={{
+                          padding: '0.5rem 1rem',
+                          backgroundColor: '#10b981',
+                          border: 'none',
+                          borderRadius: '0.375rem',
+                          color: 'white',
+                          fontWeight: '500',
+                          cursor: submitting ? 'not-allowed' : 'pointer',
+                          opacity: submitting ? 0.6 : 1
+                        }}
+                      >
+                        {submitting ? 'Création...' : 'Créer'}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            )}
 
             {/* Formulaire d'édition */}
             {editingAction && (
@@ -1292,7 +1906,7 @@ export default function SecretariatDashboard({ currentUser }) {
                         }}
                       >
                         <option value="a_faire">À faire</option>
-                        <option value="en_cours">En cours</option>
+                        <option value="en cours">En cours</option>
                         <option value="termine">Terminé</option>
                       </select>
                     </div>
@@ -1316,27 +1930,13 @@ export default function SecretariatDashboard({ currentUser }) {
                   </div>
                   <div>
                     <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500', color: '#475569' }}>
-                      Assigné à
+                      Assigné(s) à (optionnel)
                     </label>
-                    <select
-                      value={actionFormData.assigne_a}
-                      onChange={(e) => setActionFormData({ ...actionFormData, assigne_a: e.target.value })}
-                      style={{
-                        width: '100%',
-                        padding: '0.625rem',
-                        border: '1px solid #e2e8f0',
-                        borderRadius: '0.375rem',
-                        fontSize: '0.875rem',
-                        backgroundColor: 'white'
-                      }}
-                    >
-                      <option value="">Non assigné</option>
-                      {members.map((member) => (
-                        <option key={member.id} value={member.id}>
-                          {member.prenom} {member.nom}
-                        </option>
-                      ))}
-                    </select>
+                    <MemberMultiSelect
+                      members={members}
+                      selectedIds={actionFormData.assignees || (actionFormData.assigne_a ? [actionFormData.assigne_a] : [])}
+                      onChange={(selectedIds) => setActionFormData({ ...actionFormData, assignees: selectedIds })}
+                    />
                   </div>
                   <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                     <button
@@ -1417,13 +2017,82 @@ export default function SecretariatDashboard({ currentUser }) {
                           }}>
                             {action.intitule}
                           </p>
-                          {action.membre && (
-                            <p style={{ 
+                          {action.groupe_travail && (
+                            <div style={{ marginBottom: '0.5rem' }}>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.25rem',
+                                padding: '0.25rem 0.5rem',
+                                backgroundColor: '#eff6ff',
+                                color: '#1e40af',
+                                borderRadius: '0.25rem',
+                                fontSize: '0.75rem',
+                                fontWeight: '500'
+                              }}>
+                                👥 {action.groupe_travail.nom}
+                                {action.groupe_travail.projet && (
+                                  <span style={{ color: '#64748b' }}>
+                                    • {action.groupe_travail.projet.titre}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {(action.assignees_members && action.assignees_members.length > 0) || action.membre ? (
+                            <div style={{ 
                               fontSize: '0.875rem', 
                               color: '#64748b',
+                              marginBottom: '0.25rem',
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              gap: '0.25rem',
+                              alignItems: 'center'
+                            }}>
+                              <span style={{ fontWeight: '500' }}>Assigné(s) à:</span>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                {action.assignees_members && action.assignees_members.length > 0 ? (
+                                  action.assignees_members.map((m, idx) => {
+                                    const membre = m.membre || m
+                                    return (
+                                      <span
+                                        key={m.id || m.member_id || idx}
+                                        style={{
+                                          backgroundColor: '#eff6ff',
+                                          color: '#1e40af',
+                                          padding: '0.125rem 0.5rem',
+                                          borderRadius: '0.25rem',
+                                          fontSize: '0.75rem',
+                                          fontWeight: '500'
+                                        }}
+                                      >
+                                        {membre.prenom} {membre.nom}
+                                      </span>
+                                    )
+                                  })
+                                ) : action.membre ? (
+                                  <span
+                                    style={{
+                                      backgroundColor: '#eff6ff',
+                                      color: '#1e40af',
+                                      padding: '0.125rem 0.5rem',
+                                      borderRadius: '0.25rem',
+                                      fontSize: '0.75rem',
+                                      fontWeight: '500'
+                                    }}
+                                  >
+                                    {action.membre.prenom} {action.membre.nom}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : (
+                            <p style={{ 
+                              fontSize: '0.875rem', 
+                              color: '#94a3b8',
                               marginBottom: '0.25rem'
                             }}>
-                              Assigné à: {action.membre.prenom} {action.membre.nom}
+                              Non assigné
                             </p>
                           )}
                         </div>
@@ -1432,7 +2101,7 @@ export default function SecretariatDashboard({ currentUser }) {
                             <StatusBadge status="en_retard" size="sm" />
                           )}
                           <StatusBadge 
-                            status={action.statut || 'en_cours'} 
+                            status={action.statut || 'en cours'} 
                             size="sm" 
                           />
                           <button

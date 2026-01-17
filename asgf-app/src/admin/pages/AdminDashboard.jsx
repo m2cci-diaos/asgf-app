@@ -67,6 +67,7 @@ import {
   createAction,
   saveCompteRendu,
   createDocument,
+  fetchGroupesTravail,
   fetchFormationStats,
   fetchFormations,
   createFormation,
@@ -6651,6 +6652,214 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     )
   }
 
+  // Composant de sélection multiple de membres avec recherche
+  const MemberMultiSelect = ({ members, selectedIds, onChange }) => {
+    const [searchTerm, setSearchTerm] = useState('')
+    const [isOpen, setIsOpen] = useState(false)
+
+    const filteredMembers = members.filter(m => {
+      const fullName = `${m.prenom} ${m.nom} ${m.numero_membre}`.toLowerCase()
+      return fullName.includes(searchTerm.toLowerCase())
+    })
+
+    const toggleMember = (memberId) => {
+      const newSelected = selectedIds.includes(memberId)
+        ? selectedIds.filter(id => id !== memberId)
+        : [...selectedIds, memberId]
+      onChange(newSelected)
+    }
+
+    const selectedMembers = members.filter(m => selectedIds.includes(m.id))
+
+    return (
+      <div style={{ position: 'relative' }}>
+        {/* Input de recherche et affichage des sélectionnés */}
+        <div
+          onClick={() => setIsOpen(!isOpen)}
+          style={{
+            width: '100%',
+            padding: '0.625rem',
+            border: '1px solid #e2e8f0',
+            borderRadius: '0.375rem',
+            fontSize: '0.875rem',
+            backgroundColor: 'white',
+            cursor: 'pointer',
+            minHeight: '40px',
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '0.25rem'
+          }}
+        >
+          {selectedMembers.length > 0 ? (
+            selectedMembers.map(m => (
+              <span
+                key={m.id}
+                style={{
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  padding: '0.25rem 0.5rem',
+                  borderRadius: '0.25rem',
+                  fontSize: '0.75rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem'
+                }}
+              >
+                {m.prenom} {m.nom}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    toggleMember(m.id)
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'white',
+                    cursor: 'pointer',
+                    padding: 0,
+                    marginLeft: '0.25rem',
+                    fontSize: '0.875rem',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))
+          ) : (
+            <span style={{ color: '#94a3b8' }}>Rechercher et sélectionner des membres...</span>
+          )}
+        </div>
+
+        {/* Dropdown avec recherche et liste */}
+        {isOpen && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '100%',
+              left: 0,
+              right: 0,
+              marginTop: '0.25rem',
+              backgroundColor: 'white',
+              border: '1px solid #e2e8f0',
+              borderRadius: '0.375rem',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+              zIndex: 1000,
+              maxHeight: '300px',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            {/* Barre de recherche */}
+            <div style={{ padding: '0.5rem', borderBottom: '1px solid #e2e8f0' }}>
+              <input
+                type="text"
+                placeholder="Rechercher un membre..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  width: '100%',
+                  padding: '0.5rem',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '0.375rem',
+                  fontSize: '0.875rem'
+                }}
+                autoFocus
+              />
+            </div>
+
+            {/* Liste des membres avec checkboxes */}
+            <div style={{ overflowY: 'auto', maxHeight: '250px' }}>
+              {filteredMembers.length > 0 ? (
+                filteredMembers.map(m => {
+                  const isSelected = selectedIds.includes(m.id)
+                  return (
+                    <label
+                      key={m.id}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '0.75rem',
+                        cursor: 'pointer',
+                        backgroundColor: isSelected ? '#eff6ff' : 'white',
+                        borderBottom: '1px solid #f1f5f9',
+                        transition: 'background-color 0.15s'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.backgroundColor = '#f8fafc'
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.backgroundColor = 'white'
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleMember(m.id)}
+                        style={{
+                          marginRight: '0.75rem',
+                          width: '1rem',
+                          height: '1rem',
+                          cursor: 'pointer'
+                        }}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: '500', color: '#1e293b' }}>
+                          {m.prenom} {m.nom}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                          {m.numero_membre}
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })
+              ) : (
+                <div style={{ padding: '1rem', textAlign: 'center', color: '#94a3b8' }}>
+                  Aucun membre trouvé
+                </div>
+              )}
+            </div>
+
+            {/* Footer avec compteur */}
+            {selectedIds.length > 0 && (
+              <div style={{
+                padding: '0.5rem',
+                borderTop: '1px solid #e2e8f0',
+                backgroundColor: '#f8fafc',
+                fontSize: '0.75rem',
+                color: '#3b82f6',
+                fontWeight: '500',
+                textAlign: 'center'
+              }}>
+                {selectedIds.length} membre(s) sélectionné(s)
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Overlay pour fermer le dropdown */}
+        {isOpen && (
+          <div
+            onClick={() => setIsOpen(false)}
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 999
+            }}
+          />
+        )}
+      </div>
+    )
+  }
+
   // Composant pour le contenu Secrétariat
   const SecretariatContent = () => {
     const [secretariatStats, setSecretariatStats] = useState(null)
@@ -6658,22 +6867,26 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     const [loading, setLoading] = useState(true)
     const [showModal, setShowModal] = useState(null) // 'reunion', 'participant', 'action', 'document'
     const [members, setMembers] = useState([])
+    const [groupesTravail, setGroupesTravail] = useState([])
     const [formData, setFormData] = useState({})
     const [submitting, setSubmitting] = useState(false)
 
     const loadData = async () => {
       setLoading(true)
       try {
-        const [statsData, reunionsData] = await Promise.all([
+        const [statsData, reunionsData, groupesData] = await Promise.all([
           fetchSecretariatStats(),
           fetchReunions({ limit: 10 }),
+          fetchGroupesTravail(),
         ])
         setSecretariatStats(statsData || {})
         setReunions(Array.isArray(reunionsData) ? reunionsData : [])
+        setGroupesTravail(Array.isArray(groupesData) ? groupesData : [])
       } catch (err) {
         console.error('Erreur chargement secrétariat:', err)
         setReunions([])
         setSecretariatStats({})
+        setGroupesTravail([])
       } finally {
         setLoading(false)
       }
@@ -6685,6 +6898,28 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
 
     useEffect(() => {
       if (showModal) {
+        // Initialiser formData selon le type de modal
+        if (showModal === 'action') {
+          setFormData({
+            intitule: '',
+            reunion_id: null,
+            assignees: [],
+            statut: 'en cours',
+            deadline: null,
+          })
+        } else if (showModal === 'document') {
+          setFormData({
+            titre: '',
+            categorie: '',
+            description: '',
+            lien_pdf: '',
+            reunion_id: null,
+            type_document: '',
+          })
+        } else {
+          setFormData({})
+        }
+        
         const loadSelectData = async () => {
           try {
             // Le secrétariat peut accéder aux membres pour ajouter des participants
@@ -6719,7 +6954,16 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
           await addParticipant(formData)
           alert('Participant ajouté avec succès !')
         } else if (showModal === 'action') {
-          await createAction(formData)
+          // Formater les données pour correspondre au schéma DB
+          const actionData = {
+            intitule: formData.intitule,
+            reunion_id: formData.reunion_id || null,
+            groupe_travail_id: formData.groupe_travail_id || null,
+            assignees: Array.isArray(formData.assignees) ? formData.assignees : [],
+            statut: formData.statut || 'en cours',
+            deadline: formData.deadline || null,
+          }
+          await createAction(actionData)
           alert('Action créée avec succès !')
         } else if (showModal === 'document') {
           await createDocument(formData)
@@ -6944,6 +7188,20 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       />
                     </div>
                     <div className="form-group">
+                      <label>Groupe de travail (optionnel)</label>
+                      <select
+                        value={formData.groupe_travail_id || ''}
+                        onChange={(e) => setFormData({ ...formData, groupe_travail_id: e.target.value || null })}
+                      >
+                        <option value="">Aucun groupe (réunion indépendante)</option>
+                        {groupesTravail.map((groupe) => (
+                          <option key={groupe.id} value={groupe.id}>
+                            {groupe.nom} - {groupe.projet?.titre || ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
                       <label>Ordre du jour</label>
                       <textarea
                         value={formData.ordre_du_jour || ''}
@@ -7010,15 +7268,29 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                 {showModal === 'action' && (
                   <>
                     <div className="form-group">
-                      <label>Réunion</label>
+                      <label>Lier à une réunion (optionnel)</label>
                       <select
                         value={formData.reunion_id || ''}
-                        onChange={(e) => setFormData({ ...formData, reunion_id: e.target.value })}
+                        onChange={(e) => setFormData({ ...formData, reunion_id: e.target.value || null })}
                       >
-                        <option value="">Sélectionner une réunion (optionnel)</option>
+                        <option value="">Aucune réunion (action indépendante)</option>
                         {reunions.map((r) => (
                           <option key={r.id} value={r.id}>
                             {r.titre} - {r.date_reunion ? new Date(r.date_reunion).toLocaleDateString('fr-FR') : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Groupe de travail (optionnel)</label>
+                      <select
+                        value={formData.groupe_travail_id || ''}
+                        onChange={(e) => setFormData({ ...formData, groupe_travail_id: e.target.value || null })}
+                      >
+                        <option value="">Aucun groupe (action indépendante)</option>
+                        {groupesTravail.map((groupe) => (
+                          <option key={groupe.id} value={groupe.id}>
+                            {groupe.nom} - {groupe.projet?.titre || ''}
                           </option>
                         ))}
                       </select>
@@ -7034,18 +7306,12 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       />
                     </div>
                     <div className="form-group">
-                      <label>Assigné à</label>
-                      <select
-                        value={formData.assigne_a || ''}
-                        onChange={(e) => setFormData({ ...formData, assigne_a: e.target.value })}
-                      >
-                        <option value="">Sélectionner un membre</option>
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.prenom} {m.nom} ({m.numero_membre})
-                          </option>
-                        ))}
-                      </select>
+                      <label>Assigné(s) à (optionnel)</label>
+                      <MemberMultiSelect
+                        members={members}
+                        selectedIds={formData.assignees || []}
+                        onChange={(selectedIds) => setFormData({ ...formData, assignees: selectedIds })}
+                      />
                     </div>
                     <div className="form-group">
                       <label>Statut</label>
@@ -7059,11 +7325,11 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       </select>
                     </div>
                     <div className="form-group">
-                      <label>Deadline</label>
+                      <label>Deadline (optionnel)</label>
                       <input
                         type="date"
                         value={formData.deadline || ''}
-                        onChange={(e) => setFormData({ ...formData, deadline: e.target.value })}
+                        onChange={(e) => setFormData({ ...formData, deadline: e.target.value || null })}
                       />
                     </div>
                   </>
@@ -7089,10 +7355,10 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                         onChange={(e) => setFormData({ ...formData, categorie: e.target.value })}
                       >
                         <option value="">Sélectionner</option>
-                        <option value="pv">Procès-verbal</option>
-                        <option value="compte_rendu">Compte rendu</option>
-                        <option value="rapport">Rapport</option>
-                        <option value="autre">Autre</option>
+                        <option value="Procès-verbal">Procès-verbal</option>
+                        <option value="Compte rendu">Compte rendu</option>
+                        <option value="Rapport">Rapport</option>
+                        <option value="Autre">Autre</option>
                       </select>
                     </div>
                     <div className="form-group">
@@ -7100,6 +7366,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       <textarea
                         value={formData.description || ''}
                         onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                        placeholder="Description du document (optionnel)"
                         rows="3"
                       />
                     </div>
@@ -7110,7 +7377,34 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                         required
                         value={formData.lien_pdf || ''}
                         onChange={(e) => setFormData({ ...formData, lien_pdf: e.target.value })}
-                        placeholder="URL du document PDF"
+                        placeholder="https://..."
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Lier à une réunion (optionnel)</label>
+                      <select
+                        value={formData.reunion_id || ''}
+                        onChange={(e) => setFormData({ ...formData, reunion_id: e.target.value || null })}
+                      >
+                        <option value="">Aucune (document indépendant)</option>
+                        {reunions && reunions.length > 0 ? (
+                          reunions.map((reunion) => (
+                            <option key={reunion.id} value={reunion.id}>
+                              {reunion.titre} - {reunion.date_reunion ? new Date(reunion.date_reunion).toLocaleDateString('fr-FR') : ''}
+                            </option>
+                          ))
+                        ) : (
+                          <option value="" disabled>Chargement des réunions...</option>
+                        )}
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Type de document (optionnel)</label>
+                      <input
+                        type="text"
+                        value={formData.type_document || ''}
+                        onChange={(e) => setFormData({ ...formData, type_document: e.target.value })}
+                        placeholder="Ex: PDF, Word, Excel..."
                       />
                     </div>
                   </>

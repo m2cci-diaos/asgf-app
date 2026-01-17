@@ -66,3 +66,6 @@ Le middleware `requireModule` :
 - `/api/admin/audit/*` : Requiert `requireModule(MODULES.AUDIT)` qui vérifie que l'admin est superadmin
 - Toutes les autres routes : Requièrent `requireModule(MODULES.XXX)` correspondant
 
+
+
+

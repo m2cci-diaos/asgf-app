@@ -73,12 +73,18 @@ async function sendJsonRequest(endpoint, { method = 'GET', body } = {}) {
   return data?.data !== undefined ? data.data : data
 }
 
-// 🔐 Login admin (numéro de membre + mot de passe)
+// URL fonction Edge Supabase pour le login admin
+const ADMIN_LOGIN_URL =
+  import.meta.env.VITE_ADMIN_LOGIN_URL ||
+  'https://wooyxkfdzehvedvivhhd.functions.supabase.co/admin-login'
+
+// 🔐 Login admin (numéro de membre + mot de passe) via Supabase Edge Function
 export async function loginAdminApi({ numeroMembre, password }) {
-  const res = await fetch(`${API_URL}/auth/login`, {
+  const res = await fetch(ADMIN_LOGIN_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      // text/plain pour éviter un preflight CORS
+      'Content-Type': 'text/plain',
     },
     body: JSON.stringify({
       numero_membre: numeroMembre,
@@ -1951,14 +1957,16 @@ export async function deletePresentateur(presentateurId) {
 // BUREAU - Gestion des membres du bureau
 // ============================================
 
-// GET /api/bureau - Récupérer les membres du bureau (public)
+// GET /bureau (public) via Supabase Edge Function
 export async function fetchBureauMembers() {
-  const res = await fetch(`${API_URL}/api/bureau`)
+  const res = await fetch('https://wooyxkfdzehvedvivhhd.functions.supabase.co/public-bureau', {
+    method: 'GET',
+  })
   const data = await res.json().catch(() => null)
   if (!res.ok) {
     throw new Error(data?.message || 'Erreur lors du chargement des membres du bureau')
   }
-  return data
+  return data?.data || []
 }
 
 // GET /api/admin/bureau - Récupérer tous les membres (admin, y compris inactifs)

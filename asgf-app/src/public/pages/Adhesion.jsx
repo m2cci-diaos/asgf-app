@@ -5,6 +5,9 @@ import { supabase } from '../config/supabase.config'
 import emailjs from '@emailjs/browser'
 import { EMAILJS_CONFIG } from '../config/emailjs.config'
 
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://wooyxkfdzehvedvivhhd.supabase.co'
+const PUBLIC_ADHESION_URL = `${SUPABASE_URL}/functions/v1/public-adhesion`
+
 function Adhesion() {
   const navigate = useNavigate()
   const [formData, setFormData] = useState({
@@ -153,55 +156,35 @@ function Adhesion() {
         is_newsletter_subscribed: formData.newsletter
       }
 
-      let { data, error } = await supabase
-        .from('members')
-        .insert([dataToInsert])
-        .select()
+      // Utiliser l'Edge Function au lieu de l'insertion directe
+      const response = await fetch(PUBLIC_ADHESION_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify(dataToInsert),
+      })
 
-      console.log('DATA INSÉRÉE :', data)
-      console.log('ERREUR :', error)
+      const result = await response.json()
+      console.log('RÉSULTAT EDGE FUNCTION :', result)
 
-      if (error) {
-        console.error('Erreur Supabase:', error)
-        let message = `Erreur d'enregistrement : ${error.message}`
+      if (!result.success) {
+        let message = result.message || `Erreur d'enregistrement : ${response.statusText}`
         
-        if (error.code === '23505') {
-          if (error.message.includes('email')) {
-            message = "Cet email est déjà enregistré. Veuillez en utiliser un autre ou contactez l'ASGF."
-          } else if (error.message.includes('numero_membre')) {
-            // Conflit de numéro de membre - réessayer une fois
-            console.warn('Conflit de numéro de membre détecté, nouvelle tentative...')
-            try {
-              const { data: retryData, error: retryError } = await supabase
-                .from('members')
-                .insert([dataToInsert])
-                .select()
-              
-              if (retryError) {
-                message = "Une erreur technique est survenue lors de l'enregistrement. Veuillez réessayer dans quelques instants ou contactez l'ASGF."
-              } else {
-                // Succès au deuxième essai, continuer le flux normal
-                data = retryData
-                error = null
-              }
-            } catch (retryErr) {
-              message = "Une erreur technique est survenue lors de l'enregistrement. Veuillez réessayer dans quelques instants ou contactez l'ASGF."
-            }
-            
-            if (error) {
-              alert(message)
-              return
-            }
-          } else {
-            message = "Une erreur est survenue lors de l'enregistrement. Veuillez réessayer ou contactez l'ASGF."
-          }
+        if (response.status === 409 || message.includes('déjà enregistré')) {
+          message = "Cet email est déjà enregistré. Veuillez en utiliser un autre ou contactez l'ASGF."
+        } else if (response.status === 400) {
+          message = message || "Les données fournies sont invalides. Veuillez vérifier vos informations."
+        } else if (response.status >= 500) {
+          message = "Une erreur technique est survenue lors de l'enregistrement. Veuillez réessayer dans quelques instants ou contactez l'ASGF."
         }
         
-        if (error) {
-          alert(message)
-          return
-        }
+        alert(message)
+        return
       }
+
+      const data = result.data
 
       // 1️⃣ Mail au MEMBRE : confirmation de réception
       try {

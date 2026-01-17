@@ -7,7 +7,8 @@ export default function StatusBadge({ status, size = 'md' }) {
   const statusConfig = {
     // Réunions
     programmee: { label: 'Programmée', bg: '#dbeafe', text: '#1e40af' },
-    en_cours: { label: 'En cours', bg: '#fed7aa', text: '#c2410c' },
+    'en cours': { label: 'En cours', bg: '#fed7aa', text: '#c2410c' },
+    en_cours: { label: 'En cours', bg: '#fed7aa', text: '#c2410c' }, // Rétrocompatibilité
     terminee: { label: 'Terminée', bg: '#dcfce7', text: '#166534' },
     annulee: { label: 'Annulée', bg: '#fee2e2', text: '#991b1b' },
     
@@ -50,6 +51,9 @@ export default function StatusBadge({ status, size = 'md' }) {
     </span>
   )
 }
+
+
+
 
 
 

@@ -1,7 +1,14 @@
 import React, { useState } from 'react'
 import { Link } from 'react-router-dom'
 
-const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+// URL de la fonction Edge Supabase pour les inscriptions projets
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://wooyxkfdzehvedvivhhd.supabase.co'
+const PROJET_INSCRIPTION_URL =
+  import.meta.env.VITE_PROJET_INSCRIPTION_URL ||
+  `${SUPABASE_URL}/functions/v1/projet-inscription`
+
+// Clé publique (anon) Supabase pour authentifier l'appel à la fonction Edge
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 
 const PROJETS = [
   {
@@ -79,10 +86,12 @@ function Projets() {
     }
 
     try {
-      const response = await fetch(`${API_URL}/api/public/projets/inscription`, {
+      const response = await fetch(PROJET_INSCRIPTION_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          // Clé publique Supabase pour les fonctions Edge (utilisée comme apikey uniquement)
+          ...(SUPABASE_ANON_KEY ? { apikey: SUPABASE_ANON_KEY } : {}),
         },
         body: JSON.stringify({
           projet_id: selectedProjet.id,
@@ -93,9 +102,10 @@ function Projets() {
       const data = await response.json()
 
       if (!response.ok) {
-        const error = new Error(data.message || 'Erreur lors de l\'inscription')
+        const errorMessage = data.message || data.error || 'Erreur lors de l\'inscription'
+        const error = new Error(errorMessage)
         // Si l'erreur indique que l'utilisateur n'est pas membre, ajouter un flag
-        if (data.message && data.message.includes('pas encore membre')) {
+        if (errorMessage.includes('pas encore membre') || data.code === 'NOT_MEMBER') {
           error.notMember = true
         }
         throw error

@@ -2,8 +2,6 @@ import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BureauStyles } from '../components/PageStyles'
 
-const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
-
 function Bureau() {
   const [direction, setDirection] = useState([])
   const [poles, setPoles] = useState([])
@@ -13,12 +11,29 @@ function Bureau() {
   useEffect(() => {
     const fetchBureau = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/bureau`)
+        const res = await fetch('https://wooyxkfdzehvedvivhhd.functions.supabase.co/public-bureau')
         if (!res.ok) throw new Error('Erreur chargement bureau')
-        const data = await res.json()
-        setDirection(data.direction || [])
-        setPoles(data.pole || [])
-        setAutres(data.autre || [])
+        const payload = await res.json()
+        const data = payload?.data || []
+
+        const dir = []
+        const polesArr = []
+        const autresArr = []
+
+        for (const member of data) {
+          if (!member.is_active) continue
+          if (member.categorie === 'direction') {
+            dir.push(member)
+          } else if (member.categorie === 'pole') {
+            polesArr.push(member)
+          } else {
+            autresArr.push(member)
+          }
+        }
+
+        setDirection(dir)
+        setPoles(polesArr)
+        setAutres(autresArr)
       } catch (err) {
         console.error('Erreur chargement bureau', err)
         // En cas d'erreur, on laisse les tableaux vides

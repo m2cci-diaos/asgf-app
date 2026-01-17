@@ -73,12 +73,87 @@ async function sendJsonRequest(endpoint, { method = 'GET', body } = {}) {
   return data?.data !== undefined ? data.data : data
 }
 
-// 🔐 Login admin (numéro de membre + mot de passe)
+// Récupérer l'URL Supabase depuis la configuration
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://wooyxkfdzehvedvivhhd.supabase.co'
+const SUPABASE_FUNCTIONS_BASE = `${SUPABASE_URL}/functions/v1`
+
+// URL fonction Edge Supabase pour le login admin
+const ADMIN_LOGIN_URL =
+  import.meta.env.VITE_ADMIN_LOGIN_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-login`
+
+// URL fonction Edge Supabase pour les stats dashboard
+const ADMIN_DASHBOARD_STATS_URL =
+  import.meta.env.VITE_ADMIN_DASHBOARD_STATS_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-dashboard-stats`
+
+// URL fonction Edge Supabase pour les membres / adhésions (liste + actions)
+const ADMIN_ADHESION_MEMBERS_URL =
+  import.meta.env.VITE_ADMIN_ADHESION_MEMBERS_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-adhesion-members`
+
+// URL fonction Edge Supabase pour le module trésorerie
+const ADMIN_TRESORERIE_URL =
+  import.meta.env.VITE_ADMIN_TRESORERIE_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-tresorerie`
+
+// URL fonction Edge Supabase pour le secrétariat
+const ADMIN_SECRETARIAT_URL =
+  import.meta.env.VITE_ADMIN_SECRETARIAT_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-secretariat`
+
+// URL fonction Edge Supabase pour les paramètres (admin + bureau)
+const ADMIN_PARAMETRES_URL =
+  import.meta.env.VITE_ADMIN_PARAMETRES_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-parametres`
+
+// URL fonction Edge Supabase pour le webinaire
+const ADMIN_WEBINAIRE_URL =
+  import.meta.env.VITE_ADMIN_WEBINAIRE_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-webinaire`
+
+// URL fonction Edge Supabase pour la formation
+const ADMIN_FORMATION_URL =
+  import.meta.env.VITE_ADMIN_FORMATION_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-formation`
+
+// URL fonction Edge Supabase pour le mentorat
+const ADMIN_MENTORAT_URL =
+  import.meta.env.VITE_ADMIN_MENTORAT_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-mentorat`
+
+// URL fonction Edge Supabase pour le recrutement
+const ADMIN_RECRUTEMENT_URL =
+  import.meta.env.VITE_ADMIN_RECRUTEMENT_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-recrutement`
+
+// URL fonction Edge Supabase pour les projets
+const ADMIN_PROJETS_URL =
+  import.meta.env.VITE_ADMIN_PROJETS_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-projets`
+
+// URL fonction Edge Supabase pour le calendrier
+const ADMIN_CALENDRIER_URL =
+  import.meta.env.VITE_ADMIN_CALENDRIER_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-calendrier`
+
+// URL fonction Edge Supabase pour l'audit
+const ADMIN_AUDIT_URL =
+  import.meta.env.VITE_ADMIN_AUDIT_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/admin-audit`
+
+// URL fonction Edge Supabase pour le géocodage
+const GEOCODE_URL =
+  import.meta.env.VITE_GEOCODE_URL ||
+  `${SUPABASE_FUNCTIONS_BASE}/geocode`
+
+// 🔐 Login admin (numéro de membre + mot de passe) via Supabase Edge Function
 export async function loginAdminApi({ numeroMembre, password }) {
-  const res = await fetch(`${API_URL}/auth/login`, {
+  const res = await fetch(ADMIN_LOGIN_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      // Content-Type text/plain pour éviter le preflight CORS (simple request)
+      'Content-Type': 'text/plain',
     },
     body: JSON.stringify({
       numero_membre: numeroMembre,
@@ -121,8 +196,12 @@ export async function fetchPendingMembers() {
     throw new Error('Token manquant. Veuillez vous reconnecter.')
   }
 
-  const res = await fetch(`${API_URL}/admin/members/pending`, {
-    headers: getAuthHeaders(),
+  const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}/pending`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    },
   })
 
   const data = await res.json().catch(() => null)
@@ -144,8 +223,18 @@ export async function fetchPendingMembers() {
 }
 
 export async function fetchAdhesionStats() {
-  const res = await fetch(`${API_URL}/api/adhesion/stats`, {
-    headers: getAuthHeaders(),
+  const token = getAuthToken()
+  
+  if (!token) {
+    throw new Error('Token manquant. Veuillez vous reconnecter.')
+  }
+
+  const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}/stats`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    },
   })
 
   const data = await res.json().catch(() => null)
@@ -169,9 +258,12 @@ export async function approveMember(memberId) {
     throw new Error('Token manquant. Veuillez vous reconnecter.')
   }
 
-  const res = await fetch(`${API_URL}/admin/members/${memberId}/approve`, {
+  const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}/${memberId}/approve`, {
     method: 'POST',
-    headers: getAuthHeaders(),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    },
   })
 
   const data = await res.json().catch(() => null)
@@ -197,9 +289,12 @@ export async function rejectMember(memberId) {
     throw new Error('Token manquant. Veuillez vous reconnecter.')
   }
 
-  const res = await fetch(`${API_URL}/admin/members/${memberId}/reject`, {
+  const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}/${memberId}/reject`, {
     method: 'POST',
-    headers: getAuthHeaders(),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    },
   })
 
   const data = await res.json().catch(() => null)
@@ -225,9 +320,13 @@ export async function updateMember(memberId, memberData) {
     throw new Error('Token manquant. Veuillez vous reconnecter.')
   }
 
-  const res = await fetch(`${API_URL}/api/adhesion/members/${memberId}`, {
+  const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}/${memberId}`, {
     method: 'PUT',
-    headers: getAuthHeaders(),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    },
     body: JSON.stringify(memberData),
   })
 
@@ -255,9 +354,12 @@ export async function deleteMember(memberId) {
     throw new Error('Token manquant. Veuillez vous reconnecter.')
   }
 
-  const res = await fetch(`${API_URL}/api/adhesion/members/${memberId}`, {
+  const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}/${memberId}`, {
     method: 'DELETE',
-    headers: getAuthHeaders(),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    },
   })
 
   const data = await res.json().catch(() => null)
@@ -287,7 +389,7 @@ export async function fetchMentors(params = {}) {
     ...(params.status && { status: params.status }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/mentorat/mentors?${queryParams}`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/mentors?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -314,7 +416,7 @@ export async function fetchMentees(params = {}) {
     ...(params.status && { status: params.status }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/mentorat/mentees?${queryParams}`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/mentees?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -333,7 +435,7 @@ export async function fetchMentees(params = {}) {
 }
 
 export async function createMentor(mentorData) {
-  const res = await fetch(`${API_URL}/api/mentorat/mentors`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/mentors`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(mentorData),
@@ -354,7 +456,7 @@ export async function createMentor(mentorData) {
 }
 
 export async function createMentee(menteeData) {
-  const res = await fetch(`${API_URL}/api/mentorat/mentees`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/mentees`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(menteeData),
@@ -381,7 +483,7 @@ export async function fetchRelations(params = {}) {
     ...(params.status && { status: params.status }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/mentorat/relations?${queryParams}`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/relations?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -405,7 +507,7 @@ export async function fetchRelations(params = {}) {
 }
 
 export async function getRelation(relationId) {
-  const res = await fetch(`${API_URL}/api/mentorat/relations/${relationId}`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/relations/${relationId}`, {
     headers: getAuthHeaders(),
   })
 
@@ -424,7 +526,7 @@ export async function getRelation(relationId) {
 }
 
 export async function createRelation(relationData) {
-  const res = await fetch(`${API_URL}/api/mentorat/relations`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/relations`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(relationData),
@@ -445,7 +547,7 @@ export async function createRelation(relationData) {
 }
 
 export async function fetchMentoratStats() {
-  const res = await fetch(`${API_URL}/api/mentorat/stats`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/stats`, {
     headers: getAuthHeaders(),
   })
 
@@ -464,7 +566,7 @@ export async function fetchMentoratStats() {
 }
 
 export async function createRendezVous(rdvData) {
-  const res = await fetch(`${API_URL}/api/mentorat/rendezvous`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/rendezvous`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(rdvData),
@@ -485,7 +587,7 @@ export async function createRendezVous(rdvData) {
 }
 
 export async function closeRelation(relationId, commentaire = null) {
-  const res = await fetch(`${API_URL}/api/mentorat/relations/${relationId}/close`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/relations/${relationId}/close`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ commentaire }),
@@ -506,7 +608,7 @@ export async function closeRelation(relationId, commentaire = null) {
 }
 
 export async function fetchObjectifsByRelation(relationId) {
-  const res = await fetch(`${API_URL}/api/mentorat/relations/${relationId}/objectifs`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/relations/${relationId}/objectifs`, {
     headers: getAuthHeaders(),
   })
 
@@ -525,7 +627,7 @@ export async function fetchObjectifsByRelation(relationId) {
 }
 
 export async function fetchRendezVousByRelation(relationId) {
-  const res = await fetch(`${API_URL}/api/mentorat/relations/${relationId}/rendezvous`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/relations/${relationId}/rendezvous`, {
     headers: getAuthHeaders(),
   })
 
@@ -544,7 +646,7 @@ export async function fetchRendezVousByRelation(relationId) {
 }
 
 export async function createObjectif(objectifData) {
-  const res = await fetch(`${API_URL}/api/mentorat/objectifs`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/objectifs`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(objectifData),
@@ -565,7 +667,7 @@ export async function createObjectif(objectifData) {
 }
 
 export async function updateObjectif(objectifId, objectifData) {
-  const res = await fetch(`${API_URL}/api/mentorat/objectifs/${objectifId}`, {
+  const res = await fetch(`${ADMIN_MENTORAT_URL}/objectifs/${objectifId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(objectifData),
@@ -596,7 +698,7 @@ export async function fetchCandidatures(params = {}) {
     ...(params.type_contrat && { type_contrat: params.type_contrat }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/recrutement/candidatures?${queryParams}`, {
+  const res = await fetch(`${ADMIN_RECRUTEMENT_URL}/candidatures?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -633,7 +735,7 @@ export async function fetchCandidatures(params = {}) {
 }
 
 export async function fetchRecrutementStats() {
-  const res = await fetch(`${API_URL}/api/recrutement/stats`, {
+  const res = await fetch(`${ADMIN_RECRUTEMENT_URL}/stats`, {
     headers: getAuthHeaders(),
   })
 
@@ -652,7 +754,7 @@ export async function fetchRecrutementStats() {
 }
 
 export async function createCandidature(candidatureData) {
-  const res = await fetch(`${API_URL}/api/recrutement/candidatures`, {
+  const res = await fetch(`${ADMIN_RECRUTEMENT_URL}/candidatures`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(candidatureData),
@@ -677,7 +779,7 @@ export async function createCandidature(candidatureData) {
 }
 
 export async function createRecommandation(recommandationData) {
-  const res = await fetch(`${API_URL}/api/recrutement/recommandations`, {
+  const res = await fetch(`${ADMIN_RECRUTEMENT_URL}/recommandations`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(recommandationData),
@@ -702,7 +804,7 @@ export async function createRecommandation(recommandationData) {
 }
 
 export async function createSuivi(suiviData) {
-  const res = await fetch(`${API_URL}/api/recrutement/suivis`, {
+  const res = await fetch(`${ADMIN_RECRUTEMENT_URL}/suivis`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(suiviData),
@@ -727,7 +829,7 @@ export async function createSuivi(suiviData) {
 }
 
 export async function updateCandidature(candidatureId, updates) {
-  const res = await fetch(`${API_URL}/api/recrutement/candidatures/${candidatureId}`, {
+  const res = await fetch(`${ADMIN_RECRUTEMENT_URL}/candidatures/${candidatureId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -748,7 +850,7 @@ export async function updateCandidature(candidatureId, updates) {
 }
 
 export async function fetchRecommandationsByMentee(menteeId) {
-  const res = await fetch(`${API_URL}/api/recrutement/recommandations?mentee_id=${menteeId}`, {
+  const res = await fetch(`${ADMIN_RECRUTEMENT_URL}/recommandations?mentee_id=${menteeId}`, {
     headers: getAuthHeaders(),
   })
 
@@ -768,27 +870,15 @@ export async function fetchRecommandationsByMentee(menteeId) {
 
 // Fonction pour récupérer tous les membres (pour les sélecteurs)
 export async function fetchAllMembers(params = {}) {
-  const maxLimit = 500; // Maximum limit allowed by backend
-  let allMembers = [];
-  let currentPage = params.page || 1;
-  let hasMore = true;
-  let baseRoute = '/api/adhesion/members'; // Route par défaut
-
-  // Déterminer quelle route utiliser (adhesion ou secretariat)
-  // Essayer d'abord adhesion
-  const testQueryParams = new URLSearchParams({
-    page: 1,
-    limit: 1,
-  }).toString();
-  
-  let testRes = await fetch(`${API_URL}/api/adhesion/members?${testQueryParams}`, {
-    headers: getAuthHeaders(),
-  });
-
-  // Si accès refusé (403), utiliser la route secretariat
-  if (testRes.status === 403) {
-    baseRoute = '/api/secretariat/members';
+  const token = getAuthToken()
+  if (!token) {
+    throw new Error('Token manquant. Veuillez vous reconnecter.')
   }
+
+  const maxLimit = 500 // Maximum par page
+  let allMembers = []
+  let currentPage = params.page || 1
+  let hasMore = true
 
   while (hasMore) {
     const queryParams = new URLSearchParams({
@@ -796,42 +886,57 @@ export async function fetchAllMembers(params = {}) {
       limit: maxLimit,
       ...(params.search && { search: params.search }),
       ...(params.status && { status: params.status }),
-    }).toString();
+    }).toString()
 
-    const res = await fetch(`${API_URL}${baseRoute}?${queryParams}`, {
-      headers: getAuthHeaders(),
-    });
+    const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}?${queryParams}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+      },
+    })
 
-    const data = await res.json().catch(() => null);
+    const data = await res.json().catch(() => null)
 
     if (!res.ok) {
       if (res.status === 401) {
-        localStorage.removeItem('asgf_admin_token');
-        localStorage.removeItem('asgf_admin_info');
-        throw new Error('Session expirée. Veuillez vous reconnecter.');
+        localStorage.removeItem('asgf_admin_token')
+        localStorage.removeItem('asgf_admin_info')
+        throw new Error('Session expirée. Veuillez vous reconnecter.')
       }
-      const errorMessage = data?.message || data?.errors?.[0]?.message || 'Erreur lors du chargement des membres';
-      throw new Error(errorMessage);
+      const errorMessage =
+        data?.message ||
+        data?.errors?.[0]?.message ||
+        'Erreur lors du chargement des membres'
+      throw new Error(errorMessage)
     }
 
-    const membersData = Array.isArray(data.data) ? data.data : [];
-    allMembers.push(...membersData);
-    
-    // Check if there are more pages
+    const membersData = Array.isArray(data.data) ? data.data : []
+    allMembers.push(...membersData)
+
     if (data.pagination && data.pagination.totalPages > currentPage) {
-      currentPage++;
+      currentPage++
     } else {
-      hasMore = false;
+      hasMore = false
     }
   }
-  
-  return allMembers;
+
+  return allMembers
 }
 
 export async function sendMemberEmails({ memberIds, subject, body, attachments = [] }) {
-  const res = await fetch(`${API_URL}/api/adhesion/members/email`, {
+  const token = getAuthToken()
+  
+  if (!token) {
+    throw new Error('Token manquant. Veuillez vous reconnecter.')
+  }
+
+  const res = await fetch(`${ADMIN_ADHESION_MEMBERS_URL}/email`, {
     method: 'POST',
-    headers: getAuthHeaders(),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    },
     body: JSON.stringify({
       member_ids: memberIds,
       subject,
@@ -867,10 +972,20 @@ export async function sendMemberEmails({ memberIds, subject, body, attachments =
 
 // Récupère toutes les stats du dashboard en une seule requête
 // Accessible à tous les admins authentifiés, même sans accès aux modules individuels
+// Via Supabase Edge Function
 export async function fetchAllDashboardStats() {
   try {
-    const res = await fetch(`${API_URL}/api/admin/dashboard/stats`, {
-      headers: getAuthHeaders(),
+    const token = getAuthToken()
+    if (!token) {
+      throw new Error('Token manquant')
+    }
+
+    const res = await fetch(ADMIN_DASHBOARD_STATS_URL, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+      },
     })
 
     const data = await res.json().catch(() => null)
@@ -893,7 +1008,7 @@ export async function fetchAllDashboardStats() {
 
 export async function fetchTresorerieStats() {
   try {
-    const res = await fetch(`${API_URL}/api/tresorerie/stats`, {
+    const res = await fetch(`${ADMIN_TRESORERIE_URL}/stats`, {
       headers: getAuthHeaders(),
     })
 
@@ -939,7 +1054,7 @@ export async function fetchCotisations(params = {}) {
     ...(params.statut_paiement && { statut_paiement: params.statut_paiement }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/tresorerie/cotisations?${queryParams}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cotisations?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -958,7 +1073,7 @@ export async function fetchCotisations(params = {}) {
 }
 
 export async function createCotisation(cotisationData) {
-  const res = await fetch(`${API_URL}/api/tresorerie/cotisations`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cotisations`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(cotisationData),
@@ -988,7 +1103,7 @@ export async function fetchPaiements(params = {}) {
     ...(params.statut && { statut: params.statut }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/tresorerie/paiements?${queryParams}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/paiements?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1007,7 +1122,7 @@ export async function fetchPaiements(params = {}) {
 }
 
 export async function createPaiement(paiementData) {
-  const res = await fetch(`${API_URL}/api/tresorerie/paiements`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/paiements`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(paiementData),
@@ -1028,7 +1143,7 @@ export async function createPaiement(paiementData) {
 }
 
 export async function updatePaiement(paiementId, updates) {
-  const res = await fetch(`${API_URL}/api/tresorerie/paiements/${paiementId}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/paiements/${paiementId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -1049,7 +1164,7 @@ export async function updatePaiement(paiementId, updates) {
 }
 
 export async function createRelance(relanceData) {
-  const res = await fetch(`${API_URL}/api/tresorerie/relances`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/relances`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(relanceData),
@@ -1070,7 +1185,7 @@ export async function createRelance(relanceData) {
 }
 
 export async function generateMonthlyCotisations(mois, annee) {
-  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/generate-monthly`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cotisations/generate-monthly`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ mois, annee }),
@@ -1091,7 +1206,7 @@ export async function generateMonthlyCotisations(mois, annee) {
 }
 
 export async function updateOverdueCotisations() {
-  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/update-overdue`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cotisations/update-overdue`, {
     method: 'POST',
     headers: getAuthHeaders(),
   })
@@ -1111,7 +1226,7 @@ export async function updateOverdueCotisations() {
 }
 
 export async function cleanDuplicateCotisations() {
-  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/clean-duplicates`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cotisations/clean-duplicates`, {
     method: 'POST',
     headers: getAuthHeaders(),
   })
@@ -1131,7 +1246,7 @@ export async function cleanDuplicateCotisations() {
 }
 
 export async function createMissingCotisations(annee = null, mois = null) {
-  const res = await fetch(`${API_URL}/api/tresorerie/cotisations/create-missing`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cotisations/create-missing`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ annee, mois }),
@@ -1152,7 +1267,7 @@ export async function createMissingCotisations(annee = null, mois = null) {
 }
 
 export async function createCarteMembre(carteData) {
-  const res = await fetch(`${API_URL}/api/tresorerie/cartes`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cartes`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(carteData),
@@ -1174,7 +1289,21 @@ export async function createCarteMembre(carteData) {
 
 export async function geocodeMemberAddress({ adresse = '', ville = '', pays = '' } = {}) {
   const query = buildQueryString({ adresse, ville, pays })
-  return sendJsonRequest(`/api/geocode/search${query}`)
+  const res = await fetch(`${GEOCODE_URL}/search${query}`, {
+    headers: getAuthHeaders(),
+  })
+  
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du géocodage')
+  }
+  
+  return data?.data || null
 }
 
 export async function generateCartePDF(carteId) {
@@ -1222,7 +1351,7 @@ export async function listCartesMembres(filters = {}) {
   if (filters.statut_paiement) queryParams.append('statut_paiement', filters.statut_paiement)
   if (filters.pays) queryParams.append('pays', filters.pays)
   
-  const res = await fetch(`${API_URL}/api/tresorerie/cartes?${queryParams.toString()}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cartes?${queryParams.toString()}`, {
     method: 'GET',
     headers: getAuthHeaders(),
   })
@@ -1242,7 +1371,7 @@ export async function listCartesMembres(filters = {}) {
 }
 
 export async function updateCarteMembre(carteId, carteData) {
-  const res = await fetch(`${API_URL}/api/tresorerie/cartes/${carteId}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cartes/${carteId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(carteData),
@@ -1263,7 +1392,7 @@ export async function updateCarteMembre(carteId, carteData) {
 }
 
 export async function fetchCarteMembreByNumero(numeroMembre) {
-  const res = await fetch(`${API_URL}/api/tresorerie/cartes/numero/${encodeURIComponent(numeroMembre)}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/cartes/numero/${encodeURIComponent(numeroMembre)}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1294,7 +1423,7 @@ export async function fetchDepenses(params = {}) {
     ...(params.periode_annee && { periode_annee: params.periode_annee }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/tresorerie/depenses?${queryParams}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/depenses?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1313,7 +1442,7 @@ export async function fetchDepenses(params = {}) {
 }
 
 export async function createDepense(depenseData) {
-  const res = await fetch(`${API_URL}/api/tresorerie/depenses`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/depenses`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(depenseData),
@@ -1334,7 +1463,7 @@ export async function createDepense(depenseData) {
 }
 
 export async function updateDepense(depenseId, updates) {
-  const res = await fetch(`${API_URL}/api/tresorerie/depenses/${depenseId}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/depenses/${depenseId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -1361,7 +1490,7 @@ export async function fetchHistorique(params = {}) {
     ...(params.action && { action: params.action }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/tresorerie/historique?${queryParams}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/historique?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1388,7 +1517,7 @@ export async function fetchRelances(params = {}) {
     ...(params.statut && { statut: params.statut }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/tresorerie/relances?${queryParams}`, {
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/relances?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1410,83 +1539,210 @@ export async function fetchRelances(params = {}) {
 }
 
 export function validateCotisation(cotisationId, payload = {}) {
-  return sendJsonRequest(`/api/tresorerie/cotisations/${cotisationId}/validate`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/cotisations/${cotisationId}/validate`, {
     method: 'POST',
-    body: payload,
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de la validation')
+    return data?.data || data
   })
 }
 
 export function resetCotisation(cotisationId) {
-  return sendJsonRequest(`/api/tresorerie/cotisations/${cotisationId}/reset`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/cotisations/${cotisationId}/reset`, {
     method: 'POST',
+    headers: getAuthHeaders(),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de la réinitialisation')
+    return data?.data || data
   })
 }
 
 export function deleteCotisation(cotisationId) {
-  return sendJsonRequest(`/api/tresorerie/cotisations/${cotisationId}`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/cotisations/${cotisationId}`, {
     method: 'DELETE',
+    headers: getAuthHeaders(),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de la suppression')
+    return data?.data || data
   })
 }
 
 export function validatePaiement(paiementId, payload = {}) {
-  return sendJsonRequest(`/api/tresorerie/paiements/${paiementId}/validate`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/paiements/${paiementId}/validate`, {
     method: 'POST',
-    body: payload,
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de la validation')
+    return data?.data || data
   })
 }
 
 export function cancelPaiement(paiementId, payload = {}) {
-  return sendJsonRequest(`/api/tresorerie/paiements/${paiementId}/cancel`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/paiements/${paiementId}/cancel`, {
     method: 'POST',
-    body: payload,
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de l\'annulation')
+    return data?.data || data
   })
 }
 
 export function deletePaiement(paiementId) {
-  return sendJsonRequest(`/api/tresorerie/paiements/${paiementId}`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/paiements/${paiementId}`, {
     method: 'DELETE',
+    headers: getAuthHeaders(),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de la suppression')
+    return data?.data || data
   })
 }
 
 export function validateDepense(depenseId) {
-  return sendJsonRequest(`/api/tresorerie/depenses/${depenseId}/validate`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/depenses/${depenseId}/validate`, {
     method: 'POST',
+    headers: getAuthHeaders(),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de la validation')
+    return data?.data || data
   })
 }
 
 export function rejectDepense(depenseId, payload = {}) {
-  return sendJsonRequest(`/api/tresorerie/depenses/${depenseId}/reject`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/depenses/${depenseId}/reject`, {
     method: 'POST',
-    body: payload,
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors du rejet')
+    return data?.data || data
   })
 }
 
 export function deleteDepense(depenseId) {
-  return sendJsonRequest(`/api/tresorerie/depenses/${depenseId}`, {
+  return fetch(`${ADMIN_TRESORERIE_URL}/depenses/${depenseId}`, {
     method: 'DELETE',
+    headers: getAuthHeaders(),
+  }).then(res => res.json().catch(() => null)).then(data => {
+    if (!data?.success) throw new Error(data?.message || 'Erreur lors de la suppression')
+    return data?.data || data
   })
 }
 
-export function downloadCotisationsExport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/exports/cotisations', params, 'cotisations.csv')
+export async function downloadCotisationsExport(params = {}) {
+  const query = buildQueryString(params)
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/exports/cotisations${query}`, {
+    headers: {
+      ...(getAuthToken() && { Authorization: `Bearer ${getAuthToken()}` }),
+    },
+  })
+
+  if (!res.ok) {
+    const errorPayload = await res.json().catch(() => null)
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(errorPayload?.message || 'Erreur lors du téléchargement')
+  }
+
+  const blob = await res.blob()
+  const disposition = res.headers.get('content-disposition') || ''
+  const match = disposition.match(/filename="?([^"]+)"?/i)
+  const filename = match ? match[1] : 'cotisations.csv'
+  return { blob, filename }
 }
 
-export function downloadPaiementsExport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/exports/paiements', params, 'paiements.csv')
+export async function downloadPaiementsExport(params = {}) {
+  const query = buildQueryString(params)
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/exports/paiements${query}`, {
+    headers: {
+      ...(getAuthToken() && { Authorization: `Bearer ${getAuthToken()}` }),
+    },
+  })
+
+  if (!res.ok) {
+    const errorPayload = await res.json().catch(() => null)
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(errorPayload?.message || 'Erreur lors du téléchargement')
+  }
+
+  const blob = await res.blob()
+  const disposition = res.headers.get('content-disposition') || ''
+  const match = disposition.match(/filename="?([^"]+)"?/i)
+  const filename = match ? match[1] : 'paiements.csv'
+  return { blob, filename }
 }
 
-export function downloadDepensesExport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/exports/depenses', params, 'depenses.csv')
+export async function downloadDepensesExport(params = {}) {
+  const query = buildQueryString(params)
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/exports/depenses${query}`, {
+    headers: {
+      ...(getAuthToken() && { Authorization: `Bearer ${getAuthToken()}` }),
+    },
+  })
+
+  if (!res.ok) {
+    const errorPayload = await res.json().catch(() => null)
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(errorPayload?.message || 'Erreur lors du téléchargement')
+  }
+
+  const blob = await res.blob()
+  const disposition = res.headers.get('content-disposition') || ''
+  const match = disposition.match(/filename="?([^"]+)"?/i)
+  const filename = match ? match[1] : 'depenses.csv'
+  return { blob, filename }
 }
 
-export function downloadTresorerieReport(params = {}) {
-  return downloadBinaryResource('/api/tresorerie/reports/mensuel', params, 'rapport-tresorerie.pdf')
+export async function downloadTresorerieReport(params = {}) {
+  const query = buildQueryString(params)
+  const res = await fetch(`${ADMIN_TRESORERIE_URL}/exports/rapport${query}`, {
+    headers: {
+      ...(getAuthToken() && { Authorization: `Bearer ${getAuthToken()}` }),
+    },
+  })
+
+  if (!res.ok) {
+    const errorPayload = await res.json().catch(() => null)
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(errorPayload?.message || 'Erreur lors du téléchargement du rapport')
+  }
+
+  // Pour le rapport PDF, on vérifie si c'est un JSON (message d'erreur) ou un PDF
+  const contentType = res.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    const data = await res.json()
+    throw new Error(data.message || 'La génération du rapport PDF n\'est pas encore disponible')
+  }
+
+  const blob = await res.blob()
+  const disposition = res.headers.get('content-disposition') || ''
+  const match = disposition.match(/filename="?([^"]+)"?/i)
+  const filename = match ? match[1] : 'rapport-tresorerie.pdf'
+  return { blob, filename }
 }
 
 // ───── Secrétariat ─────
 
 export async function fetchSecretariatStats() {
-  const res = await fetch(`${API_URL}/api/secretariat/stats`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/stats`, {
     headers: getAuthHeaders(),
   })
 
@@ -1512,7 +1768,7 @@ export async function fetchReunions(params = {}) {
     ...(params.pole && { pole: params.pole }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/secretariat/reunions?${queryParams}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1531,7 +1787,7 @@ export async function fetchReunions(params = {}) {
 }
 
 export async function createReunion(reunionData) {
-  const res = await fetch(`${API_URL}/api/secretariat/reunions`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(reunionData),
@@ -1552,7 +1808,7 @@ export async function createReunion(reunionData) {
 }
 
 export async function addParticipant(participantData) {
-  const res = await fetch(`${API_URL}/api/secretariat/participants`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/participants`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(participantData),
@@ -1573,7 +1829,7 @@ export async function addParticipant(participantData) {
 }
 
 export async function createAction(actionData) {
-  const res = await fetch(`${API_URL}/api/secretariat/actions`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/actions`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(actionData),
@@ -1594,7 +1850,7 @@ export async function createAction(actionData) {
 }
 
 export async function saveCompteRendu(compteRenduData) {
-  const res = await fetch(`${API_URL}/api/secretariat/comptes-rendus`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/comptes-rendus`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(compteRenduData),
@@ -1615,7 +1871,7 @@ export async function saveCompteRendu(compteRenduData) {
 }
 
 export async function createDocument(documentData) {
-  const res = await fetch(`${API_URL}/api/secretariat/documents`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/documents`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(documentData),
@@ -1649,7 +1905,7 @@ export async function updateReunion(reunionId, reunionData) {
     ordre_du_jour: reunionData.ordre_du_jour || null,
   }
 
-  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(cleanedData),
@@ -1671,7 +1927,7 @@ export async function updateReunion(reunionId, reunionData) {
 }
 
 export async function fetchReunion(reunionId) {
-  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1690,7 +1946,7 @@ export async function fetchReunion(reunionId) {
 }
 
 export async function fetchParticipants(reunionId) {
-  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}/participants`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}/participants`, {
     headers: getAuthHeaders(),
   })
 
@@ -1710,7 +1966,7 @@ export async function fetchParticipants(reunionId) {
 
 export async function fetchActions(params = {}) {
   if (params.reunionId) {
-    const res = await fetch(`${API_URL}/api/secretariat/reunions/${params.reunionId}/actions`, {
+    const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${params.reunionId}/actions`, {
       headers: getAuthHeaders(),
     })
 
@@ -1734,7 +1990,7 @@ export async function fetchActions(params = {}) {
     ...(params.limit && { limit: params.limit }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/secretariat/actions?${queryParams}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/actions?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1758,7 +2014,7 @@ export async function fetchDocuments(params = {}) {
     ...(params.categorie && { categorie: params.categorie }),
   }).toString()
 
-  const res = await fetch(`${API_URL}/api/secretariat/documents?${queryParams}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/documents?${queryParams}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1777,7 +2033,7 @@ export async function fetchDocuments(params = {}) {
 }
 
 export async function getCompteRendu(reunionId) {
-  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}/compte-rendu`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}/compte-rendu`, {
     headers: getAuthHeaders(),
   })
 
@@ -1799,7 +2055,7 @@ export async function getCompteRendu(reunionId) {
 }
 
 export async function updateParticipant(participantId, updates) {
-  const res = await fetch(`${API_URL}/api/secretariat/participants/${participantId}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/participants/${participantId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -1820,7 +2076,7 @@ export async function updateParticipant(participantId, updates) {
 }
 
 export async function updateAction(actionId, updates) {
-  const res = await fetch(`${API_URL}/api/secretariat/actions/${actionId}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/actions/${actionId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -1841,7 +2097,7 @@ export async function updateAction(actionId, updates) {
 }
 
 export async function deleteAction(actionId) {
-  const res = await fetch(`${API_URL}/api/secretariat/actions/${actionId}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/actions/${actionId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -1861,7 +2117,7 @@ export async function deleteAction(actionId) {
 }
 
 export async function generateReunionPDF(reunionId) {
-  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}/generate-pdf`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}/generate-pdf`, {
     headers: getAuthHeaders(),
   })
 
@@ -1889,8 +2145,214 @@ export async function generateReunionPDF(reunionId) {
 /**
  * Trouve un membre par email dans adhesion.members
  */
+// ========== GROUPES DE TRAVAIL ==========
+
+export async function fetchGroupesTravail(params = {}) {
+  const queryParams = new URLSearchParams()
+  if (params.projet_id) queryParams.append('projet_id', params.projet_id)
+  
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail?${queryParams}`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des groupes de travail')
+  }
+
+  return data?.data || []
+}
+
+export async function fetchGroupeTravail(groupeId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement du groupe de travail')
+  }
+
+  return data?.data || null
+}
+
+export async function createGroupeTravail(groupeData) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(groupeData),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création du groupe de travail')
+  }
+
+  return data?.data || data
+}
+
+export async function updateGroupeTravail(groupeId, updates) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour du groupe de travail')
+  }
+
+  return data?.data || data
+}
+
+export async function deleteGroupeTravail(groupeId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression du groupe de travail')
+  }
+
+  return data
+}
+
+export async function fetchReunionsByGroupe(groupeId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}/reunions`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des réunions')
+  }
+
+  return data?.data || []
+}
+
+export async function fetchActionsByGroupe(groupeId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}/actions`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des actions')
+  }
+
+  return data?.data || []
+}
+
+export async function fetchGroupeTravailMembres(groupeId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}/membres`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des membres')
+  }
+
+  return data?.data || []
+}
+
+export async function addMembreToGroupe(groupeId, inscriptionId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}/membres`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ inscription_id: inscriptionId }),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de l\'ajout du membre')
+  }
+
+  return data?.data || data
+}
+
+export async function removeMembreFromGroupe(groupeId, inscriptionId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/groupes-travail/${groupeId}/membres/${inscriptionId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression du membre')
+  }
+
+  return data
+}
+
+/**
+ * Trouve un membre par email dans adhesion.members
+ */
 export async function findMemberByEmail(email) {
-  const res = await fetch(`${API_URL}/api/secretariat/members/by-email?email=${encodeURIComponent(email)}`, {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/members/by-email?email=${encodeURIComponent(email)}`, {
     headers: getAuthHeaders(),
   })
 
@@ -1913,7 +2375,7 @@ export async function findMemberByEmail(email) {
 // ============================================
 
 export async function fetchFormationStats() {
-  const res = await fetch(`${API_URL}/api/formation/stats`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/stats`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -1934,7 +2396,7 @@ export async function fetchFormations({ page = 1, limit = 20, search = '', categ
   if (categorie) params.categorie = categorie
   if (statut) params.statut = statut
 
-  const res = await fetch(`${API_URL}/api/formation/formations${buildQueryString(params)}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formations${buildQueryString(params)}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -1950,7 +2412,7 @@ export async function fetchFormations({ page = 1, limit = 20, search = '', categ
 }
 
 export async function fetchFormationById(formationId) {
-  const res = await fetch(`${API_URL}/api/formation/formations/${formationId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formations/${formationId}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -1966,7 +2428,7 @@ export async function fetchFormationById(formationId) {
 }
 
 export async function createFormation(formationData) {
-  const res = await fetch(`${API_URL}/api/formation/formations`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formations`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(formationData),
@@ -1984,7 +2446,7 @@ export async function createFormation(formationData) {
 }
 
 export async function updateFormation(formationId, updates) {
-  const res = await fetch(`${API_URL}/api/formation/formations/${formationId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formations/${formationId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -2002,7 +2464,7 @@ export async function updateFormation(formationId, updates) {
 }
 
 export async function deleteFormation(formationId) {
-  const res = await fetch(`${API_URL}/api/formation/formations/${formationId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formations/${formationId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2023,7 +2485,7 @@ export async function fetchSessions({ page = 1, limit = 20, formation_id = '', s
   if (formation_id) params.formation_id = formation_id
   if (statut) params.statut = statut
 
-  const res = await fetch(`${API_URL}/api/formation/sessions${buildQueryString(params)}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/sessions${buildQueryString(params)}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2039,7 +2501,7 @@ export async function fetchSessions({ page = 1, limit = 20, formation_id = '', s
 }
 
 export async function createSession(sessionData) {
-  const res = await fetch(`${API_URL}/api/formation/sessions`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/sessions`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(sessionData),
@@ -2057,7 +2519,7 @@ export async function createSession(sessionData) {
 }
 
 export async function updateSession(sessionId, updates) {
-  const res = await fetch(`${API_URL}/api/formation/sessions/${sessionId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/sessions/${sessionId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -2075,7 +2537,7 @@ export async function updateSession(sessionId, updates) {
 }
 
 export async function deleteSession(sessionId) {
-  const res = await fetch(`${API_URL}/api/formation/sessions/${sessionId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/sessions/${sessionId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2097,7 +2559,7 @@ export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '
   if (session_id) params.session_id = session_id
   if (status) params.status = status
 
-  const res = await fetch(`${API_URL}/api/formation/inscriptions${buildQueryString(params)}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions${buildQueryString(params)}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2113,7 +2575,7 @@ export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '
 }
 
 export async function createInscription(inscriptionData) {
-  const res = await fetch(`${API_URL}/api/formation/inscriptions`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(inscriptionData),
@@ -2131,7 +2593,7 @@ export async function createInscription(inscriptionData) {
 }
 
 export async function updateInscription(inscriptionId, updates) {
-  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions/${inscriptionId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -2149,7 +2611,7 @@ export async function updateInscription(inscriptionId, updates) {
 }
 
 export async function deleteInscription(inscriptionId) {
-  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions/${inscriptionId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2166,7 +2628,7 @@ export async function deleteInscription(inscriptionId) {
 }
 
 export async function confirmInscription(inscriptionId) {
-  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}/confirm`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions/${inscriptionId}/confirm`, {
     method: 'POST',
     headers: getAuthHeaders(),
   })
@@ -2183,7 +2645,7 @@ export async function confirmInscription(inscriptionId) {
 }
 
 export async function rejectInscription(inscriptionId) {
-  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}/reject`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions/${inscriptionId}/reject`, {
     method: 'POST',
     headers: getAuthHeaders(),
   })
@@ -2200,7 +2662,7 @@ export async function rejectInscription(inscriptionId) {
 }
 
 export async function sendInscriptionInvitation(inscriptionId, accessLink) {
-  const res = await fetch(`${API_URL}/api/formation/inscriptions/${inscriptionId}/invitation`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions/${inscriptionId}/invitation`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ access_link: accessLink }),
@@ -2218,7 +2680,7 @@ export async function sendInscriptionInvitation(inscriptionId, accessLink) {
 }
 
 export async function sendSessionReminder(sessionId, { kind, accessLink }) {
-  const res = await fetch(`${API_URL}/api/formation/sessions/${sessionId}/reminder`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/sessions/${sessionId}/reminder`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ kind, access_link: accessLink }),
@@ -2236,7 +2698,7 @@ export async function sendSessionReminder(sessionId, { kind, accessLink }) {
 }
 
 export async function fetchFormateurs() {
-  const res = await fetch(`${API_URL}/api/formation/formateurs`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formateurs`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2252,7 +2714,7 @@ export async function fetchFormateurs() {
 }
 
 export async function createFormateur(formateurData) {
-  const res = await fetch(`${API_URL}/api/formation/formateurs`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formateurs`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(formateurData),
@@ -2270,7 +2732,7 @@ export async function createFormateur(formateurData) {
 }
 
 export async function updateFormateur(formateurId, updates) {
-  const res = await fetch(`${API_URL}/api/formation/formateurs/${formateurId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formateurs/${formateurId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -2288,7 +2750,7 @@ export async function updateFormateur(formateurId, updates) {
 }
 
 export async function deleteFormateur(formateurId) {
-  const res = await fetch(`${API_URL}/api/formation/formateurs/${formateurId}`, {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formateurs/${formateurId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2310,7 +2772,7 @@ export async function deleteFormateur(formateurId) {
 
 export async function fetchAdminsList({ page = 1, limit = 20, search = '' } = {}) {
   const query = buildQueryString({ page, limit, search })
-  const res = await fetch(`${API_URL}/api/admin/admins${query}`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/admins${query}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2329,7 +2791,7 @@ export async function fetchAdminsList({ page = 1, limit = 20, search = '' } = {}
 }
 
 export async function createAdminAccount(payload) {
-  const res = await fetch(`${API_URL}/api/admin/admins`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/admins`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
@@ -2347,7 +2809,7 @@ export async function createAdminAccount(payload) {
 }
 
 export async function updateAdminAccount(adminId, payload) {
-  const res = await fetch(`${API_URL}/api/admin/admins/${adminId}`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/admins/${adminId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
@@ -2365,7 +2827,7 @@ export async function updateAdminAccount(adminId, payload) {
 }
 
 export async function updateAdminAccess(adminId, modules) {
-  const res = await fetch(`${API_URL}/api/admin/admins/${adminId}/modules`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/admins/${adminId}/modules`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify({ modules }),
@@ -2383,7 +2845,7 @@ export async function updateAdminAccess(adminId, modules) {
 }
 
 export async function suspendAdminAccount(adminId, { reason, disabledUntil } = {}) {
-  const res = await fetch(`${API_URL}/api/admin/admins/${adminId}`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/admins/${adminId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
     body: JSON.stringify({
@@ -2404,7 +2866,7 @@ export async function suspendAdminAccount(adminId, { reason, disabledUntil } = {
 }
 
 export async function fetchAdminModulesCatalog() {
-  const res = await fetch(`${API_URL}/api/admin/modules`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/modules`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2424,7 +2886,7 @@ export async function fetchAdminModulesCatalog() {
 // ============================================
 
 export async function fetchWebinaireStats() {
-  const res = await fetch(`${API_URL}/api/webinaire/stats`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/stats`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2445,7 +2907,7 @@ export async function fetchWebinaires({ page = 1, limit = 20, search = '', theme
   if (theme) params.theme = theme
   if (statut) params.statut = statut
 
-  const res = await fetch(`${API_URL}/api/webinaire/webinaires${buildQueryString(params)}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/webinaires${buildQueryString(params)}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2461,7 +2923,7 @@ export async function fetchWebinaires({ page = 1, limit = 20, search = '', theme
 }
 
 export async function fetchWebinaireById(webinaireId) {
-  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/webinaires/${webinaireId}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2477,7 +2939,7 @@ export async function fetchWebinaireById(webinaireId) {
 }
 
 export async function createWebinaire(webinaireData) {
-  const res = await fetch(`${API_URL}/api/webinaire/webinaires`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/webinaires`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(webinaireData),
@@ -2495,7 +2957,7 @@ export async function createWebinaire(webinaireData) {
 }
 
 export async function updateWebinaire(webinaireId, updates) {
-  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/webinaires/${webinaireId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -2513,7 +2975,7 @@ export async function updateWebinaire(webinaireId, updates) {
 }
 
 export async function deleteWebinaire(webinaireId) {
-  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/webinaires/${webinaireId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2534,7 +2996,7 @@ export async function fetchWebinaireInscriptions({ page = 1, limit = 20, webinai
   if (webinaire_id) params.webinaire_id = webinaire_id
   if (statut) params.statut = statut
 
-  const res = await fetch(`${API_URL}/api/webinaire/inscriptions${buildQueryString(params)}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/inscriptions${buildQueryString(params)}`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2550,7 +3012,7 @@ export async function fetchWebinaireInscriptions({ page = 1, limit = 20, webinai
 }
 
 export async function createWebinaireInscription(inscriptionData) {
-  const res = await fetch(`${API_URL}/api/webinaire/inscriptions`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/inscriptions`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(inscriptionData),
@@ -2568,7 +3030,7 @@ export async function createWebinaireInscription(inscriptionData) {
 }
 
 export async function updateWebinaireInscription(inscriptionId, updates) {
-  const res = await fetch(`${API_URL}/api/webinaire/inscriptions/${inscriptionId}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/inscriptions/${inscriptionId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -2586,7 +3048,7 @@ export async function updateWebinaireInscription(inscriptionId, updates) {
 }
 
 export async function deleteWebinaireInscription(inscriptionId) {
-  const res = await fetch(`${API_URL}/api/webinaire/inscriptions/${inscriptionId}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/inscriptions/${inscriptionId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2603,7 +3065,7 @@ export async function deleteWebinaireInscription(inscriptionId) {
 }
 
 export async function sendWebinaireInscriptionInvitation(inscriptionId, accessLink) {
-  const res = await fetch(`${API_URL}/api/webinaire/inscriptions/${inscriptionId}/invitation`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/inscriptions/${inscriptionId}/invitation`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ access_link: accessLink }),
@@ -2621,7 +3083,7 @@ export async function sendWebinaireInscriptionInvitation(inscriptionId, accessLi
 }
 
 export async function sendWebinaireReminder(webinaireId, { kind, accessLink }) {
-  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}/reminder`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/webinaires/${webinaireId}/reminder`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ kind, access_link: accessLink }),
@@ -2639,7 +3101,7 @@ export async function sendWebinaireReminder(webinaireId, { kind, accessLink }) {
 }
 
 export async function fetchPresentateurs(webinaireId) {
-  const res = await fetch(`${API_URL}/api/webinaire/webinaires/${webinaireId}/presentateurs`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/webinaires/${webinaireId}/presentateurs`, {
     headers: getAuthHeaders(),
   })
   const data = await res.json().catch(() => null)
@@ -2655,7 +3117,7 @@ export async function fetchPresentateurs(webinaireId) {
 }
 
 export async function createPresentateur(presentateurData) {
-  const res = await fetch(`${API_URL}/api/webinaire/presentateurs`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/presentateurs`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(presentateurData),
@@ -2673,7 +3135,7 @@ export async function createPresentateur(presentateurData) {
 }
 
 export async function updatePresentateur(presentateurId, updates) {
-  const res = await fetch(`${API_URL}/api/webinaire/presentateurs/${presentateurId}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/presentateurs/${presentateurId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(updates),
@@ -2691,7 +3153,7 @@ export async function updatePresentateur(presentateurId, updates) {
 }
 
 export async function deletePresentateur(presentateurId) {
-  const res = await fetch(`${API_URL}/api/webinaire/presentateurs/${presentateurId}`, {
+  const res = await fetch(`${ADMIN_WEBINAIRE_URL}/presentateurs/${presentateurId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2713,46 +3175,93 @@ export async function deletePresentateur(presentateurId) {
 
 // GET /api/bureau - Récupérer les membres du bureau (public)
 export async function fetchBureauMembers() {
-  const res = await fetch(`${API_URL}/api/bureau`)
+  const res = await fetch('https://wooyxkfdzehvedvivhhd.functions.supabase.co/public-bureau', {
+    method: 'GET',
+  })
   const data = await res.json().catch(() => null)
   if (!res.ok) {
     throw new Error(data?.message || 'Erreur lors du chargement des membres du bureau')
   }
-  return data
+  // La fonction retourne { success, data: [...] }
+  return data?.data || []
 }
 
 // GET /api/admin/bureau - Récupérer tous les membres (admin, y compris inactifs)
 export async function fetchAllBureauMembers() {
-  return sendJsonRequest('/api/admin/bureau')
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/bureau`, {
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des membres du bureau')
+  }
+  return data?.data || []
 }
 
 // POST /api/admin/bureau - Créer un membre du bureau
 export async function createBureauMember(memberData) {
-  return sendJsonRequest('/api/admin/bureau', {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/bureau`, {
     method: 'POST',
-    body: memberData,
+    headers: getAuthHeaders(),
+    body: JSON.stringify(memberData),
   })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création du membre')
+  }
+  return data?.data || data
 }
 
 // PUT /api/admin/bureau/:id - Mettre à jour un membre du bureau
 export async function updateBureauMember(memberId, updates) {
-  return sendJsonRequest(`/api/admin/bureau/${memberId}`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/bureau/${memberId}`, {
     method: 'PUT',
-    body: updates,
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
   })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour du membre')
+  }
+  return data?.data || data
 }
 
 // DELETE /api/admin/bureau/:id - Désactiver un membre (soft delete)
 export async function deleteBureauMember(memberId) {
-  return sendJsonRequest(`/api/admin/bureau/${memberId}`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/bureau/${memberId}`, {
     method: 'DELETE',
+    headers: getAuthHeaders(),
   })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la suppression du membre')
+  }
+  return data
 }
 
 // POST /api/admin/bureau/:id/photo - Upload une photo pour un membre
 export async function uploadBureauMemberPhoto(memberId, fileBase64, fileName) {
-  const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
-  const res = await fetch(`${API_URL}/api/admin/bureau/${memberId}/photo`, {
+  const res = await fetch(`${ADMIN_PARAMETRES_URL}/bureau/${memberId}/photo`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({
@@ -2794,7 +3303,7 @@ export async function fetchAuditLogs(params = {}) {
     ...(params.endDate && { endDate: params.endDate }),
   })
 
-  const res = await fetch(`${API_URL}/api/admin/audit/logs${query}`, {
+  const res = await fetch(`${ADMIN_AUDIT_URL}/logs${query}`, {
     headers: getAuthHeaders(),
   })
 
@@ -2818,7 +3327,7 @@ export async function fetchAuditLogs(params = {}) {
  * Récupère les statistiques d'audit
  */
 export async function fetchAuditStats() {
-  const res = await fetch(`${API_URL}/api/admin/audit/stats`, {
+  const res = await fetch(`${ADMIN_AUDIT_URL}/stats`, {
     headers: getAuthHeaders(),
   })
 
@@ -2844,9 +3353,9 @@ export async function fetchCalendarEvents(params = {}) {
   const { startDate, endDate } = params
 
   try {
-    // Utiliser la route dédiée calendar qui est accessible à tous les admins
+    // Utiliser la fonction Supabase Edge pour le calendrier
     const queryParams = buildQueryString({ startDate, endDate })
-    const res = await fetch(`${API_URL}/api/admin/calendar/events${queryParams}`, {
+    const res = await fetch(`${ADMIN_CALENDRIER_URL}/events${queryParams}`, {
       headers: getAuthHeaders(),
     })
 
@@ -2892,7 +3401,7 @@ export async function fetchCalendarEvents(params = {}) {
  * Récupère tous les projets
  */
 export async function fetchProjets() {
-  const res = await fetch(`${API_URL}/api/public/projets/projets`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/projets`, {
     headers: getAuthHeaders(),
   })
 
@@ -2913,7 +3422,7 @@ export async function fetchProjets() {
  * Crée un projet
  */
 export async function createProjet(projetData) {
-  const res = await fetch(`${API_URL}/api/public/projets/projets`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/projets`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(projetData),
@@ -2936,7 +3445,7 @@ export async function createProjet(projetData) {
  * Met à jour un projet
  */
 export async function updateProjet(projetId, projetData) {
-  const res = await fetch(`${API_URL}/api/public/projets/projets/${projetId}`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/projets/${projetId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(projetData),
@@ -2959,7 +3468,7 @@ export async function updateProjet(projetId, projetData) {
  * Supprime un projet
  */
 export async function deleteProjet(projetId) {
-  const res = await fetch(`${API_URL}/api/public/projets/projets/${projetId}`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/projets/${projetId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })
@@ -2982,7 +3491,7 @@ export async function deleteProjet(projetId) {
  */
 export async function fetchProjetInscriptions(params = {}) {
   const query = buildQueryString(params)
-  const res = await fetch(`${API_URL}/api/public/projets/inscriptions${query}`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/inscriptions${query}`, {
     headers: getAuthHeaders(),
   })
 
@@ -3006,7 +3515,7 @@ export async function fetchProjetInscriptions(params = {}) {
  * Met à jour le statut d'une inscription
  */
 export async function updateProjetInscriptionStatus(inscriptionId, statut) {
-  const res = await fetch(`${API_URL}/api/public/projets/inscriptions/${inscriptionId}/status`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/inscriptions/${inscriptionId}/status`, {
     method: 'PATCH',
     headers: getAuthHeaders(),
     body: JSON.stringify({ statut }),
@@ -3029,7 +3538,7 @@ export async function updateProjetInscriptionStatus(inscriptionId, statut) {
  * Met à jour une inscription
  */
 export async function updateProjetInscription(inscriptionId, inscriptionData) {
-  const res = await fetch(`${API_URL}/api/public/projets/inscriptions/${inscriptionId}`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/inscriptions/${inscriptionId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(inscriptionData),
@@ -3052,7 +3561,7 @@ export async function updateProjetInscription(inscriptionId, inscriptionData) {
  * Supprime une inscription
  */
 export async function deleteProjetInscription(inscriptionId) {
-  const res = await fetch(`${API_URL}/api/public/projets/inscriptions/${inscriptionId}`, {
+  const res = await fetch(`${ADMIN_PROJETS_URL}/inscriptions/${inscriptionId}`, {
     method: 'DELETE',
     headers: getAuthHeaders(),
   })

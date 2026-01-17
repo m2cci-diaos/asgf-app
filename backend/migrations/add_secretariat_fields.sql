@@ -54,3 +54,6 @@ COMMENT ON COLUMN secretariat.participants_reunion.motif_absence IS 'Motif de l'
 
 
 
+
+
+

@@ -49,3 +49,6 @@ COMMENT ON FUNCTION tresorerie.update_cotisation_statut() IS
 
 
 
+
+
+

@@ -109,3 +109,6 @@ L'interface est accessible via le module "Historique" dans le dashboard admin.
 - Pour les UPDATE, les changements (before/after) sont stockés dans le champ `changes` (JSONB)
 
 
+
+
+

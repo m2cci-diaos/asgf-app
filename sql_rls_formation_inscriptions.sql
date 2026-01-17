@@ -67,3 +67,6 @@ AND tablename = 'inscriptions';
 
 
 
+
+
+

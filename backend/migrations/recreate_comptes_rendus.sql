@@ -53,3 +53,6 @@ COMMENT ON COLUMN secretariat.comptes_rendus.lien_pdf IS 'Lien vers le PDF du co
 
 
 
+
+
+
