@@ -564,25 +564,46 @@ export async function getAllActions({ assigne_a, statut, limit = 50 } = {}) {
       return []
     }
 
-    // Enrichir avec les données des membres assignés
+    // Enrichir avec les données des membres assignés (multi-assignation)
     const actionsWithMembers = await Promise.all(
       data.map(async (action) => {
-        let membre = null
-        if (action.assigne_a) {
-          try {
-            const { data: membreData } = await supabaseAdhesion
-              .from('members')
-              .select('id, prenom, nom, email, numero_membre')
-              .eq('id', action.assigne_a)
-              .maybeSingle()
-            membre = membreData
-          } catch (err) {
-            logError(`Error fetching member for action ${action.id}: ${err.message}`)
-          }
+        // Récupérer tous les assignés depuis action_assignees
+        const { data: assigneesData } = await supabaseSecretariat
+          .from('action_assignees')
+          .select('member_id')
+          .eq('action_id', action.id)
+
+        const assigneeIds = assigneesData?.map((a) => a.member_id) || []
+        
+        // Si pas d'assignés multiples mais assigne_a existe, l'ajouter pour compatibilité
+        if (assigneeIds.length === 0 && action.assigne_a) {
+          assigneeIds.push(action.assigne_a)
         }
+
+        // Récupérer les données de tous les membres assignés
+        const membres = await Promise.all(
+          assigneeIds.map(async (memberId) => {
+            try {
+              const { data: membreData } = await supabaseAdhesion
+                .from('members')
+                .select('id, prenom, nom, email, numero_membre')
+                .eq('id', memberId)
+                .maybeSingle()
+              return membreData
+            } catch (err) {
+              logError(`Error fetching member ${memberId} for action ${action.id}: ${err.message}`)
+              return null
+            }
+          })
+        )
+
+        // Filtrer les membres null
+        const membresValides = membres.filter(m => m !== null)
+
         return {
           ...action,
-          membre: membre,
+          membre: membresValides.length > 0 ? membresValides[0] : null, // Pour compatibilité avec l'ancien code
+          assignees: membresValides, // Tous les assignés
         }
       })
     )
@@ -614,25 +635,46 @@ export async function getActionsByReunion(reunionId) {
       return []
     }
 
-    // Enrichir avec les données des membres assignés
+    // Enrichir avec les données des membres assignés (multi-assignation)
     const actionsWithMembers = await Promise.all(
       data.map(async (action) => {
-        let membre = null
-        if (action.assigne_a) {
-          try {
-            const { data: membreData } = await supabaseAdhesion
-              .from('members')
-              .select('id, prenom, nom, email, numero_membre')
-              .eq('id', action.assigne_a)
-              .maybeSingle()
-            membre = membreData
-          } catch (err) {
-            logError(`Error fetching member for action ${action.id}: ${err.message}`)
-          }
+        // Récupérer tous les assignés depuis action_assignees
+        const { data: assigneesData } = await supabaseSecretariat
+          .from('action_assignees')
+          .select('member_id')
+          .eq('action_id', action.id)
+
+        const assigneeIds = assigneesData?.map((a) => a.member_id) || []
+        
+        // Si pas d'assignés multiples mais assigne_a existe, l'ajouter pour compatibilité
+        if (assigneeIds.length === 0 && action.assigne_a) {
+          assigneeIds.push(action.assigne_a)
         }
+
+        // Récupérer les données de tous les membres assignés
+        const membres = await Promise.all(
+          assigneeIds.map(async (memberId) => {
+            try {
+              const { data: membreData } = await supabaseAdhesion
+                .from('members')
+                .select('id, prenom, nom, email, numero_membre')
+                .eq('id', memberId)
+                .maybeSingle()
+              return membreData
+            } catch (err) {
+              logError(`Error fetching member ${memberId} for action ${action.id}: ${err.message}`)
+              return null
+            }
+          })
+        )
+
+        // Filtrer les membres null
+        const membresValides = membres.filter(m => m !== null)
+
         return {
           ...action,
-          membre: membre,
+          membre: membresValides.length > 0 ? membresValides[0] : null, // Pour compatibilité avec l'ancien code
+          assignees: membresValides, // Tous les assignés
         }
       })
     )
@@ -1204,8 +1246,24 @@ export async function generateReunionPDF(reunionId) {
     // Actions dans une boîte stylisée
     if (actions && actions.length > 0) {
       const actionsBoxY = doc.y
-      const actionsHeight = 50 + (actions.length * 50)
-      drawBox(50, actionsBoxY, doc.page.width - 100, actionsHeight, '#f3e5f5', '#7b1fa2')
+      
+      // Calculer la hauteur nécessaire approximative (sera ajustée après le rendu)
+      // On utilise une estimation généreuse pour éviter les coupures
+      let estimatedHeight = 50 // Hauteur de l'en-tête
+      actions.forEach((action) => {
+        const assignees = action.assignees && action.assignees.length > 0
+          ? action.assignees
+          : (action.membre ? [action.membre] : [])
+        const assignesList = assignees.length > 0
+          ? assignees.map(m => `${m.prenom} ${m.nom}`).join(', ')
+          : 'Non assigné'
+        
+        // Estimation : titre (15px) + assignés (hauteur variable, ~10px par ligne) + statut/deadline (15px) + espace (5px)
+        const assignesHeight = Math.max(10, Math.ceil(assignesList.length / 80) * 10) // ~80 caractères par ligne
+        estimatedHeight += 35 + assignesHeight
+      })
+      
+      drawBox(50, actionsBoxY, doc.page.width - 100, estimatedHeight, '#f3e5f5', '#7b1fa2')
       
       doc.fontSize(14)
         .fillColor('#7b1fa2')
@@ -1218,9 +1276,16 @@ export async function generateReunionPDF(reunionId) {
       
       let currentActionY = actionsBoxY + 35
       actions.forEach((action, index) => {
-        const assigne = action.membre 
-          ? `${action.membre.prenom} ${action.membre.nom}`
+        // Récupérer tous les assignés
+        const assignees = action.assignees && action.assignees.length > 0
+          ? action.assignees
+          : (action.membre ? [action.membre] : [])
+        
+        // Formater la liste des assignés
+        const assignesList = assignees.length > 0
+          ? assignees.map(m => `${m.prenom} ${m.nom}`).join(', ')
           : 'Non assigné'
+        
         const deadline = action.deadline 
           ? formatDate(action.deadline)
           : '—'
@@ -1233,19 +1298,32 @@ export async function generateReunionPDF(reunionId) {
         doc.font('Helvetica')
           .fillColor(textColor)
           .fontSize(9)
-          .text(`   Assigné à: ${assigne}`, 60, currentActionY + 15)
-          .text(`   Statut: `, 60, currentActionY + 28)
+        
+        // Calculer la hauteur du texte des assignés pour ajuster la position Y
+        const assignesTextHeight = doc.heightOfString(`   Assigné à: ${assignesList}`, {
+          width: doc.page.width - 140
+        })
+        
+        doc.text(`   Assigné à: ${assignesList}`, 60, currentActionY + 15, {
+          width: doc.page.width - 140,
+          align: 'left'
+        })
+        
+        const statutY = currentActionY + 15 + assignesTextHeight + 5
+        doc.text(`   Statut: `, 60, statutY)
         
         doc.fillColor(statutColor)
-          .text(action.statut || 'en cours', 120, currentActionY + 28)
+          .text(action.statut || 'en cours', 120, statutY)
         
         doc.fillColor(textColor)
-          .text(`   Deadline: ${deadline}`, 200, currentActionY + 28)
+          .text(`   Deadline: ${deadline}`, 200, statutY)
         
-        currentActionY += 50
+        // Ajuster la position Y : titre (15px) + assignés (hauteur variable) + statut/deadline (15px) + espace (5px)
+        currentActionY = statutY + 20
       })
       
-      doc.y = actionsBoxY + actionsHeight + 10
+      // Utiliser currentActionY comme position finale réelle
+      doc.y = currentActionY + 10
     }
 
     // Ajouter les signatures avec photos en bas de la dernière page

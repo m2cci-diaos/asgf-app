@@ -14,6 +14,9 @@ import {
   generateReunionPDF,
   fetchAllMembers,
   updateReunion,
+  sendReunionInvitation,
+  sendCompteRendu,
+  sendActionNotification,
 } from '../../services/api'
 import StatusBadge from './StatusBadge'
 import EmptyState from './EmptyState'
@@ -472,7 +475,17 @@ export default function ReunionDrawer({ reunion, onClose, onUpdate, currentUser 
           ) : (
             <>
               {activeTab === 'infos' && (
-                <InfosTab reunion={reunion} />
+                <InfosTab 
+                  reunion={reunion} 
+                  onSendInvitation={async (mode) => {
+                    if (mode === 'all') {
+                      await sendReunionInvitation(reunion.id, { send_to_all: true })
+                    } else if (mode === 'participants') {
+                      const participantIds = participants.map(p => p.id)
+                      await sendReunionInvitation(reunion.id, { participant_ids: participantIds })
+                    }
+                  }}
+                />
               )}
           
           {activeTab === 'participants' && (
@@ -513,6 +526,9 @@ export default function ReunionDrawer({ reunion, onClose, onUpdate, currentUser 
               onSave={handleSaveCompteRendu}
               onGeneratePDF={handleGeneratePDF}
               participants={participants}
+              onSendCompteRendu={async (sendTo) => {
+                await sendCompteRendu(reunion.id, { send_to: sendTo })
+              }}
             />
           )}
           
@@ -786,9 +802,76 @@ function EditReunionForm({ reunion, onSave, onCancel }) {
 }
 
 // Onglet Infos
-function InfosTab({ reunion }) {
+function InfosTab({ reunion, onSendInvitation }) {
+  const [sending, setSending] = useState(false)
+  const [sendMode, setSendMode] = useState(null) // 'all' ou 'selected'
+
+  const handleSendInvitation = async (mode) => {
+    if (!confirm(`Envoyer l'invitation ${mode === 'all' ? 'à tous les membres' : 'aux participants sélectionnés'} ?`)) {
+      return
+    }
+
+    setSending(true)
+    try {
+      await onSendInvitation(mode)
+      alert('Invitations envoyées avec succès !')
+      setSendMode(null)
+    } catch (err) {
+      alert('Erreur : ' + err.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      {/* Bouton d'envoi d'invitation */}
+      <div style={{
+        padding: '1rem',
+        backgroundColor: '#f0f9ff',
+        border: '1px solid #bae6fd',
+        borderRadius: '0.5rem'
+      }}>
+        <h3 style={{ fontSize: '1rem', fontWeight: '600', color: '#1e293b', marginBottom: '0.75rem' }}>
+          📧 Envoyer l'invitation
+        </h3>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => handleSendInvitation('all')}
+            disabled={sending}
+            style={{
+              padding: '0.625rem 1.25rem',
+              backgroundColor: '#3b82f6',
+              border: 'none',
+              borderRadius: '0.375rem',
+              color: 'white',
+              fontWeight: '500',
+              cursor: sending ? 'not-allowed' : 'pointer',
+              fontSize: '0.875rem',
+              opacity: sending ? 0.6 : 1
+            }}
+          >
+            {sending ? 'Envoi...' : '📤 Envoyer à tous les membres'}
+          </button>
+          <button
+            onClick={() => handleSendInvitation('participants')}
+            disabled={sending}
+            style={{
+              padding: '0.625rem 1.25rem',
+              backgroundColor: '#10b981',
+              border: 'none',
+              borderRadius: '0.375rem',
+              color: 'white',
+              fontWeight: '500',
+              cursor: sending ? 'not-allowed' : 'pointer',
+              fontSize: '0.875rem',
+              opacity: sending ? 0.6 : 1
+            }}
+          >
+            {sending ? 'Envoi...' : '📤 Envoyer aux participants'}
+          </button>
+        </div>
+      </div>
       {reunion.description && (
         <div>
           <h3 style={{ fontSize: '1rem', fontWeight: '600', color: '#1e293b', marginBottom: '0.75rem' }}>
@@ -1356,7 +1439,29 @@ function ParticipantsTab({
 }
 
 // Onglet Compte-rendu
-function CompteRenduTab({ compteRendu, reunion, onSave, onGeneratePDF, participants }) {
+function CompteRenduTab({ compteRendu, reunion, onSave, onGeneratePDF, participants, onSendCompteRendu }) {
+  const [sending, setSending] = useState(false)
+
+  const handleSendCompteRendu = async (sendTo) => {
+    if (!compteRendu) {
+      alert('Veuillez d\'abord enregistrer le compte-rendu')
+      return
+    }
+
+    if (!confirm(`Envoyer le compte-rendu ${sendTo === 'presents' ? 'aux présents' : sendTo === 'absents' ? 'aux absents' : sendTo === 'excuses' ? 'aux excusés' : 'à tous'} ?`)) {
+      return
+    }
+
+    setSending(true)
+    try {
+      await onSendCompteRendu(sendTo)
+      alert('Compte-rendu envoyé avec succès !')
+    } catch (err) {
+      alert('Erreur : ' + err.message)
+    } finally {
+      setSending(false)
+    }
+  }
   const [formData, setFormData] = useState({
     resume: '',
     decisions: '',
@@ -1543,25 +1648,111 @@ function CompteRenduTab({ compteRendu, reunion, onSave, onGeneratePDF, participa
               ? new Date(compteRendu.created_at).toLocaleDateString('fr-FR')
               : '—'}
           </p>
-          <a
-            href={compteRendu.lien_pdf}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.5rem 1rem',
-              backgroundColor: '#10b981',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontSize: '0.875rem',
-              fontWeight: '500'
-            }}
-          >
-            Télécharger PDF
-          </a>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <a
+              href={compteRendu.lien_pdf}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#10b981',
+                color: 'white',
+                borderRadius: '0.375rem',
+                textDecoration: 'none',
+                fontSize: '0.875rem',
+                fontWeight: '500'
+              }}
+            >
+              Télécharger PDF
+            </a>
+          </div>
+        </div>
+      )}
+
+      {compteRendu && (
+        <div style={{
+          marginTop: '2rem',
+          padding: '1rem',
+          backgroundColor: '#f0f9ff',
+          border: '1px solid #bae6fd',
+          borderRadius: '0.5rem'
+        }}>
+          <h3 style={{ fontSize: '1rem', fontWeight: '600', color: '#1e293b', marginBottom: '0.75rem' }}>
+            📧 Envoyer le compte-rendu
+          </h3>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => handleSendCompteRendu('all')}
+              disabled={sending}
+              style={{
+                padding: '0.625rem 1.25rem',
+                backgroundColor: '#3b82f6',
+                border: 'none',
+                borderRadius: '0.375rem',
+                color: 'white',
+                fontWeight: '500',
+                cursor: sending ? 'not-allowed' : 'pointer',
+                fontSize: '0.875rem',
+                opacity: sending ? 0.6 : 1
+              }}
+            >
+              {sending ? 'Envoi...' : '📤 À tous'}
+            </button>
+            <button
+              onClick={() => handleSendCompteRendu('presents')}
+              disabled={sending}
+              style={{
+                padding: '0.625rem 1.25rem',
+                backgroundColor: '#10b981',
+                border: 'none',
+                borderRadius: '0.375rem',
+                color: 'white',
+                fontWeight: '500',
+                cursor: sending ? 'not-allowed' : 'pointer',
+                fontSize: '0.875rem',
+                opacity: sending ? 0.6 : 1
+              }}
+            >
+              {sending ? 'Envoi...' : '📤 Aux présents'}
+            </button>
+            <button
+              onClick={() => handleSendCompteRendu('absents')}
+              disabled={sending}
+              style={{
+                padding: '0.625rem 1.25rem',
+                backgroundColor: '#f59e0b',
+                border: 'none',
+                borderRadius: '0.375rem',
+                color: 'white',
+                fontWeight: '500',
+                cursor: sending ? 'not-allowed' : 'pointer',
+                fontSize: '0.875rem',
+                opacity: sending ? 0.6 : 1
+              }}
+            >
+              {sending ? 'Envoi...' : '📤 Aux absents'}
+            </button>
+            <button
+              onClick={() => handleSendCompteRendu('excuses')}
+              disabled={sending}
+              style={{
+                padding: '0.625rem 1.25rem',
+                backgroundColor: '#8b5cf6',
+                border: 'none',
+                borderRadius: '0.375rem',
+                color: 'white',
+                fontWeight: '500',
+                cursor: sending ? 'not-allowed' : 'pointer',
+                fontSize: '0.875rem',
+                opacity: sending ? 0.6 : 1
+              }}
+            >
+              {sending ? 'Envoi...' : '📤 Aux excusés'}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -1689,6 +1880,18 @@ function ActionsTableView({ actions, onUpdate }) {
     }
   }
 
+  const handleSendNotification = async (actionId) => {
+    if (!confirm('Envoyer la notification aux membres assignés à cette action ?')) {
+      return
+    }
+    try {
+      await sendActionNotification(actionId)
+      alert('Notifications envoyées avec succès !')
+    } catch (err) {
+      alert('Erreur : ' + err.message)
+    }
+  }
+
   if (actions.length === 0) {
     return <EmptyState title="Aucune action" description="Aucune action n'a été créée pour cette réunion" />
   }
@@ -1780,7 +1983,7 @@ function ActionsTableView({ actions, onUpdate }) {
                   )}
                 </td>
                 <td style={{ padding: '0.75rem' }}>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                     <button
                       onClick={() => handleEditAction(action)}
                       style={{
@@ -1795,6 +1998,21 @@ function ActionsTableView({ actions, onUpdate }) {
                       }}
                     >
                       ✏️ Modifier
+                    </button>
+                    <button
+                      onClick={() => handleSendNotification(action.id)}
+                      style={{
+                        padding: '0.375rem 0.75rem',
+                        backgroundColor: '#10b981',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.375rem',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        fontWeight: '500'
+                      }}
+                    >
+                      📧 Envoyer
                     </button>
                     <button
                       onClick={() => handleDeleteAction(action.id)}

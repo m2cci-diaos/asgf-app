@@ -2116,6 +2116,68 @@ export async function deleteAction(actionId) {
   return data
 }
 
+export async function sendReunionInvitation(reunionId, { send_to_all, member_ids, participant_ids } = {}) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}/send-invitation`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ send_to_all, member_ids, participant_ids }),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de l\'envoi des invitations')
+  }
+
+  return data?.data || data
+}
+
+export async function sendCompteRendu(reunionId, { send_to } = {}) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}/send-compte-rendu`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ send_to }),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de l\'envoi du compte-rendu')
+  }
+
+  return data?.data || data
+}
+
+export async function sendActionNotification(actionId) {
+  const res = await fetch(`${ADMIN_SECRETARIAT_URL}/actions/${actionId}/send-notification`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de l\'envoi de la notification')
+  }
+
+  return data?.data || data
+}
+
 export async function generateReunionPDF(reunionId) {
   const res = await fetch(`${ADMIN_SECRETARIAT_URL}/reunions/${reunionId}/generate-pdf`, {
     headers: getAuthHeaders(),
