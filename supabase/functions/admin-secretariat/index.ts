@@ -552,6 +552,36 @@ Deno.serve(async (req) => {
             console.error("getActionsByReunion error", actionsError)
           }
 
+          // Enrichir les actions avec tous les assignés multiples
+          const actionsWithAssignees = await Promise.all(
+            (actions || []).map(async (action: any) => {
+              const { data: assigneesData } = await supabaseSecretariat
+                .from("action_assignees")
+                .select("member_id")
+                .eq("action_id", action.id)
+
+              const assigneeIds = assigneesData?.map((a: any) => a.member_id) || []
+              
+              // Si pas d'assignés multiples mais assigne_a existe, l'ajouter
+              if (assigneeIds.length === 0 && action.assigne_a) {
+                assigneeIds.push(action.assigne_a)
+              }
+
+              // Récupérer les données de tous les membres assignés
+              const assigneesMembers = await Promise.all(
+                assigneeIds.map(async (memberId: string) => {
+                  const member = await fetchMemberById(supabaseAdhesion, memberId)
+                  return member ? { id: memberId, ...member } : null
+                })
+              )
+
+              return {
+                ...action,
+                assignees: assigneesMembers.filter((m: any) => m !== null),
+              }
+            })
+          )
+
           // Générer le PDF avec pdf-lib
           const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib")
 
@@ -932,8 +962,9 @@ Deno.serve(async (req) => {
             }
           }
 
-          // Actions
-          if (actions && actions.length > 0) {
+          // Actions (utiliser actionsWithAssignees si disponible, sinon actions)
+          const actionsToDisplay = actionsWithAssignees || actions
+          if (actionsToDisplay && actionsToDisplay.length > 0) {
             if (y < 150) {
               currentPage = pdfDoc.addPage([595, 842])
               y = 800
@@ -948,7 +979,7 @@ Deno.serve(async (req) => {
             })
             y -= 25
 
-            for (const [index, action] of actions.entries()) {
+            for (const [index, action] of actionsToDisplay.entries()) {
               if (y < 100) {
                 currentPage = pdfDoc.addPage([595, 842])
                 y = 800
@@ -984,10 +1015,34 @@ Deno.serve(async (req) => {
                 }
               }
 
-              if (action.assigne_a) {
+              // Afficher tous les assignés (multi-assignation)
+              const assignees = action.assignees && action.assignees.length > 0
+                ? action.assignees
+                : (action.assigne_a ? [{ prenom: "", nom: "" }] : []) // Sera récupéré ci-dessous si pas déjà fait
+
+              // Si pas d'assignés dans assignees mais assigne_a existe, le récupérer
+              if (assignees.length === 0 && action.assigne_a) {
                 const assigne = await fetchMemberById(supabaseAdhesion, action.assigne_a)
-                const assigneNom = assigne ? `${assigne.prenom} ${assigne.nom}` : "Non assigné"
-                currentPage.drawText(`Assigné à: ${assigneNom}`, {
+                if (assigne) {
+                  assignees.push(assigne)
+                }
+              }
+
+              if (assignees.length > 0) {
+                const assignesList = assignees
+                  .map((m: any) => `${m.prenom} ${m.nom}`)
+                  .join(", ")
+                currentPage.drawText(`Assigné à: ${assignesList}`, {
+                  x: margin + 20,
+                  y,
+                  size: 9,
+                  font: font,
+                  color: grayColor,
+                  maxWidth: pageWidth - 2 * margin - 30,
+                })
+                y -= lineHeight - 2
+              } else {
+                currentPage.drawText("Assigné à: Non assigné", {
                   x: margin + 20,
                   y,
                   size: 9,
@@ -2468,6 +2523,521 @@ Deno.serve(async (req) => {
         success: true,
         message: "Membre retiré du groupe avec succès",
       })
+    }
+
+    // ========== ENVOI D'EMAILS ==========
+
+    // POST /reunions/:id/send-invitation - Envoyer invitation de réunion
+    const reunionSendInvitationMatch = relativePath.match(/^reunions\/([0-9a-fA-F-]+)\/send-invitation$/)
+    if (req.method === "POST" && reunionSendInvitationMatch) {
+      const reunionId = reunionSendInvitationMatch[1]
+      const body = await req.json().catch(() => ({}))
+
+      // Récupérer la réunion
+      const { data: reunion, error: reunionError } = await supabaseSecretariat
+        .from("reunions")
+        .select("*")
+        .eq("id", reunionId)
+        .maybeSingle()
+
+      if (reunionError || !reunion) {
+        return jsonResponse({ success: false, message: "Réunion introuvable" }, { status: 404 })
+      }
+
+      // Récupérer les destinataires
+      let recipients: any[] = []
+      
+      if (body.send_to_all) {
+        // Envoyer à tous les membres actifs
+        const { data: allMembers } = await supabaseAdhesion
+          .from("members")
+          .select(MEMBER_FIELDS)
+          .eq("statut", "actif")
+        
+        recipients = (allMembers || []).map(m => ({
+          email: m.email,
+          prenom: m.prenom,
+          nom: m.nom,
+          numero_membre: m.numero_membre,
+          pays: m.pays
+        }))
+      } else if (body.member_ids && Array.isArray(body.member_ids)) {
+        // Envoyer aux membres sélectionnés
+        const { data: selectedMembers } = await supabaseAdhesion
+          .from("members")
+          .select(MEMBER_FIELDS)
+          .in("id", body.member_ids)
+        
+        recipients = (selectedMembers || []).map(m => ({
+          email: m.email,
+          prenom: m.prenom,
+          nom: m.nom,
+          numero_membre: m.numero_membre,
+          pays: m.pays
+        }))
+      } else if (body.participant_ids && Array.isArray(body.participant_ids)) {
+        // Envoyer aux participants spécifiques de la réunion
+        const { data: participants } = await supabaseSecretariat
+          .from("participants_reunion")
+          .select("membre_id, prenom_externe, nom_externe, email_externe")
+          .in("id", body.participant_ids)
+        
+        recipients = await Promise.all(
+          (participants || []).map(async (p: any) => {
+            if (p.membre_id) {
+              const member = await fetchMemberById(supabaseAdhesion, p.membre_id)
+              return member ? {
+                email: member.email,
+                prenom: member.prenom,
+                nom: member.nom,
+                numero_membre: member.numero_membre,
+                pays: member.pays
+              } : null
+            } else if (p.email_externe) {
+              return {
+                email: p.email_externe,
+                prenom: p.prenom_externe || "",
+                nom: p.nom_externe || "",
+                numero_membre: null,
+                pays: null
+              }
+            }
+            return null
+          })
+        )
+        recipients = recipients.filter(r => r !== null && r.email)
+      }
+
+      if (recipients.length === 0) {
+        return jsonResponse({ success: false, message: "Aucun destinataire sélectionné" }, { status: 400 })
+      }
+
+      // Formater la date
+      const formatDate = (dateStr: string | null) => {
+        if (!dateStr) return "—"
+        const date = new Date(dateStr)
+        return date.toLocaleDateString("fr-FR", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        })
+      }
+
+      const formatTime = (timeStr: string | null) => {
+        return timeStr || "—"
+      }
+
+      // Récupérer le compte-rendu pour le résumé s'il existe
+      const { data: compteRendu } = await supabaseSecretariat
+        .from("comptes_rendus")
+        .select("resume")
+        .eq("reunion_id", reunionId)
+        .single()
+      
+      // Template email invitation (texte simple converti en <br> comme trésorerie)
+      const messageBody = `Vous êtes invité(e) à participer à la réunion suivante :
+
+${reunion.titre || "Réunion"}
+
+${reunion.type_reunion ? `Type : ${reunion.type_reunion}\n` : ""}Date : ${formatDate(reunion.date_reunion)}
+Heure : ${formatTime(reunion.heure_debut)}${reunion.heure_fin ? ` - ${reunion.heure_fin}` : ""}
+${reunion.pole ? `Pôle : ${reunion.pole}\n` : ""}
+
+${reunion.lien_visio ? `Lien de visioconférence : ${reunion.lien_visio}\n` : ""}
+
+${reunion.ordre_du_jour ? `Ordre du jour :\n${reunion.ordre_du_jour}\n` : ""}
+
+${reunion.description ? `Description :\n${reunion.description}\n` : ""}
+
+${compteRendu?.resume ? `Résumé de la réunion :\n${compteRendu.resume}\n` : ""}
+
+Merci de confirmer votre présence.`
+      
+      const emailBody = messageBody.replace(/\n/g, "<br>")
+
+      // Envoyer via webhook
+      const APPSCRIPT_WEBHOOK_URL = Deno.env.get("APPSCRIPT_CONTACT_WEBHOOK_URL") || ""
+      const APPSCRIPT_WEBHOOK_TOKEN = Deno.env.get("APPSCRIPT_CONTACT_TOKEN") || ""
+
+      if (!APPSCRIPT_WEBHOOK_URL) {
+        return jsonResponse({ success: false, message: "Configuration email non disponible" }, { status: 500 })
+      }
+
+      try {
+        console.log("Envoi invitation réunion:", {
+          recipientsCount: recipients.length,
+          webhookUrl: APPSCRIPT_WEBHOOK_URL ? "Configuré" : "MANQUANT",
+          hasToken: !!APPSCRIPT_WEBHOOK_TOKEN,
+        })
+
+        const response = await fetch(APPSCRIPT_WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(APPSCRIPT_WEBHOOK_TOKEN && { "x-contact-token": APPSCRIPT_WEBHOOK_TOKEN }),
+          },
+          body: JSON.stringify({
+            token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+            type: "member_email",
+            recipients: recipients,
+            subject: `Invitation : ${reunion.titre || "Réunion ASGF"} - ${formatDate(reunion.date_reunion)}`,
+            bodyTemplate: emailBody,
+          }),
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error("Erreur réponse webhook:", response.status, errorText)
+          throw new Error(`Erreur webhook (${response.status}): ${errorText}`)
+        }
+
+        const result = await response.json().catch(() => ({ success: false, message: "Réponse invalide du webhook" }))
+
+        console.log("Résultat envoi emails:", result)
+
+        return jsonResponse({
+          success: result.success || false,
+          message: result.message || "Emails envoyés",
+          data: {
+            sent: result.successCount || 0,
+            errors: result.errorCount || 0,
+            total: recipients.length,
+            webhookResponse: result,
+          },
+        })
+      } catch (err) {
+        console.error("Error sending reunion invitation emails", err)
+        return jsonResponse({ 
+          success: false, 
+          message: `Erreur envoi emails: ${(err as Error).message}`,
+          error: (err as Error).toString(),
+        }, { status: 500 })
+      }
+    }
+
+    // POST /reunions/:id/send-compte-rendu - Envoyer compte-rendu après réunion
+    const reunionSendCompteRenduMatch = relativePath.match(/^reunions\/([0-9a-fA-F-]+)\/send-compte-rendu$/)
+    if (req.method === "POST" && reunionSendCompteRenduMatch) {
+      const reunionId = reunionSendCompteRenduMatch[1]
+      const body = await req.json().catch(() => ({}))
+
+      // Récupérer la réunion et le compte-rendu
+      const { data: reunion } = await supabaseSecretariat
+        .from("reunions")
+        .select("*")
+        .eq("id", reunionId)
+        .maybeSingle()
+
+      const { data: compteRendu } = await supabaseSecretariat
+        .from("comptes_rendus")
+        .select("*")
+        .eq("reunion_id", reunionId)
+        .maybeSingle()
+
+      if (!reunion || !compteRendu) {
+        return jsonResponse({ success: false, message: "Réunion ou compte-rendu introuvable" }, { status: 404 })
+      }
+
+      // Récupérer les participants selon le filtre
+      let filterPresence: string[] = []
+      if (body.send_to === "presents") {
+        filterPresence = ["present"]
+      } else if (body.send_to === "absents") {
+        filterPresence = ["absent"]
+      } else if (body.send_to === "excuses") {
+        filterPresence = ["excuse"]
+      } else {
+        filterPresence = ["present", "absent", "excuse"]
+      }
+
+      const { data: participants } = await supabaseSecretariat
+        .from("participants_reunion")
+        .select("membre_id, prenom_externe, nom_externe, email_externe, presence")
+        .eq("reunion_id", reunionId)
+        .in("presence", filterPresence)
+
+      // Préparer les destinataires
+      const recipients = await Promise.all(
+        (participants || []).map(async (p: any) => {
+          if (p.membre_id) {
+            const member = await fetchMemberById(supabaseAdhesion, p.membre_id)
+            return member ? {
+              email: member.email,
+              prenom: member.prenom,
+              nom: member.nom,
+              numero_membre: member.numero_membre,
+              pays: member.pays
+            } : null
+          } else if (p.email_externe) {
+            return {
+              email: p.email_externe,
+              prenom: p.prenom_externe || "",
+              nom: p.nom_externe || "",
+              numero_membre: null,
+              pays: null
+            }
+          }
+          return null
+        })
+      )
+
+      const validRecipients = recipients.filter(r => r !== null && r.email)
+
+      if (validRecipients.length === 0) {
+        return jsonResponse({ success: false, message: "Aucun destinataire trouvé" }, { status: 400 })
+      }
+
+      // Formater la date
+      const formatDate = (dateStr: string | null) => {
+        if (!dateStr) return "—"
+        const date = new Date(dateStr)
+        return date.toLocaleDateString("fr-FR", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        })
+      }
+
+      // Récupérer le PDF si disponible
+      let pdfAttachment = null
+      if (compteRendu.lien_pdf) {
+        try {
+          const pdfResponse = await fetch(compteRendu.lien_pdf)
+          if (pdfResponse.ok) {
+            const pdfBuffer = await pdfResponse.arrayBuffer()
+            const base64Pdf = btoa(String.fromCharCode(...new Uint8Array(pdfBuffer)))
+            pdfAttachment = {
+              name: `compte-rendu-${reunionId}.pdf`,
+              type: "application/pdf",
+              data: base64Pdf,
+            }
+          }
+        } catch (err) {
+          console.warn("Impossible de récupérer le PDF:", err)
+        }
+      }
+
+      // Template email compte-rendu (texte simple converti en <br> comme trésorerie)
+      const messageBody = `Veuillez trouver ci-joint le compte-rendu de la réunion suivante :
+
+${reunion.titre || "Réunion"}
+Date : ${formatDate(reunion.date_reunion)}
+
+${compteRendu.resume ? `Résumé :\n${compteRendu.resume}\n` : ""}
+
+${compteRendu.decisions ? `Décisions :\n${compteRendu.decisions}\n` : ""}
+
+Le compte-rendu complet au format PDF est disponible en pièce jointe.`
+      
+      const emailBody = messageBody.replace(/\n/g, "<br>")
+
+      // Envoyer via webhook
+      const APPSCRIPT_WEBHOOK_URL = Deno.env.get("APPSCRIPT_CONTACT_WEBHOOK_URL") || ""
+      const APPSCRIPT_WEBHOOK_TOKEN = Deno.env.get("APPSCRIPT_CONTACT_TOKEN") || ""
+
+      if (!APPSCRIPT_WEBHOOK_URL) {
+        return jsonResponse({ success: false, message: "Configuration email non disponible" }, { status: 500 })
+      }
+
+      try {
+        console.log("Envoi compte-rendu réunion:", {
+          recipientsCount: validRecipients.length,
+          webhookUrl: APPSCRIPT_WEBHOOK_URL ? "Configuré" : "MANQUANT",
+          hasToken: !!APPSCRIPT_WEBHOOK_TOKEN,
+          hasPdfAttachment: !!pdfAttachment,
+        })
+
+        const response = await fetch(APPSCRIPT_WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(APPSCRIPT_WEBHOOK_TOKEN && { "x-contact-token": APPSCRIPT_WEBHOOK_TOKEN }),
+          },
+          body: JSON.stringify({
+            token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+            type: "member_email",
+            recipients: validRecipients,
+            subject: `Compte-rendu : ${reunion.titre || "Réunion ASGF"} - ${formatDate(reunion.date_reunion)}`,
+            bodyTemplate: emailBody,
+            attachments: pdfAttachment ? [pdfAttachment] : [],
+          }),
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error("Erreur réponse webhook:", response.status, errorText)
+          throw new Error(`Erreur webhook (${response.status}): ${errorText}`)
+        }
+
+        const result = await response.json().catch(() => ({ success: false, message: "Réponse invalide du webhook" }))
+
+        console.log("Résultat envoi compte-rendu:", result)
+
+        return jsonResponse({
+          success: result.success || false,
+          message: result.message || "Emails envoyés",
+          data: {
+            sent: result.successCount || 0,
+            errors: result.errorCount || 0,
+            total: validRecipients.length,
+            webhookResponse: result,
+          },
+        })
+      } catch (err) {
+        console.error("Error sending compte-rendu emails", err)
+        return jsonResponse({ 
+          success: false, 
+          message: `Erreur envoi emails: ${(err as Error).message}`,
+          error: (err as Error).toString(),
+        }, { status: 500 })
+      }
+    }
+
+    // POST /actions/:id/send-notification - Envoyer notification action assignée
+    const actionSendNotificationMatch = relativePath.match(/^actions\/([0-9a-fA-F-]+)\/send-notification$/)
+    if (req.method === "POST" && actionSendNotificationMatch) {
+      const actionId = actionSendNotificationMatch[1]
+
+      // Récupérer l'action avec tous les assignés
+      const { data: action } = await supabaseSecretariat
+        .from("actions")
+        .select("*")
+        .eq("id", actionId)
+        .maybeSingle()
+
+      if (!action) {
+        return jsonResponse({ success: false, message: "Action introuvable" }, { status: 404 })
+      }
+
+      // Récupérer tous les assignés
+      const { data: assigneesData } = await supabaseSecretariat
+        .from("action_assignees")
+        .select("member_id")
+        .eq("action_id", actionId)
+
+      const assigneeIds = assigneesData?.map((a: any) => a.member_id) || []
+      
+      if (assigneeIds.length === 0 && action.assigne_a) {
+        assigneeIds.push(action.assigne_a)
+      }
+
+      if (assigneeIds.length === 0) {
+        return jsonResponse({ success: false, message: "Aucun membre assigné à cette action" }, { status: 400 })
+      }
+
+      // Récupérer les données des membres assignés
+      const { data: assigneesMembers } = await supabaseAdhesion
+        .from("members")
+        .select(MEMBER_FIELDS)
+        .in("id", assigneeIds)
+
+      const recipients = (assigneesMembers || []).map(m => ({
+        email: m.email,
+        prenom: m.prenom,
+        nom: m.nom,
+        numero_membre: m.numero_membre,
+        pays: m.pays
+      }))
+
+      if (recipients.length === 0) {
+        return jsonResponse({ success: false, message: "Aucun destinataire valide trouvé" }, { status: 400 })
+      }
+
+      // Récupérer la réunion si liée
+      let reunion = null
+      if (action.reunion_id) {
+        const { data: reunionData } = await supabaseSecretariat
+          .from("reunions")
+          .select("titre, date_reunion")
+          .eq("id", action.reunion_id)
+          .maybeSingle()
+        reunion = reunionData
+      }
+
+      const formatDate = (dateStr: string | null) => {
+        if (!dateStr) return "—"
+        const date = new Date(dateStr)
+        return date.toLocaleDateString("fr-FR", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        })
+      }
+
+      // Template email action (texte simple converti en <br> comme trésorerie)
+      const messageBody = `Une action vous a été assignée :
+
+${action.intitule || action.titre || "Action"}
+
+${action.description ? `Description :\n${action.description}\n` : ""}
+
+${action.deadline ? `Deadline : ${formatDate(action.deadline)}\n` : ""}Statut : ${action.statut || "en cours"}
+
+${reunion ? `Réunion : ${reunion.titre} (${formatDate(reunion.date_reunion)})\n` : ""}
+
+Merci de prendre les mesures nécessaires pour accomplir cette action dans les délais.`
+      
+      const emailBody = messageBody.replace(/\n/g, "<br>")
+
+      // Envoyer via webhook
+      const APPSCRIPT_WEBHOOK_URL = Deno.env.get("APPSCRIPT_CONTACT_WEBHOOK_URL") || ""
+      const APPSCRIPT_WEBHOOK_TOKEN = Deno.env.get("APPSCRIPT_CONTACT_TOKEN") || ""
+
+      if (!APPSCRIPT_WEBHOOK_URL) {
+        return jsonResponse({ success: false, message: "Configuration email non disponible" }, { status: 500 })
+      }
+
+      try {
+        console.log("Envoi notification action:", {
+          actionId,
+          recipientsCount: recipients.length,
+          webhookUrl: APPSCRIPT_WEBHOOK_URL ? "Configuré" : "MANQUANT",
+          hasToken: !!APPSCRIPT_WEBHOOK_TOKEN,
+        })
+
+        const response = await fetch(APPSCRIPT_WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(APPSCRIPT_WEBHOOK_TOKEN && { "x-contact-token": APPSCRIPT_WEBHOOK_TOKEN }),
+          },
+          body: JSON.stringify({
+            token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+            type: "member_email",
+            recipients: recipients,
+            subject: `Action assignée : ${action.intitule || action.titre || "Action"}`,
+            bodyTemplate: emailBody,
+          }),
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error("Erreur réponse webhook:", response.status, errorText)
+          throw new Error(`Erreur webhook (${response.status}): ${errorText}`)
+        }
+
+        const result = await response.json().catch(() => ({ success: false, message: "Réponse invalide du webhook" }))
+
+        console.log("Résultat envoi notification action:", result)
+
+        return jsonResponse({
+          success: result.success || false,
+          message: result.message || "Emails envoyés",
+          data: {
+            sent: result.successCount || 0,
+            errors: result.errorCount || 0,
+            total: recipients.length,
+            webhookResponse: result,
+          },
+        })
+      } catch (err) {
+        console.error("Error sending action notification emails", err)
+        return jsonResponse({ 
+          success: false, 
+          message: `Erreur envoi emails: ${(err as Error).message}`,
+          error: (err as Error).toString(),
+        }, { status: 500 })
+      }
     }
 
     // GET /rapports/presidence - Liste des rapports présidence
