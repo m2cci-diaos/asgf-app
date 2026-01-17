@@ -2615,11 +2615,14 @@ export async function deleteSession(sessionId) {
   return data
 }
 
-export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '', session_id = '', status = '' }) {
+export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '', session_id = '', status = '', search = '', sortBy = '', sortOrder = 'asc' }) {
   const params = { page, limit }
   if (formation_id) params.formation_id = formation_id
   if (session_id) params.session_id = session_id
   if (status) params.status = status
+  if (search) params.search = search
+  if (sortBy) params.sortBy = sortBy
+  if (sortOrder) params.sortOrder = sortOrder
 
   const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions${buildQueryString(params)}`, {
     headers: getAuthHeaders(),
@@ -2633,7 +2636,14 @@ export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '
     }
     throw new Error(data?.message || 'Erreur lors du chargement des inscriptions')
   }
-  return data?.data || []
+  // Retourner avec pagination si disponible, sinon juste le tableau
+  if (data?.inscriptions && data?.pagination) {
+    return {
+      inscriptions: data.inscriptions,
+      pagination: data.pagination,
+    }
+  }
+  return data?.data || data || []
 }
 
 export async function createInscription(inscriptionData) {
@@ -2719,6 +2729,24 @@ export async function rejectInscription(inscriptionId) {
       throw new Error('Session expirée. Veuillez vous reconnecter.')
     }
     throw new Error(data?.message || 'Erreur lors du rejet de l\'inscription')
+  }
+  return data?.data || data
+}
+
+export async function sendPendingInscriptionsEmails(inscriptionIds, message = '') {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions/bulk-send-pending`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ inscription_ids: inscriptionIds, message }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de l\'envoi des emails')
   }
   return data?.data || data
 }

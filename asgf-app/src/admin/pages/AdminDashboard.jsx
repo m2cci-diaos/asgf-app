@@ -102,6 +102,7 @@ import {
   updatePresentateur,
   deletePresentateur,
   sendInscriptionInvitation,
+  sendPendingInscriptionsEmails,
   sendSessionReminder,
   sendWebinaireInscriptionInvitation,
   sendWebinaireReminder,
@@ -7446,21 +7447,36 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     const [activeTab, setActiveTab] = useState('formations') // 'formations', 'sessions', 'inscriptions', 'formateurs'
     const [exporting, setExporting] = useState(false)
     const [selectedInscriptionIds, setSelectedInscriptionIds] = useState([])
+    const [inscriptionsPage, setInscriptionsPage] = useState(1)
+    const [inscriptionsPagination, setInscriptionsPagination] = useState({ total: 0, totalPages: 1, limit: 50 })
+    const [inscriptionsSearch, setInscriptionsSearch] = useState('')
+    const [inscriptionsSortBy, setInscriptionsSortBy] = useState('')
+    const [inscriptionsSortOrder, setInscriptionsSortOrder] = useState('asc')
 
     const loadData = useCallback(async () => {
       setLoading(true)
       try {
-        const [statsData, formationsData, sessionsData, inscriptionsData, formateursData] = await Promise.all([
+        const [statsData, formationsData, sessionsData, inscriptionsResult, formateursData] = await Promise.all([
           fetchFormationStats(),
           fetchFormations({ page: 1, limit: 50 }),
           fetchSessions({ page: 1, limit: 50 }),
-          fetchInscriptions({ page: 1, limit: 50 }),
+          fetchInscriptions({ page: 1, limit: 50 }), // Toujours charger la page 1 au début
           fetchFormateurs(),
         ])
         setStats(statsData || {})
         setFormations(Array.isArray(formationsData) ? formationsData : [])
         setSessions(Array.isArray(sessionsData) ? sessionsData : [])
-        setInscriptions(Array.isArray(inscriptionsData) ? inscriptionsData : [])
+        // Handle both array and object with pagination
+        if (inscriptionsResult && typeof inscriptionsResult === 'object' && inscriptionsResult.inscriptions) {
+          setInscriptions(Array.isArray(inscriptionsResult.inscriptions) ? inscriptionsResult.inscriptions : [])
+          setInscriptionsPagination(inscriptionsResult.pagination || { total: 0, totalPages: 1, limit: 50 })
+        } else {
+          setInscriptions(Array.isArray(inscriptionsResult) ? inscriptionsResult : [])
+          // Si c'est un array, on peut estimer la pagination (mais ce n'est pas idéal)
+          if (Array.isArray(inscriptionsResult) && inscriptionsResult.length === 50) {
+            setInscriptionsPagination({ total: 50, totalPages: 1, limit: 50 })
+          }
+        }
         setFormateurs(Array.isArray(formateursData) ? formateursData : [])
       } catch (err) {
         console.error('Erreur chargement formations:', err)
@@ -7477,6 +7493,46 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     useEffect(() => {
       loadData()
     }, [loadData])
+
+    // Charger les inscriptions lorsque la page change ou quand on active l'onglet inscriptions
+    const loadInscriptions = useCallback(async () => {
+      setLoading(true)
+      try {
+        // Si recherche active, utiliser un limit élevé pour afficher tous les résultats
+        const limit = inscriptionsSearch ? 10000 : 50
+        // Réinitialiser la page à 1 si recherche change
+        const page = inscriptionsSearch ? 1 : inscriptionsPage
+        const inscriptionsResult = await fetchInscriptions({ 
+          page, 
+          limit,
+          search: inscriptionsSearch,
+          sortBy: inscriptionsSortBy,
+          sortOrder: inscriptionsSortOrder
+        })
+        if (inscriptionsResult && typeof inscriptionsResult === 'object' && inscriptionsResult.inscriptions) {
+          setInscriptions(Array.isArray(inscriptionsResult.inscriptions) ? inscriptionsResult.inscriptions : [])
+          setInscriptionsPagination(inscriptionsResult.pagination || { total: 0, totalPages: 1, limit })
+        } else {
+          setInscriptions(Array.isArray(inscriptionsResult) ? inscriptionsResult : [])
+        }
+      } catch (err) {
+        console.error('Erreur chargement inscriptions:', err)
+        setInscriptions([])
+      } finally {
+        setLoading(false)
+      }
+    }, [inscriptionsPage, inscriptionsSearch, inscriptionsSortBy, inscriptionsSortOrder])
+
+    useEffect(() => {
+      if (activeTab === 'inscriptions') {
+        // Réinitialiser la page à 1 quand la recherche ou le tri change
+        if (inscriptionsSearch || inscriptionsSortBy) {
+          setInscriptionsPage(1)
+        }
+        // Toujours recharger quand on change de page, recherche, tri ou onglet
+        loadInscriptions()
+      }
+    }, [activeTab, inscriptionsPage, inscriptionsSearch, inscriptionsSortBy, inscriptionsSortOrder, loadInscriptions])
 
     const handleSubmit = async (e) => {
       e.preventDefault()
@@ -7674,10 +7730,18 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
       try {
         if (type === 'formation') await deleteFormation(id)
         else if (type === 'session') await deleteSession(id)
-        else if (type === 'inscription') await deleteInscription(id)
-        else if (type === 'formateur') await deleteFormateur(id)
+        else if (type === 'inscription') {
+          await deleteInscription(id)
+          if (activeTab === 'inscriptions') {
+            await loadInscriptions()
+          } else {
+            await loadData()
+          }
+        } else if (type === 'formateur') await deleteFormateur(id)
         alert('Élément supprimé avec succès !')
-        await loadData()
+        if (type !== 'inscription') {
+          await loadData()
+        }
       } catch (err) {
         alert(err.message || 'Erreur lors de la suppression')
       }
@@ -7687,7 +7751,11 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
       try {
         await confirmInscription(id)
         alert('Inscription confirmée avec succès !')
-        await loadData()
+        if (activeTab === 'inscriptions') {
+          await loadInscriptions()
+        } else {
+          await loadData()
+        }
       } catch (err) {
         alert(err.message || 'Erreur lors de la confirmation')
       }
@@ -7697,7 +7765,11 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
       try {
         await rejectInscription(id)
         alert('Inscription rejetée avec succès !')
-        await loadData()
+        if (activeTab === 'inscriptions') {
+          await loadInscriptions()
+        } else {
+          await loadData()
+        }
       } catch (err) {
         alert(err.message || 'Erreur lors du rejet')
       }
@@ -7717,20 +7789,8 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
       }
     }
 
-    const filteredInscriptions = useMemo(() => {
-      return inscriptions.filter((i) => {
-        if (!filters.search) return true
-        const search = filters.search.toLowerCase()
-        const formationTitle =
-          formations.find((f) => f.id === i.formation_id)?.titre?.toLowerCase() || ''
-        return (
-          i.prenom?.toLowerCase().includes(search) ||
-          i.nom?.toLowerCase().includes(search) ||
-          i.email?.toLowerCase().includes(search) ||
-          formationTitle.includes(search)
-        )
-      })
-    }, [inscriptions, formations, filters.search])
+    // Plus besoin de filteredInscriptions côté client car la recherche est côté serveur
+    const filteredInscriptions = inscriptions
 
     const allVisibleSelected =
       filteredInscriptions.length > 0 &&
@@ -8004,8 +8064,8 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Inscriptions totales</p>
-              <p className="kpi-value">{inscriptions.length}</p>
-              <p className="card-subtitle">{inscriptions.filter(i => i.status === 'confirmed').length} confirmées</p>
+              <p className="kpi-value">{stats.total_inscriptions || 0}</p>
+              <p className="card-subtitle">{stats.confirmed_inscriptions || 0} confirmées</p>
             </div>
           </div>
 
@@ -8056,7 +8116,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             </div>
             <div className="kpi-content">
               <p className="kpi-label">En attente</p>
-              <p className="kpi-value">{inscriptions.filter(i => i.status === 'pending').length}</p>
+              <p className="kpi-value">{stats.pending_inscriptions || 0}</p>
               <p className="card-subtitle">À valider</p>
             </div>
           </div>
@@ -8283,7 +8343,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             {[
               { id: 'formations', label: '📚 Formations', count: formations.length },
               { id: 'sessions', label: '📅 Sessions', count: sessions.length },
-              { id: 'inscriptions', label: '👥 Inscriptions', count: inscriptions.length },
+              { id: 'inscriptions', label: '👥 Inscriptions', count: stats.total_inscriptions || inscriptions.length },
               { id: 'formateurs', label: '👨‍🏫 Formateurs', count: formateurs.length }
             ].map(tab => (
               <button
@@ -8616,7 +8676,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                 <div>
                   <h3 className="card-title">👥 Inscriptions</h3>
                   <p className="card-subtitle">
-                    {inscriptions.length} inscription{inscriptions.length !== 1 ? 's' : ''}
+                    {inscriptionsPagination.total || inscriptions.length} inscription{(inscriptionsPagination.total || inscriptions.length) !== 1 ? 's' : ''}
                     {selectedInscriptionIds.length > 0 &&
                       ` • ${selectedInscriptionIds.length} sélectionnée${
                         selectedInscriptionIds.length > 1 ? 's' : ''
@@ -8626,9 +8686,12 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
                   <input
                     type="text"
-                    placeholder="🔍 Rechercher..."
-                    value={filters.search}
-                    onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                    placeholder="🔍 Rechercher (nom, email, formation, niveau)..."
+                    value={inscriptionsSearch}
+                    onChange={(e) => {
+                      setInscriptionsSearch(e.target.value)
+                      // La recherche déclenchera loadInscriptions via useEffect
+                    }}
                     style={{
                       padding: '0.5rem 0.75rem',
                       border: '2px solid #0066CC',
@@ -8637,58 +8700,106 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       background: 'white',
                       color: '#212529',
                       fontWeight: '500',
-                      minWidth: '200px',
+                      minWidth: '250px',
                     }}
                   />
-                  {selectedInscriptionIds.length > 0 && (
-                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
-                        onClick={() => handleBulkInscriptionsAction('confirm')}
-                      >
-                        Confirmer la sélection
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{
-                          padding: '0.4rem 0.75rem',
-                          fontSize: '0.8rem',
-                          backgroundColor: '#f97316',
-                          borderColor: '#f97316',
-                        }}
-                        onClick={() => handleBulkInscriptionsAction('reject')}
-                      >
-                        Rejeter la sélection
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{
-                          padding: '0.4rem 0.75rem',
-                          fontSize: '0.8rem',
-                          backgroundColor: '#dc2626',
-                          borderColor: '#dc2626',
-                        }}
-                        onClick={() => handleBulkInscriptionsAction('delete')}
-                      >
-                        Supprimer la sélection
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{
-                          padding: '0.4rem 0.75rem',
-                          fontSize: '0.8rem',
-                        }}
-                        onClick={() => handleBulkInscriptionsAction('invite')}
-                      >
-                        Envoyer les invitations
-                      </button>
-                    </div>
-                  )}
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    {/* Bouton pour envoyer aux inscrits en attente (tous ou sélectionnés) */}
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{
+                        padding: '0.4rem 0.75rem',
+                        fontSize: '0.8rem',
+                        backgroundColor: '#8b5cf6',
+                        borderColor: '#8b5cf6',
+                        color: 'white',
+                      }}
+                      onClick={async () => {
+                        const pendingInscriptions = inscriptions.filter(i => i.status === 'pending')
+                        const idsToSend = selectedInscriptionIds.length > 0
+                          ? selectedInscriptionIds.filter(id => {
+                              const ins = inscriptions.find(i => i.id === id)
+                              return ins && ins.status === 'pending'
+                            })
+                          : pendingInscriptions.map(i => i.id)
+                        
+                        if (idsToSend.length === 0) {
+                          alert('Aucune inscription en attente à sélectionner.')
+                          return
+                        }
+
+                        const message = window.prompt(
+                          `Envoyer un email à ${idsToSend.length} inscrit(s) en attente.\n\nMessage optionnel (laisser vide pour utiliser le message par défaut) :`,
+                          ''
+                        )
+                        
+                        if (message === null) return // Annulé
+
+                        try {
+                          setLoading(true)
+                          const result = await sendPendingInscriptionsEmails(idsToSend, message || '')
+                          alert(`✅ ${result?.sent || idsToSend.length} email(s) envoyé(s) avec succès${result?.errors > 0 ? `, ${result.errors} erreur(s)` : ''}`)
+                        } catch (err) {
+                          alert(err.message || 'Erreur lors de l\'envoi des emails')
+                        } finally {
+                          setLoading(false)
+                        }
+                      }}
+                    >
+                      📧 Envoyer aux en attente
+                    </button>
+
+                    {selectedInscriptionIds.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+                          onClick={() => handleBulkInscriptionsAction('confirm')}
+                        >
+                          Confirmer la sélection
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{
+                            padding: '0.4rem 0.75rem',
+                            fontSize: '0.8rem',
+                            backgroundColor: '#f97316',
+                            borderColor: '#f97316',
+                          }}
+                          onClick={() => handleBulkInscriptionsAction('reject')}
+                        >
+                          Rejeter la sélection
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{
+                            padding: '0.4rem 0.75rem',
+                            fontSize: '0.8rem',
+                            backgroundColor: '#dc2626',
+                            borderColor: '#dc2626',
+                          }}
+                          onClick={() => handleBulkInscriptionsAction('delete')}
+                        >
+                          Supprimer la sélection
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{
+                            padding: '0.4rem 0.75rem',
+                            fontSize: '0.8rem',
+                          }}
+                          onClick={() => handleBulkInscriptionsAction('invite')}
+                        >
+                          Envoyer les invitations
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="table-container">
@@ -8702,20 +8813,295 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                           onChange={toggleSelectAllVisible}
                         />
                       </th>
-                      <th>Nom</th>
-                      <th>Email</th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'ordre_attente') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('ordre_attente')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'ordre_attente' ? '600' : '400',
+                            color: inscriptionsSortBy === 'ordre_attente' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'ordre_attente') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'ordre_attente') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Ordre d'attente
+                          {inscriptionsSortBy === 'ordre_attente' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'nom') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('nom')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'nom' ? '600' : '400',
+                            color: inscriptionsSortBy === 'nom' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'nom') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'nom') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Nom
+                          {inscriptionsSortBy === 'nom' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'email') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('email')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'email' ? '600' : '400',
+                            color: inscriptionsSortBy === 'email' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'email') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'email') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Email
+                          {inscriptionsSortBy === 'email' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>Membre</th>
                       <th>Formation</th>
-                      <th>Niveau</th>
-                      <th>Statut</th>
-                      <th>Paiement</th>
-                      <th>Date</th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'niveau') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('niveau')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'niveau' ? '600' : '400',
+                            color: inscriptionsSortBy === 'niveau' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'niveau') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'niveau') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Niveau
+                          {inscriptionsSortBy === 'niveau' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'status') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('status')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'status' ? '600' : '400',
+                            color: inscriptionsSortBy === 'status' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'status') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'status') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Statut
+                          {inscriptionsSortBy === 'status' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'paiement_status') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('paiement_status')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'paiement_status' ? '600' : '400',
+                            color: inscriptionsSortBy === 'paiement_status' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'paiement_status') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'paiement_status') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Paiement
+                          {inscriptionsSortBy === 'paiement_status' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'date') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('date')
+                              setInscriptionsSortOrder('desc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'date' ? '600' : '400',
+                            color: inscriptionsSortBy === 'date' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'date') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'date') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Date
+                          {inscriptionsSortBy === 'date' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredInscriptions.length === 0 ? (
                       <tr>
-                        <td colSpan="9" style={{ textAlign: 'center', padding: '2rem' }}>
+                        <td colSpan="11" style={{ textAlign: 'center', padding: '2rem' }}>
                           Aucune inscription
                         </td>
                       </tr>
@@ -8725,6 +9111,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                           (f) => f.id === inscription.formation_id
                         )
                         const isSelected = selectedInscriptionIds.includes(inscription.id)
+                        const isMember = inscription.is_member || !!inscription.membre_id
                         return (
                           <tr key={inscription.id}>
                             <td>
@@ -8734,10 +9121,53 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                 onChange={() => toggleSelectInscription(inscription.id)}
                               />
                             </td>
+                            <td style={{ textAlign: 'center' }}>
+                              {inscription.status === 'pending' && inscription.ordre_attente ? (
+                                <span style={{
+                                  display: 'inline-block',
+                                  padding: '0.25rem 0.5rem',
+                                  background: '#f3f4f6',
+                                  borderRadius: '4px',
+                                  fontWeight: '600',
+                                  color: '#374151',
+                                  fontSize: '0.875rem'
+                                }}>
+                                  #{inscription.ordre_attente}
+                                </span>
+                              ) : (
+                                '—'
+                              )}
+                            </td>
                             <td style={{ fontWeight: '600' }}>
                               {inscription.prenom} {inscription.nom}
                             </td>
                             <td>{inscription.email || '—'}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              {isMember ? (
+                                <span style={{
+                                  display: 'inline-block',
+                                  padding: '0.25rem 0.5rem',
+                                  background: '#dbeafe',
+                                  color: '#1e40af',
+                                  borderRadius: '4px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '600'
+                                }}>
+                                  ✓ Membre
+                                </span>
+                              ) : (
+                                <span style={{
+                                  display: 'inline-block',
+                                  padding: '0.25rem 0.5rem',
+                                  background: '#f3f4f6',
+                                  color: '#6b7280',
+                                  borderRadius: '4px',
+                                  fontSize: '0.75rem'
+                                }}>
+                                  Non membre
+                                </span>
+                              )}
+                            </td>
                             <td>{formation?.titre || '—'}</td>
                             <td>{inscription.niveau || '—'}</td>
                             <td>
@@ -8831,6 +9261,48 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                   </tbody>
                 </table>
               </div>
+              {/* Pagination */}
+              {inscriptionsPagination.totalPages > 1 && !inscriptionsSearch && (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center', 
+                  marginTop: '20px',
+                  padding: '16px',
+                  borderTop: '1px solid #e4e7ec'
+                }}>
+                  <div style={{ fontSize: '14px', color: '#64748b' }}>
+                    Page {inscriptionsPage} sur {inscriptionsPagination.totalPages} • 
+                    {(inscriptionsPage - 1) * inscriptionsPagination.limit + 1} - {Math.min(inscriptionsPage * inscriptionsPagination.limit, inscriptionsPagination.total)} sur {inscriptionsPagination.total}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => setInscriptionsPage(p => Math.max(1, p - 1))}
+                      disabled={inscriptionsPage === 1 || loading}
+                      className="btn-secondary"
+                      style={{ 
+                        padding: '8px 16px',
+                        opacity: inscriptionsPage === 1 || loading ? 0.5 : 1,
+                        cursor: inscriptionsPage === 1 || loading ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      ← Précédent
+                    </button>
+                    <button
+                      onClick={() => setInscriptionsPage(p => Math.min(inscriptionsPagination.totalPages, p + 1))}
+                      disabled={inscriptionsPage >= inscriptionsPagination.totalPages || loading}
+                      className="btn-primary"
+                      style={{ 
+                        padding: '8px 16px',
+                        opacity: inscriptionsPage >= inscriptionsPagination.totalPages || loading ? 0.5 : 1,
+                        cursor: inscriptionsPage >= inscriptionsPagination.totalPages || loading ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      Suivant →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </section>
         )}

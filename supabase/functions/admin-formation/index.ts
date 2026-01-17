@@ -820,12 +820,18 @@ Deno.serve(async (req) => {
 
     // GET /inscriptions - Liste des inscriptions
     if (req.method === "GET" && relativePath === "inscriptions") {
+      const search = searchParams.get("search") || ""
+      const sortBy = searchParams.get("sortBy") || ""
+      const sortOrder = searchParams.get("sortOrder") || "asc"
       const page = parseInt(searchParams.get("page") || "1", 10)
-      const limit = Math.min(parseInt(searchParams.get("limit") || "20", 10), 500)
+      // Si recherche active, utiliser un limit très élevé pour afficher tous les résultats
+      const defaultLimit = search ? 10000 : 50
+      const limit = Math.min(parseInt(searchParams.get("limit") || defaultLimit.toString(), 10), 10000)
       const formation_id = searchParams.get("formation_id") || ""
       const session_id = searchParams.get("session_id") || ""
       const status = searchParams.get("status") || ""
 
+      // Requête de base sans jointure cross-schema
       let query = supabaseFormation
         .from("inscriptions")
         .select("*", { count: "exact" })
@@ -840,17 +846,47 @@ Deno.serve(async (req) => {
         query = query.eq("status", status)
       }
 
-      // Trier : si status='pending', utiliser ordre_attente, sinon created_at DESC
-      if (status === "pending") {
-        query = query.order("ordre_attente", { ascending: true, nullsLast: true })
-          .order("created_at", { ascending: true })
-      } else {
-        query = query.order("created_at", { ascending: false })
+      // Recherche textuelle sur plusieurs colonnes
+      if (search) {
+        query = query.or(
+          `prenom.ilike.%${search}%,nom.ilike.%${search}%,email.ilike.%${search}%,niveau.ilike.%${search}%,paiement_status.ilike.%${search}%`
+        )
       }
 
-      const from = (page - 1) * limit
-      const to = from + limit - 1
-      query = query.range(from, to)
+      // Tri personnalisé
+      if (sortBy) {
+        const ascending = sortOrder === "asc"
+        if (sortBy === "nom" || sortBy === "prenom") {
+          // Trier par nom ou prénom nécessite de trier par les deux colonnes
+          if (sortBy === "nom") {
+            query = query.order("nom", { ascending }).order("prenom", { ascending })
+          } else {
+            query = query.order("prenom", { ascending }).order("nom", { ascending })
+          }
+        } else if (sortBy === "date") {
+          query = query.order("created_at", { ascending })
+        } else if (sortBy === "ordre_attente") {
+          query = query.order("ordre_attente", { ascending, nullsLast: true })
+        } else {
+          // Trier par la colonne spécifiée
+          query = query.order(sortBy, { ascending })
+        }
+      } else {
+        // Tri par défaut : si status='pending', utiliser ordre_attente, sinon created_at DESC
+        if (status === "pending") {
+          query = query.order("ordre_attente", { ascending: true, nullsLast: true })
+            .order("created_at", { ascending: true })
+        } else {
+          query = query.order("created_at", { ascending: false })
+        }
+      }
+
+      // Pagination uniquement si pas de recherche
+      if (!search) {
+        const from = (page - 1) * limit
+        const to = from + limit - 1
+        query = query.range(from, to)
+      }
 
       const { data, error, count } = await query
 
@@ -862,7 +898,7 @@ Deno.serve(async (req) => {
       // Enrichir avec les données de formation, session et statut membre
       const inscriptionsEnriched = await Promise.all(
         (data || []).map(async (inscription: any) => {
-          const [formation, session] = await Promise.all([
+          const [formation, session, member] = await Promise.all([
             supabaseFormation
               .from("formations")
               .select("titre, slug")
@@ -875,25 +911,54 @@ Deno.serve(async (req) => {
                   .eq("id", inscription.session_id)
                   .maybeSingle()
               : Promise.resolve({ data: null }),
+            inscription.membre_id
+              ? supabaseAdhesion
+                  .from("members")
+                  .select("id, prenom, nom, email, numero_membre")
+                  .eq("id", inscription.membre_id)
+                  .maybeSingle()
+              : Promise.resolve({ data: null }),
           ])
+
+          // Si recherche active, filtrer aussi côté serveur sur le titre de formation
+          let matchesSearch = true
+          if (search && formation?.data?.titre) {
+            const searchLower = search.toLowerCase()
+            matchesSearch =
+              inscription.prenom?.toLowerCase().includes(searchLower) ||
+              inscription.nom?.toLowerCase().includes(searchLower) ||
+              inscription.email?.toLowerCase().includes(searchLower) ||
+              inscription.niveau?.toLowerCase().includes(searchLower) ||
+              formation.data.titre?.toLowerCase().includes(searchLower)
+          }
 
           return {
             ...inscription,
             formation: formation?.data || null,
             session: session?.data || null,
             is_member: !!inscription.membre_id,
+            member_details: member?.data || null,
+            _matchesSearch: matchesSearch, // Pour le filtrage côté serveur si nécessaire
           }
         }),
       )
 
+      // Filtrer les résultats si recherche et que la formation ne correspond pas
+      const finalInscriptions = search
+        ? inscriptionsEnriched.filter((i) => i._matchesSearch !== false)
+        : inscriptionsEnriched
+
+      // Retirer le champ temporaire
+      const cleanInscriptions = finalInscriptions.map(({ _matchesSearch, ...rest }) => rest)
+
       return jsonResponse({
         success: true,
-        inscriptions: inscriptionsEnriched,
+        inscriptions: cleanInscriptions,
         pagination: {
           page,
           limit,
           total: count || 0,
-          totalPages: Math.ceil((count || 0) / limit),
+          totalPages: search ? 1 : Math.ceil((count || 0) / limit),
         },
       })
     }
