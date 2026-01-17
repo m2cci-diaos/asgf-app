@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   fetchProjets,
   createProjet,
@@ -581,6 +581,49 @@ const ProjetsContent = () => {
     }
   }
 
+  // Regrouper les groupes par projet
+  const groupesByProjet = useMemo(() => {
+    const grouped = {}
+    const sansProjet = []
+    
+    groupesTravail.forEach((groupe) => {
+      const projetId = groupe.projet_id || null
+      
+      if (!projetId) {
+        sansProjet.push(groupe)
+      } else {
+        if (!grouped[projetId]) {
+          grouped[projetId] = []
+        }
+        grouped[projetId].push(groupe)
+      }
+    })
+    
+    // Créer un tableau avec les projets et leurs groupes
+    const result = []
+    
+    // Ajouter les projets avec leurs groupes
+    Object.keys(grouped).forEach((projetId) => {
+      const projet = projets.find(p => p.projet_id === projetId)
+      result.push({
+        projetId,
+        projet,
+        groupes: grouped[projetId]
+      })
+    })
+    
+    // Ajouter la section "Sans projet" si elle existe
+    if (sansProjet.length > 0) {
+      result.push({
+        projetId: null,
+        projet: null,
+        groupes: sansProjet
+      })
+    }
+    
+    return result
+  }, [groupesTravail, projets])
+
   return (
     <div className="module-content">
       <div className="module-header">
@@ -988,90 +1031,154 @@ const ProjetsContent = () => {
           {loading ? (
             <div className="loading">Chargement...</div>
           ) : (
-            <div className="projets-grid" style={{ marginTop: '1.5rem' }}>
-              {groupesTravail.map((groupe) => (
-                <div key={groupe.id} className="projet-card-admin">
-                  <div className="projet-card-header" style={{ background: groupe.projet?.color || '#667eea' }}>
-                    <span className="projet-icon">{groupe.projet?.icon || '👥'}</span>
-                    <h3>{groupe.nom}</h3>
-                  </div>
-                  <div className="projet-card-body">
-                    <p style={{ marginBottom: '0.5rem', fontWeight: '600', color: '#64748b' }}>
-                      Projet: {groupe.projet?.titre || 'N/A'}
-                    </p>
-                    <p style={{ marginBottom: '0.75rem' }}>{groupe.description || 'Aucune description'}</p>
-                    
-                    {/* Affichage des membres */}
-                    <div style={{ marginBottom: '0.75rem', padding: '0.75rem', backgroundColor: '#f8fafc', borderRadius: '0.375rem' }}>
-                      <p style={{ fontSize: '0.875rem', fontWeight: '600', color: '#475569', marginBottom: '0.5rem' }}>
-                        Membres ({groupe.nombre_membres || groupe.membres?.length || 0})
-                      </p>
-                      {groupe.membres && groupe.membres.length > 0 ? (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                          {groupe.membres.slice(0, 5).map((m, idx) => (
-                            <span
-                              key={m.inscription_id || idx}
-                              style={{
-                                backgroundColor: '#eff6ff',
-                                color: '#1e40af',
-                                padding: '0.25rem 0.5rem',
-                                borderRadius: '0.25rem',
-                                fontSize: '0.75rem',
-                                fontWeight: '500'
-                              }}
-                            >
-                              {m.inscription?.prenom || m.membre?.prenom || ''} {m.inscription?.nom || m.membre?.nom || ''}
-                            </span>
-                          ))}
-                          {groupe.membres.length > 5 && (
-                            <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                              +{groupe.membres.length - 5} autres
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <p style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Aucun membre</p>
-                      )}
-                    </div>
-                    
-                    <div className="projet-meta">
-                      <span>Créé le {new Date(groupe.created_at).toLocaleDateString('fr-FR')}</span>
-                    </div>
-                    <div className="projet-actions">
-                      <button 
-                        onClick={() => handleOpenGroupeDetails(groupe)} 
-                        className="btn-primary"
-                        style={{ fontSize: '0.875rem', marginBottom: '0.5rem', width: '100%' }}
-                      >
-                        📋 Réunions & Actions
-                      </button>
-                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                        <button 
-                          onClick={() => handleOpenGroupeMembres(groupe)} 
-                          className="btn-secondary"
-                          style={{ fontSize: '0.875rem' }}
-                        >
-                          Gérer membres
-                        </button>
-                        <button onClick={() => handleEditGroupe(groupe)} className="btn-secondary" style={{ fontSize: '0.875rem' }}>
-                          Modifier
-                        </button>
-                        <button
-                          onClick={() => handleDeleteGroupe(groupe.id)}
-                          className="btn-danger"
-                          style={{ fontSize: '0.875rem' }}
-                        >
-                          Supprimer
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {groupesTravail.length === 0 && (
+            <div style={{ marginTop: '1.5rem' }}>
+              {groupesByProjet.length === 0 ? (
                 <p style={{ textAlign: 'center', color: '#64748b', padding: '2rem' }}>
                   Aucun groupe de travail créé. Cliquez sur "+ Créer un groupe de travail" pour commencer.
                 </p>
+              ) : (
+                groupesByProjet.map(({ projetId, projet, groupes }) => (
+                  <div key={projetId || 'sans-projet'} style={{ marginBottom: '2.5rem' }}>
+                    {/* Header du projet */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '1rem',
+                        marginBottom: '1.5rem',
+                        padding: '1rem 1.5rem',
+                        backgroundColor: projet?.color || '#667eea',
+                        borderRadius: '8px',
+                        color: 'white'
+                      }}
+                    >
+                      {projet && (
+                        <>
+                          <span style={{ fontSize: '1.5rem' }}>{projet.icon || '📋'}</span>
+                          <div style={{ flex: 1 }}>
+                            <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '600' }}>
+                              {projet.titre}
+                            </h2>
+                            {projet.description && (
+                              <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.875rem', opacity: 0.9 }}>
+                                {projet.description}
+                              </p>
+                            )}
+                          </div>
+                        </>
+                      )}
+                      {!projet && (
+                        <>
+                          <span style={{ fontSize: '1.5rem' }}>📁</span>
+                          <div style={{ flex: 1 }}>
+                            <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '600' }}>
+                              Sans projet
+                            </h2>
+                            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.875rem', opacity: 0.9 }}>
+                              Groupes de travail non associés à un projet
+                            </p>
+                          </div>
+                        </>
+                      )}
+                      <span
+                        style={{
+                          backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                          padding: '0.25rem 0.75rem',
+                          borderRadius: '12px',
+                          fontSize: '0.875rem',
+                          fontWeight: '600'
+                        }}
+                      >
+                        {groupes.length} groupe{groupes.length > 1 ? 's' : ''}
+                      </span>
+                    </div>
+
+                    {/* Grille des groupes du projet */}
+                    <div className="projets-grid">
+                      {groupes.map((groupe) => (
+                        <div key={groupe.id} className="projet-card-admin">
+                          <div className="projet-card-header" style={{ background: groupe.projet?.color || '#667eea' }}>
+                            <span className="projet-icon">{groupe.projet?.icon || '👥'}</span>
+                            <h3>{groupe.nom}</h3>
+                          </div>
+                          <div className="projet-card-body">
+                            {!projet && (
+                              <p style={{ marginBottom: '0.5rem', fontWeight: '600', color: '#64748b' }}>
+                                Projet: Non associé
+                              </p>
+                            )}
+                            <p style={{ marginBottom: '0.75rem' }}>{groupe.description || 'Aucune description'}</p>
+                            
+                            {/* Affichage des membres */}
+                            <div style={{ marginBottom: '0.75rem', padding: '0.75rem', backgroundColor: '#f8fafc', borderRadius: '0.375rem' }}>
+                              <p style={{ fontSize: '0.875rem', fontWeight: '600', color: '#475569', marginBottom: '0.5rem' }}>
+                                Membres ({groupe.nombre_membres || groupe.membres?.length || 0})
+                              </p>
+                              {groupe.membres && groupe.membres.length > 0 ? (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                  {groupe.membres.slice(0, 5).map((m, idx) => (
+                                    <span
+                                      key={m.inscription_id || idx}
+                                      style={{
+                                        backgroundColor: '#eff6ff',
+                                        color: '#1e40af',
+                                        padding: '0.25rem 0.5rem',
+                                        borderRadius: '0.25rem',
+                                        fontSize: '0.75rem',
+                                        fontWeight: '500'
+                                      }}
+                                    >
+                                      {m.inscription?.prenom || m.membre?.prenom || ''} {m.inscription?.nom || m.membre?.nom || ''}
+                                    </span>
+                                  ))}
+                                  {groupe.membres.length > 5 && (
+                                    <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                                      +{groupe.membres.length - 5} autres
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <p style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Aucun membre</p>
+                              )}
+                            </div>
+                            
+                            <div className="projet-meta">
+                              <span>Créé le {new Date(groupe.created_at).toLocaleDateString('fr-FR')}</span>
+                            </div>
+                            <div className="projet-actions">
+                              <button 
+                                onClick={() => handleOpenGroupeDetails(groupe)} 
+                                className="btn-primary"
+                                style={{ fontSize: '0.875rem', marginBottom: '0.5rem', width: '100%' }}
+                              >
+                                📋 Réunions & Actions
+                              </button>
+                              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                <button 
+                                  onClick={() => handleOpenGroupeMembres(groupe)} 
+                                  className="btn-secondary"
+                                  style={{ fontSize: '0.875rem' }}
+                                >
+                                  Gérer membres
+                                </button>
+                                <button onClick={() => handleEditGroupe(groupe)} className="btn-secondary" style={{ fontSize: '0.875rem' }}>
+                                  Modifier
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteGroupe(groupe.id)}
+                                  className="btn-danger"
+                                  style={{ fontSize: '0.875rem' }}
+                                >
+                                  Supprimer
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           )}
