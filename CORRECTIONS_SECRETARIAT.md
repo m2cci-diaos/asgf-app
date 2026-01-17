@@ -213,3 +213,4 @@ supabase functions logs admin-secretariat
    - S'assurer que le formulaire envoie `resume` et `actions_assignées` (pas `contenu` et `points_abordes`)
 
 
+

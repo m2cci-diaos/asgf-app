@@ -24,14 +24,19 @@ export function exportFormationsToExcel(formations, sessions, inscriptions, form
   ]
 
   const rows = formations.map(formation => {
-    const formationFormateurs = formateurs.filter(f => 
-      formation.formateurs_list?.some(ff => ff.id === f.id) || 
-      formation.formateur_id === f.id
-    )
+    // Utiliser les statistiques de la base de données si disponibles
+    const formationFormateurs = (formation.formateurs_list || []).length > 0
+      ? formation.formateurs_list.map((f) => ({ prenom: f.prenom, nom: f.nom }))
+      : formateurs.filter(f => 
+          formation.formateurs_list?.some((ff) => ff.id === f.id) || 
+          formation.formateur_id === f.id
+        )
     const formationSessions = sessions.filter(s => s.formation_id === formation.id)
-    const formationInscriptions = inscriptions.filter(i => i.formation_id === formation.id)
-    const confirmedInscriptions = formationInscriptions.filter(i => i.status === 'confirmed')
-    const revenus = confirmedInscriptions.length * (formation.prix || 0)
+    
+    // Utiliser les stats de la base de données pour les inscriptions
+    const totalInscriptions = formation.inscriptions_count !== undefined ? formation.inscriptions_count : inscriptions.filter(i => i.formation_id === formation.id).length
+    const confirmedInscriptions = formation.confirmed_count !== undefined ? formation.confirmed_count : inscriptions.filter(i => i.formation_id === formation.id && i.status === 'confirmed').length
+    const revenus = confirmedInscriptions * (formation.prix || 0)
 
     return [
       formation.id,
@@ -42,10 +47,10 @@ export function exportFormationsToExcel(formations, sessions, inscriptions, form
       formation.duree_heures || '',
       formation.prix || 0,
       formation.participants_max || '',
-      formationFormateurs.map(f => `${f.prenom} ${f.nom}`).join(', ') || '',
+      formationFormateurs.map(f => `${f.prenom || ''} ${f.nom || ''}`).filter(Boolean).join(', ') || '',
       formationSessions.length,
-      formationInscriptions.length,
-      confirmedInscriptions.length,
+      totalInscriptions,
+      confirmedInscriptions,
       revenus.toFixed(2),
       formation.is_active ? 'Active' : 'Inactive',
       formation.created_at ? new Date(formation.created_at).toLocaleDateString('fr-FR') : ''
@@ -280,20 +285,25 @@ export function exportFormationsToPDF(formations, sessions, inscriptions, format
         </thead>
         <tbody>
           ${formations.map(formation => {
-            const formationFormateurs = formateurs.filter(f => 
-              formation.formateurs_list?.some(ff => ff.id === f.id) || 
-              formation.formateur_id === f.id
-            )
-            const formationInscriptions = filteredInscriptions.filter(i => i.formation_id === formation.id)
-            const confirmedInscriptions = formationInscriptions.filter(i => i.status === 'confirmed')
-            const revenus = confirmedInscriptions.length * (formation.prix || 0)
+            // Utiliser les statistiques de la base de données
+            const formationFormateurs = (formation.formateurs_list || []).length > 0
+              ? formation.formateurs_list.map((f) => ({ prenom: f.prenom, nom: f.nom }))
+              : formateurs.filter(f => 
+                  formation.formateurs_list?.some((ff) => ff.id === f.id) || 
+                  formation.formateur_id === f.id
+                )
+            
+            // Utiliser les stats de la base de données pour les inscriptions
+            const totalInscriptions = formation.inscriptions_count !== undefined ? formation.inscriptions_count : filteredInscriptions.filter(i => i.formation_id === formation.id).length
+            const confirmedInscriptions = formation.confirmed_count !== undefined ? formation.confirmed_count : filteredInscriptions.filter(i => i.formation_id === formation.id && i.status === 'confirmed').length
+            const revenus = confirmedInscriptions * (formation.prix || 0)
 
             return `
               <tr>
                 <td>${formation.titre || ''}</td>
                 <td>${formation.categorie || ''}</td>
-                <td>${formationFormateurs.map(f => `${f.prenom} ${f.nom}`).join(', ') || 'Aucun'}</td>
-                <td>${confirmedInscriptions.length} / ${formationInscriptions.length}</td>
+                <td>${formationFormateurs.map(f => `${f.prenom || ''} ${f.nom || ''}`).filter(Boolean).join(', ') || 'Aucun'}</td>
+                <td>${confirmedInscriptions} / ${totalInscriptions}</td>
                 <td>${revenus.toFixed(2)}</td>
                 <td>${formation.is_active ? 'Active' : 'Inactive'}</td>
               </tr>
@@ -338,13 +348,30 @@ export function exportFormateursToExcel(formateurs, formations, inscriptions) {
   ]
 
   const rows = formateurs.map(formateur => {
-    // Trouver les formations associées
+    // Utiliser les statistiques de la base de données si disponibles
+    const formationsCount = formateur.formations_count !== undefined 
+      ? formateur.formations_count 
+      : formations.filter(f => 
+          f.formateurs_list?.some((ff) => ff.id === formateur.id) || 
+          f.formateur_id === formateur.id
+        ).length
+    
+    const inscriptionsCount = formateur.inscriptions_count !== undefined
+      ? formateur.inscriptions_count
+      : (() => {
+          const formateurFormations = formations.filter(f => 
+            f.formateurs_list?.some((ff) => ff.id === formateur.id) || 
+            f.formateur_id === formateur.id
+          )
+          return inscriptions.filter(i => 
+            formateurFormations.some(f => f.id === i.formation_id)
+          ).length
+        })()
+
+    // Pour la liste des formations, utiliser les données locales si disponibles
     const formateurFormations = formations.filter(f => 
-      f.formateurs_list?.some(ff => ff.id === formateur.id) || 
+      f.formateurs_list?.some((ff) => ff.id === formateur.id) || 
       f.formateur_id === formateur.id
-    )
-    const formateurInscriptions = inscriptions.filter(i => 
-      formateurFormations.some(f => f.id === i.formation_id)
     )
 
     return [
@@ -354,8 +381,8 @@ export function exportFormateursToExcel(formateurs, formations, inscriptions) {
       formateur.email || '',
       formateur.statut === 'membre' ? 'Membre ASGF' : 'Personne extérieure',
       formateurFormations.map(f => f.titre).join('; ') || 'Aucune',
-      formateurFormations.length,
-      formateurInscriptions.length,
+      formationsCount,
+      inscriptionsCount,
       formateur.created_at ? new Date(formateur.created_at).toLocaleDateString('fr-FR') : ''
     ]
   })

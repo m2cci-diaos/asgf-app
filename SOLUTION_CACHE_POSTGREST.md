@@ -63,3 +63,4 @@ Après avoir rafraîchi le cache, vérifiez que ça fonctionne :
 L'Edge Function utilise `createClient` avec `db: { schema: "secretariat" }`, ce qui devrait contourner le cache PostgREST. Si l'erreur persiste après le rafraîchissement, il peut y avoir un autre problème (permissions, RLS, etc.).
 
 
+

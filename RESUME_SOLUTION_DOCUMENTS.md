@@ -52,3 +52,4 @@ Vérifiez les logs Supabase pour voir l'erreur exacte :
 Le champ "Lien PDF" est bien un champ texte pour URL (pas un upload), c'est le comportement attendu ✅
 
 
+

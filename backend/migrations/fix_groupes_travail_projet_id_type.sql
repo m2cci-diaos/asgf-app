@@ -95,3 +95,4 @@ CREATE INDEX IF NOT EXISTS idx_groupes_travail_nom
 ON secretariat.groupes_travail(nom);
 
 
+

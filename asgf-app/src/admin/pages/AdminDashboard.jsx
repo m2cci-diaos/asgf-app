@@ -87,6 +87,7 @@ import {
   createFormateur,
   updateFormateur,
   deleteFormateur,
+  toggleFormationInscriptions,
   fetchWebinaireStats,
   fetchAllDashboardStats,
   fetchWebinaires,
@@ -102,6 +103,7 @@ import {
   updatePresentateur,
   deletePresentateur,
   sendInscriptionInvitation,
+  sendPendingInscriptionsEmails,
   sendSessionReminder,
   sendWebinaireInscriptionInvitation,
   sendWebinaireReminder,
@@ -7446,21 +7448,49 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     const [activeTab, setActiveTab] = useState('formations') // 'formations', 'sessions', 'inscriptions', 'formateurs'
     const [exporting, setExporting] = useState(false)
     const [selectedInscriptionIds, setSelectedInscriptionIds] = useState([])
+    const [inscriptionsPage, setInscriptionsPage] = useState(1)
+    const [inscriptionsPagination, setInscriptionsPagination] = useState({ total: 0, totalPages: 1, limit: 50 })
+    const [inscriptionsSearch, setInscriptionsSearch] = useState('')
+    const [inscriptionsSortBy, setInscriptionsSortBy] = useState('')
+    const [inscriptionsSortOrder, setInscriptionsSortOrder] = useState('asc')
+    const [inscriptionsFilterMembre, setInscriptionsFilterMembre] = useState('') // 'all', 'member', 'non-member'
+    const [inscriptionsFilterFormation, setInscriptionsFilterFormation] = useState('') // formation_id
+    
+    // États pour les actions optimistes et loading
+    const [loadingActions, setLoadingActions] = useState({})
+    const [loadingInscriptions, setLoadingInscriptions] = useState(false)
+    const [toast, setToast] = useState({ show: false, message: '', type: 'success' })
+    
+    // Fonction pour afficher un toast
+    const showToast = useCallback((message, type = 'success') => {
+      setToast({ show: true, message, type })
+      setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000)
+    }, [])
 
     const loadData = useCallback(async () => {
       setLoading(true)
       try {
-        const [statsData, formationsData, sessionsData, inscriptionsData, formateursData] = await Promise.all([
+        const [statsData, formationsData, sessionsData, inscriptionsResult, formateursData] = await Promise.all([
           fetchFormationStats(),
           fetchFormations({ page: 1, limit: 50 }),
           fetchSessions({ page: 1, limit: 50 }),
-          fetchInscriptions({ page: 1, limit: 50 }),
+          fetchInscriptions({ page: 1, limit: 50 }), // Toujours charger la page 1 au début
           fetchFormateurs(),
         ])
         setStats(statsData || {})
         setFormations(Array.isArray(formationsData) ? formationsData : [])
         setSessions(Array.isArray(sessionsData) ? sessionsData : [])
-        setInscriptions(Array.isArray(inscriptionsData) ? inscriptionsData : [])
+        // Handle both array and object with pagination
+        if (inscriptionsResult && typeof inscriptionsResult === 'object' && inscriptionsResult.inscriptions) {
+          setInscriptions(Array.isArray(inscriptionsResult.inscriptions) ? inscriptionsResult.inscriptions : [])
+          setInscriptionsPagination(inscriptionsResult.pagination || { total: 0, totalPages: 1, limit: 50 })
+        } else {
+          setInscriptions(Array.isArray(inscriptionsResult) ? inscriptionsResult : [])
+          // Si c'est un array, on peut estimer la pagination (mais ce n'est pas idéal)
+          if (Array.isArray(inscriptionsResult) && inscriptionsResult.length === 50) {
+            setInscriptionsPagination({ total: 50, totalPages: 1, limit: 50 })
+          }
+        }
         setFormateurs(Array.isArray(formateursData) ? formateursData : [])
       } catch (err) {
         console.error('Erreur chargement formations:', err)
@@ -7477,6 +7507,56 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
     useEffect(() => {
       loadData()
     }, [loadData])
+
+    // Charger les inscriptions lorsque la page change ou quand on active l'onglet inscriptions
+    const loadInscriptions = useCallback(async () => {
+      setLoadingInscriptions(true)
+      try {
+        // Toujours utiliser une limite fixe (50) - la pagination se fait côté serveur
+        // Le tri et la recherche sont appliqués AVANT la pagination côté serveur
+        const limit = 50
+        const inscriptionsResult = await fetchInscriptions({ 
+          page: inscriptionsPage, 
+          limit,
+          search: inscriptionsSearch,
+          sortBy: inscriptionsSortBy,
+          sortOrder: inscriptionsSortOrder,
+          formation_id: inscriptionsFilterFormation || '',
+          is_member: inscriptionsFilterMembre === 'member' ? true : inscriptionsFilterMembre === 'non-member' ? false : undefined
+        })
+        console.log('🔍 Filtres envoyés:', { 
+          formation_id: inscriptionsFilterFormation || '', 
+          is_member: inscriptionsFilterMembre === 'member' ? true : inscriptionsFilterMembre === 'non-member' ? false : undefined,
+          filterMembre: inscriptionsFilterMembre
+        })
+        if (inscriptionsResult && typeof inscriptionsResult === 'object' && inscriptionsResult.inscriptions) {
+          setInscriptions(Array.isArray(inscriptionsResult.inscriptions) ? inscriptionsResult.inscriptions : [])
+          setInscriptionsPagination(inscriptionsResult.pagination || { total: 0, totalPages: 1, limit })
+        } else {
+          setInscriptions(Array.isArray(inscriptionsResult) ? inscriptionsResult : [])
+        }
+      } catch (err) {
+        console.error('Erreur chargement inscriptions:', err)
+        setInscriptions([])
+      } finally {
+        setLoadingInscriptions(false)
+      }
+    }, [inscriptionsPage, inscriptionsSearch, inscriptionsSortBy, inscriptionsSortOrder, inscriptionsFilterMembre, inscriptionsFilterFormation])
+
+    // Réinitialiser la page à 1 quand la recherche ou le tri change
+    useEffect(() => {
+      if (activeTab === 'inscriptions' && (inscriptionsSearch || inscriptionsSortBy || inscriptionsFilterMembre || inscriptionsFilterFormation)) {
+        setInscriptionsPage(1)
+      }
+    }, [activeTab, inscriptionsSearch, inscriptionsSortBy, inscriptionsFilterMembre, inscriptionsFilterFormation])
+
+    useEffect(() => {
+      if (activeTab === 'inscriptions') {
+        // Toujours recharger quand on change de page, recherche, tri ou onglet
+        // Le backend applique WHERE + ORDER BY avant LIMIT/OFFSET
+        loadInscriptions()
+      }
+    }, [activeTab, inscriptionsPage, inscriptionsSearch, inscriptionsSortBy, inscriptionsSortOrder, loadInscriptions])
 
     const handleSubmit = async (e) => {
       e.preventDefault()
@@ -7671,35 +7751,141 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
 
     const handleDelete = async (type, id) => {
       if (!window.confirm(`Supprimer définitivement cet élément ?`)) return
-      try {
-        if (type === 'formation') await deleteFormation(id)
-        else if (type === 'session') await deleteSession(id)
-        else if (type === 'inscription') await deleteInscription(id)
-        else if (type === 'formateur') await deleteFormateur(id)
-        alert('Élément supprimé avec succès !')
-        await loadData()
-      } catch (err) {
-        alert(err.message || 'Erreur lors de la suppression')
+      
+      if (type === 'inscription') {
+        const actionKey = `delete-${id}`
+        const inscription = inscriptions.find(i => i.id === id)
+        if (!inscription) return
+        
+        // Sauvegarder pour rollback
+        const previousInscriptions = [...inscriptions]
+        
+        // Optimistic update
+        setInscriptions(prev => prev.filter(i => i.id !== id))
+        setSelectedInscriptionIds(prev => prev.filter(selectedId => selectedId !== id))
+        setLoadingActions(prev => ({ ...prev, [actionKey]: true }))
+        
+        try {
+          await deleteInscription(id)
+          showToast('Inscription supprimée avec succès !', 'success')
+          // Mettre à jour le total de pagination
+          setInscriptionsPagination(prev => ({
+            ...prev,
+            total: Math.max(0, (prev.total || 0) - 1),
+            totalPages: Math.ceil(Math.max(0, (prev.total || 0) - 1) / prev.limit)
+          }))
+        } catch (err) {
+          // Rollback
+          setInscriptions(previousInscriptions)
+          showToast(err.message || 'Erreur lors de la suppression', 'error')
+        } finally {
+          setLoadingActions(prev => {
+            const next = { ...prev }
+            delete next[actionKey]
+            return next
+          })
+        }
+      } else {
+        // Pour les autres types, garder le comportement actuel
+        try {
+          if (type === 'formation') await deleteFormation(id)
+          else if (type === 'session') await deleteSession(id)
+          else if (type === 'formateur') await deleteFormateur(id)
+          showToast('Élément supprimé avec succès !', 'success')
+          await loadData()
+        } catch (err) {
+          showToast(err.message || 'Erreur lors de la suppression', 'error')
+        }
       }
     }
 
     const handleConfirmInscription = async (id) => {
+      const actionKey = `confirm-${id}`
+      const inscription = inscriptions.find(i => i.id === id)
+      if (!inscription) return
+      
+      // Sauvegarder l'état précédent pour rollback
+      const previousState = { ...inscription }
+      
+      // Optimistic update
+      setInscriptions(prev => prev.map(i => 
+        i.id === id ? { ...i, status: 'confirmed' } : i
+      ))
+      setLoadingActions(prev => ({ ...prev, [actionKey]: true }))
+      
       try {
         await confirmInscription(id)
-        alert('Inscription confirmée avec succès !')
-        await loadData()
+        showToast('Inscription confirmée avec succès !', 'success')
+        // Recharger silencieusement (sans loading global) pour avoir les données à jour
+        const limit = 50
+        const inscriptionsResult = await fetchInscriptions({ 
+          page: inscriptionsPage, 
+          limit,
+          search: inscriptionsSearch,
+          sortBy: inscriptionsSortBy,
+          sortOrder: inscriptionsSortOrder
+        })
+        if (inscriptionsResult && typeof inscriptionsResult === 'object' && inscriptionsResult.inscriptions) {
+          setInscriptions(Array.isArray(inscriptionsResult.inscriptions) ? inscriptionsResult.inscriptions : [])
+          setInscriptionsPagination(inscriptionsResult.pagination || { total: 0, totalPages: 1, limit })
+        }
       } catch (err) {
-        alert(err.message || 'Erreur lors de la confirmation')
+        // Rollback en cas d'erreur
+        setInscriptions(prev => prev.map(i => 
+          i.id === id ? previousState : i
+        ))
+        showToast(err.message || 'Erreur lors de la confirmation', 'error')
+      } finally {
+        setLoadingActions(prev => {
+          const next = { ...prev }
+          delete next[actionKey]
+          return next
+        })
       }
     }
 
     const handleRejectInscription = async (id) => {
+      const actionKey = `reject-${id}`
+      const inscription = inscriptions.find(i => i.id === id)
+      if (!inscription) return
+      
+      // Sauvegarder l'état précédent pour rollback
+      const previousState = { ...inscription }
+      
+      // Optimistic update
+      setInscriptions(prev => prev.map(i => 
+        i.id === id ? { ...i, status: 'cancelled' } : i
+      ))
+      setLoadingActions(prev => ({ ...prev, [actionKey]: true }))
+      
       try {
         await rejectInscription(id)
-        alert('Inscription rejetée avec succès !')
-        await loadData()
+        showToast('Inscription rejetée avec succès !', 'success')
+        // Recharger silencieusement (sans loading global)
+        const limit = 50
+        const inscriptionsResult = await fetchInscriptions({ 
+          page: inscriptionsPage, 
+          limit,
+          search: inscriptionsSearch,
+          sortBy: inscriptionsSortBy,
+          sortOrder: inscriptionsSortOrder
+        })
+        if (inscriptionsResult && typeof inscriptionsResult === 'object' && inscriptionsResult.inscriptions) {
+          setInscriptions(Array.isArray(inscriptionsResult.inscriptions) ? inscriptionsResult.inscriptions : [])
+          setInscriptionsPagination(inscriptionsResult.pagination || { total: 0, totalPages: 1, limit })
+        }
       } catch (err) {
-        alert(err.message || 'Erreur lors du rejet')
+        // Rollback en cas d'erreur
+        setInscriptions(prev => prev.map(i => 
+          i.id === id ? previousState : i
+        ))
+        showToast(err.message || 'Erreur lors du rejet', 'error')
+      } finally {
+        setLoadingActions(prev => {
+          const next = { ...prev }
+          delete next[actionKey]
+          return next
+        })
       }
     }
 
@@ -7709,28 +7895,26 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
         ''
       )
       if (!accessLink) return
+      
+      const actionKey = `invite-${id}`
+      setLoadingActions(prev => ({ ...prev, [actionKey]: true }))
+      
       try {
         await sendInscriptionInvitation(id, accessLink)
-        alert("Invitation envoyée avec succès à l'inscrit.")
+        showToast("Invitation envoyée avec succès à l'inscrit.", 'success')
       } catch (err) {
-        alert(err.message || "Erreur lors de l'envoi de l'invitation")
+        showToast(err.message || "Erreur lors de l'envoi de l'invitation", 'error')
+      } finally {
+        setLoadingActions(prev => {
+          const next = { ...prev }
+          delete next[actionKey]
+          return next
+        })
       }
     }
 
-    const filteredInscriptions = useMemo(() => {
-      return inscriptions.filter((i) => {
-        if (!filters.search) return true
-        const search = filters.search.toLowerCase()
-        const formationTitle =
-          formations.find((f) => f.id === i.formation_id)?.titre?.toLowerCase() || ''
-        return (
-          i.prenom?.toLowerCase().includes(search) ||
-          i.nom?.toLowerCase().includes(search) ||
-          i.email?.toLowerCase().includes(search) ||
-          formationTitle.includes(search)
-        )
-      })
-    }, [inscriptions, formations, filters.search])
+    // Plus besoin de filteredInscriptions côté client car la recherche est côté serveur
+    const filteredInscriptions = inscriptions
 
     const allVisibleSelected =
       filteredInscriptions.length > 0 &&
@@ -7759,7 +7943,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
 
     const handleBulkInscriptionsAction = async (action) => {
       if (selectedInscriptionIds.length === 0) {
-        alert('Sélectionnez au moins une inscription.')
+        showToast('Sélectionnez au moins une inscription.', 'error')
         return
       }
 
@@ -7772,8 +7956,16 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
         return
       }
 
+      const actionKey = `bulk-${action}`
+      setLoadingActions(prev => ({ ...prev, [actionKey]: true }))
+      
+      // Sauvegarder les états précédents pour rollback
+      const previousStates = selectedInscriptionIds.map(id => {
+        const ins = inscriptions.find(i => i.id === id)
+        return ins ? { id, state: { ...ins } } : null
+      }).filter(Boolean)
+
       try {
-        let accessLink = ''
         if (action === 'invite') {
           // Ne garder que les inscriptions confirmées
           const confirmedIds = selectedInscriptionIds.filter((id) => {
@@ -7782,42 +7974,107 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
           })
 
           if (confirmedIds.length === 0) {
-            alert('Aucune des inscriptions sélectionnées n’est confirmée.')
+            showToast('Aucune des inscriptions sélectionnées n\'est confirmée.', 'error')
             return
           }
 
-          accessLink = window.prompt(
+          const accessLink = window.prompt(
             "Lien d'accès (Zoom, Teams, etc.) à envoyer à tous les participants confirmés :",
             ''
           )
           if (!accessLink) return
 
-          for (const id of confirmedIds) {
-            await sendInscriptionInvitation(id, accessLink)
-          }
+          // Envoyer les invitations en parallèle
+          await Promise.all(
+            confirmedIds.map(id => sendInscriptionInvitation(id, accessLink))
+          )
 
-          alert('Invitations envoyées avec succès aux inscriptions confirmées sélectionnées.')
+          showToast(`Invitations envoyées avec succès à ${confirmedIds.length} participant(s).`, 'success')
+          setSelectedInscriptionIds([])
           return
         }
 
-        for (const id of selectedInscriptionIds) {
-          if (action === 'confirm') await confirmInscription(id)
-          else if (action === 'reject') await rejectInscription(id)
-          else if (action === 'delete') await deleteInscription(id)
+        // Actions bulk : confirm, reject, delete
+        // Optimistic updates
+        if (action === 'confirm') {
+          setInscriptions(prev => prev.map(i => 
+            selectedInscriptionIds.includes(i.id) ? { ...i, status: 'confirmed' } : i
+          ))
+        } else if (action === 'reject') {
+          setInscriptions(prev => prev.map(i => 
+            selectedInscriptionIds.includes(i.id) ? { ...i, status: 'rejected' } : i
+          ))
+        } else if (action === 'delete') {
+          setInscriptions(prev => prev.filter(i => !selectedInscriptionIds.includes(i.id)))
+          setInscriptionsPagination(prev => ({
+            ...prev,
+            total: Math.max(0, (prev.total || 0) - selectedInscriptionIds.length),
+            totalPages: Math.ceil(Math.max(0, (prev.total || 0) - selectedInscriptionIds.length) / prev.limit)
+          }))
         }
+
+        // Exécuter les actions en parallèle
+        await Promise.all(
+          selectedInscriptionIds.map(id => {
+            if (action === 'confirm') return confirmInscription(id)
+            else if (action === 'reject') return rejectInscription(id)
+            else if (action === 'delete') return deleteInscription(id)
+          })
+        )
 
         const message =
           action === 'confirm'
-            ? 'Inscriptions confirmées avec succès !'
+            ? `${selectedInscriptionIds.length} inscription(s) confirmée(s) avec succès !`
             : action === 'reject'
-            ? 'Inscriptions rejetées avec succès !'
-            : 'Inscriptions supprimées avec succès !'
+            ? `${selectedInscriptionIds.length} inscription(s) rejetée(s) avec succès !`
+            : `${selectedInscriptionIds.length} inscription(s) supprimée(s) avec succès !`
 
-        alert(message)
+        showToast(message, 'success')
         setSelectedInscriptionIds([])
-        await loadData()
+        
+        // Recharger silencieusement (sans loading global) pour avoir les données à jour
+        const limit = 50
+        const inscriptionsResult = await fetchInscriptions({ 
+          page: inscriptionsPage, 
+          limit,
+          search: inscriptionsSearch,
+          sortBy: inscriptionsSortBy,
+          sortOrder: inscriptionsSortOrder
+        })
+        if (inscriptionsResult && typeof inscriptionsResult === 'object' && inscriptionsResult.inscriptions) {
+          setInscriptions(Array.isArray(inscriptionsResult.inscriptions) ? inscriptionsResult.inscriptions : [])
+          setInscriptionsPagination(inscriptionsResult.pagination || { total: 0, totalPages: 1, limit })
+        }
       } catch (err) {
-        alert(err.message || 'Erreur lors du traitement des inscriptions sélectionnées')
+        // Rollback en cas d'erreur
+        if (action === 'confirm' || action === 'reject') {
+          setInscriptions(prev => prev.map(i => {
+            const previous = previousStates.find(p => p?.id === i.id)
+            return previous ? previous.state : i
+          }))
+        } else if (action === 'delete') {
+          setInscriptions(prev => {
+            const restored = [...prev]
+            previousStates.forEach(p => {
+              if (p && !restored.find(i => i.id === p.id)) {
+                restored.push(p.state)
+              }
+            })
+            return restored
+          })
+          setInscriptionsPagination(prev => ({
+            ...prev,
+            total: (prev.total || 0) + selectedInscriptionIds.length,
+            totalPages: Math.ceil((prev.total || 0) + selectedInscriptionIds.length / prev.limit)
+          }))
+        }
+        showToast(err.message || 'Erreur lors du traitement des inscriptions sélectionnées', 'error')
+      } finally {
+        setLoadingActions(prev => {
+          const next = { ...prev }
+          delete next[actionKey]
+          return next
+        })
       }
     }
 
@@ -7869,10 +8126,43 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
       }
     }
 
-    const handleExportInscriptions = () => {
+    const handleExportInscriptions = async () => {
       try {
         setExporting(true)
-        exportInscriptionsToExcel(inscriptions, formations)
+        // Récupérer TOUTES les inscriptions pour l'export (sans limite de pagination)
+        const allInscriptions = []
+        let currentPage = 1
+        let hasMore = true
+        const limit = 500 // Limite maximale par page
+        
+        while (hasMore) {
+          try {
+            const result = await fetchInscriptions({ 
+              page: currentPage, 
+              limit,
+              formation_id: inscriptionsFilterFormation || '',
+              status: '',
+              search: '',
+              sortBy: '',
+              sortOrder: 'asc'
+            })
+            
+            const inscriptionsData = Array.isArray(result) ? result : (result?.inscriptions || [])
+            allInscriptions.push(...inscriptionsData)
+            
+            const pagination = result?.pagination || {}
+            if (pagination.totalPages && currentPage < pagination.totalPages) {
+              currentPage++
+            } else {
+              hasMore = false
+            }
+          } catch (err) {
+            console.warn('Erreur lors du chargement des inscriptions (page ' + currentPage + '):', err)
+            hasMore = false
+          }
+        }
+        
+        exportInscriptionsToExcel(allInscriptions, formations)
       } catch (err) {
         alert('Erreur lors de l\'export : ' + err.message)
       } finally {
@@ -7975,9 +8265,8 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
       loadFormateurFormations()
     }, [showModal, editingId])
 
-    if (loading) {
-      return <div className="module-content"><p>Chargement...</p></div>
-    }
+    // Ne plus bloquer tout le composant - afficher les KPI et les sections même pendant le chargement initial
+    // Seulement afficher un loading discret pour les inscriptions si nécessaire
 
     return (
       <div className="module-content">
@@ -8004,8 +8293,8 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             </div>
             <div className="kpi-content">
               <p className="kpi-label">Inscriptions totales</p>
-              <p className="kpi-value">{inscriptions.length}</p>
-              <p className="card-subtitle">{inscriptions.filter(i => i.status === 'confirmed').length} confirmées</p>
+              <p className="kpi-value">{stats.total_inscriptions || 0}</p>
+              <p className="card-subtitle">{stats.confirmed_inscriptions || 0} confirmées</p>
             </div>
           </div>
 
@@ -8056,7 +8345,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             </div>
             <div className="kpi-content">
               <p className="kpi-label">En attente</p>
-              <p className="kpi-value">{inscriptions.filter(i => i.status === 'pending').length}</p>
+              <p className="kpi-value">{stats.pending_inscriptions || 0}</p>
               <p className="card-subtitle">À valider</p>
             </div>
           </div>
@@ -8283,7 +8572,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
             {[
               { id: 'formations', label: '📚 Formations', count: formations.length },
               { id: 'sessions', label: '📅 Sessions', count: sessions.length },
-              { id: 'inscriptions', label: '👥 Inscriptions', count: inscriptions.length },
+              { id: 'inscriptions', label: '👥 Inscriptions', count: stats.total_inscriptions || inscriptions.length },
               { id: 'formateurs', label: '👨‍🏫 Formateurs', count: formateurs.length }
             ].map(tab => (
               <button
@@ -8388,6 +8677,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       <th>Prix</th>
                       <th>Inscriptions</th>
                       <th>Revenus</th>
+                      <th>Inscriptions</th>
                       <th>Statut</th>
                       <th>Actions</th>
                     </tr>
@@ -8403,7 +8693,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       })
                       .length === 0 ? (
                       <tr>
-                        <td colSpan="9" style={{ textAlign: 'center', padding: '2rem' }}>Aucune formation</td>
+                        <td colSpan="10" style={{ textAlign: 'center', padding: '2rem' }}>Aucune formation</td>
                       </tr>
                     ) : (
                       formations
@@ -8419,9 +8709,10 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                             formation.formateurs_list?.some(ff => ff.id === f.id) || 
                             formation.formateur_id === f.id
                           )
-                          const formationInscriptions = inscriptions.filter(i => i.formation_id === formation.id)
-                          const confirmedInscriptions = formationInscriptions.filter(i => i.status === 'confirmed')
-                          const revenus = confirmedInscriptions.length * (formation.prix || 0)
+                          // Utiliser les stats de la base de données si disponibles, sinon calculer depuis les inscriptions chargées
+                          const confirmedCount = formation.confirmed_count !== undefined ? formation.confirmed_count : inscriptions.filter(i => i.formation_id === formation.id && i.status === 'confirmed').length
+                          const totalInscriptions = formation.inscriptions_count !== undefined ? formation.inscriptions_count : inscriptions.filter(i => i.formation_id === formation.id).length
+                          const revenus = confirmedCount * (formation.prix || 0)
                           
                           return (
                             <tr key={formation.id}>
@@ -8454,7 +8745,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                               <td>{formation.prix ? `${formation.prix} €` : 'Gratuit'}</td>
                               <td>
                                 <span style={{ fontWeight: '600' }}>
-                                  {confirmedInscriptions.length}
+                                  {confirmedCount}
                                 </span>
                                 {' / '}
                                 {formation.participants_max || '∞'}
@@ -8462,14 +8753,64 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                   <span style={{ 
                                     marginLeft: '0.5rem',
                                     fontSize: '0.8rem',
-                                    color: confirmedInscriptions.length / formation.participants_max >= 0.8 ? '#28a745' : '#666'
+                                    color: confirmedCount / formation.participants_max >= 0.8 ? '#28a745' : '#666'
                                   }}>
-                                    ({Math.round(confirmedInscriptions.length / formation.participants_max * 100)}%)
+                                    ({Math.round(confirmedCount / formation.participants_max * 100)}%)
                                   </span>
                                 )}
                               </td>
                               <td style={{ fontWeight: '600', color: '#28a745' }}>
                                 {revenus > 0 ? `${revenus.toFixed(0)} €` : '—'}
+                              </td>
+                              <td style={{ textAlign: 'center' }}>
+                                <label style={{ 
+                                  display: 'inline-flex', 
+                                  alignItems: 'center', 
+                                  cursor: loadingActions[`toggle-inscriptions-${formation.id}`] ? 'not-allowed' : 'pointer',
+                                  opacity: loadingActions[`toggle-inscriptions-${formation.id}`] ? 0.6 : 1
+                                }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={formation.inscriptions_ouvertes !== false}
+                                    onChange={async () => {
+                                      const actionKey = `toggle-inscriptions-${formation.id}`
+                                      const previousValue = formation.inscriptions_ouvertes !== false
+                                      
+                                      // Optimistic update
+                                      setFormations(prev => prev.map(f => 
+                                        f.id === formation.id ? { ...f, inscriptions_ouvertes: !previousValue } : f
+                                      ))
+                                      setLoadingActions(prev => ({ ...prev, [actionKey]: true }))
+                                      
+                                      try {
+                                        await toggleFormationInscriptions(formation.id)
+                                        showToast(`Inscriptions ${!previousValue ? 'ouvertes' : 'fermées'} avec succès`, 'success')
+                                      } catch (err) {
+                                        // Rollback
+                                        setFormations(prev => prev.map(f => 
+                                          f.id === formation.id ? { ...f, inscriptions_ouvertes: previousValue } : f
+                                        ))
+                                        showToast(err.message || 'Erreur lors de la mise à jour', 'error')
+                                      } finally {
+                                        setLoadingActions(prev => {
+                                          const next = { ...prev }
+                                          delete next[actionKey]
+                                          return next
+                                        })
+                                      }
+                                    }}
+                                    disabled={loadingActions[`toggle-inscriptions-${formation.id}`]}
+                                    style={{
+                                      width: '18px',
+                                      height: '18px',
+                                      cursor: loadingActions[`toggle-inscriptions-${formation.id}`] ? 'not-allowed' : 'pointer',
+                                      marginRight: '8px'
+                                    }}
+                                  />
+                                  <span style={{ fontSize: '0.85rem', color: formation.inscriptions_ouvertes !== false ? '#28a745' : '#dc3545', fontWeight: '500' }}>
+                                    {formation.inscriptions_ouvertes !== false ? 'Ouvertes' : 'Fermées'}
+                                  </span>
+                                </label>
                               </td>
                               <td>
                                 <span className={`status-badge ${formation.is_active ? 'approved' : 'rejected'}`}>
@@ -8616,19 +8957,40 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                 <div>
                   <h3 className="card-title">👥 Inscriptions</h3>
                   <p className="card-subtitle">
-                    {inscriptions.length} inscription{inscriptions.length !== 1 ? 's' : ''}
+                    {inscriptionsSearch 
+                      ? `${inscriptionsPagination.total || inscriptions.length} résultat${(inscriptionsPagination.total || inscriptions.length) !== 1 ? 's' : ''} trouvé${(inscriptionsPagination.total || inscriptions.length) !== 1 ? 's' : ''} (page ${inscriptionsPage} sur ${inscriptionsPagination.totalPages})`
+                      : `${inscriptionsPagination.total || inscriptions.length} inscription${(inscriptionsPagination.total || inscriptions.length) !== 1 ? 's' : ''}`}
                     {selectedInscriptionIds.length > 0 &&
                       ` • ${selectedInscriptionIds.length} sélectionnée${
                         selectedInscriptionIds.length > 1 ? 's' : ''
                       }`}
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                   <input
                     type="text"
-                    placeholder="🔍 Rechercher..."
-                    value={filters.search}
-                    onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                    placeholder="🔍 Rechercher (nom, email, formation, niveau)..."
+                    value={inscriptionsSearch}
+                    onChange={(e) => {
+                      setInscriptionsSearch(e.target.value)
+                      // La recherche déclenchera loadInscriptions via useEffect
+                    }}
+                    style={{
+                      padding: '0.5rem 0.75rem',
+                      border: '2px solid #0066CC',
+                      borderRadius: '5px',
+                      fontSize: '0.9rem',
+                      background: 'white',
+                      color: '#212529',
+                      fontWeight: '500',
+                      minWidth: '250px',
+                    }}
+                  />
+                  <select
+                    value={inscriptionsFilterFormation}
+                    onChange={(e) => {
+                      setInscriptionsFilterFormation(e.target.value)
+                    }}
                     style={{
                       padding: '0.5rem 0.75rem',
                       border: '2px solid #0066CC',
@@ -8638,57 +9000,147 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                       color: '#212529',
                       fontWeight: '500',
                       minWidth: '200px',
+                      cursor: 'pointer'
                     }}
-                  />
-                  {selectedInscriptionIds.length > 0 && (
-                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
-                        onClick={() => handleBulkInscriptionsAction('confirm')}
-                      >
-                        Confirmer la sélection
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{
-                          padding: '0.4rem 0.75rem',
-                          fontSize: '0.8rem',
-                          backgroundColor: '#f97316',
-                          borderColor: '#f97316',
-                        }}
-                        onClick={() => handleBulkInscriptionsAction('reject')}
-                      >
-                        Rejeter la sélection
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{
-                          padding: '0.4rem 0.75rem',
-                          fontSize: '0.8rem',
-                          backgroundColor: '#dc2626',
-                          borderColor: '#dc2626',
-                        }}
-                        onClick={() => handleBulkInscriptionsAction('delete')}
-                      >
-                        Supprimer la sélection
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{
-                          padding: '0.4rem 0.75rem',
-                          fontSize: '0.8rem',
-                        }}
-                        onClick={() => handleBulkInscriptionsAction('invite')}
-                      >
-                        Envoyer les invitations
-                      </button>
-                    </div>
-                  )}
+                  >
+                    <option value="">Toutes les formations</option>
+                    {formations.map(f => (
+                      <option key={f.id} value={f.id}>{f.titre}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={inscriptionsFilterMembre}
+                    onChange={(e) => {
+                      setInscriptionsFilterMembre(e.target.value)
+                    }}
+                    style={{
+                      padding: '0.5rem 0.75rem',
+                      border: '2px solid #0066CC',
+                      borderRadius: '5px',
+                      fontSize: '0.9rem',
+                      background: 'white',
+                      color: '#212529',
+                      fontWeight: '500',
+                      minWidth: '150px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="">Tous</option>
+                    <option value="member">Membre</option>
+                    <option value="non-member">Non membre</option>
+                  </select>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    {/* Bouton pour envoyer aux inscrits en attente (tous ou sélectionnés) */}
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{
+                        padding: '0.4rem 0.75rem',
+                        fontSize: '0.8rem',
+                        backgroundColor: '#8b5cf6',
+                        borderColor: '#8b5cf6',
+                        color: 'white',
+                      }}
+                      onClick={async () => {
+                        const pendingInscriptions = inscriptions.filter(i => i.status === 'pending')
+                        const idsToSend = selectedInscriptionIds.length > 0
+                          ? selectedInscriptionIds.filter(id => {
+                              const ins = inscriptions.find(i => i.id === id)
+                              return ins && ins.status === 'pending'
+                            })
+                          : pendingInscriptions.map(i => i.id)
+                        
+                        if (idsToSend.length === 0) {
+                          alert('Aucune inscription en attente à sélectionner.')
+                          return
+                        }
+
+                        const message = window.prompt(
+                          `Envoyer un email à ${idsToSend.length} inscrit(s) en attente.\n\nMessage optionnel (laisser vide pour utiliser le message par défaut) :`,
+                          ''
+                        )
+                        
+                        if (message === null) return // Annulé
+
+                        try {
+                          setLoadingInscriptions(true)
+                          const result = await sendPendingInscriptionsEmails(idsToSend, message || '')
+                          showToast(`✅ ${result?.sent || idsToSend.length} email(s) envoyé(s) avec succès${result?.errors > 0 ? `, ${result.errors} erreur(s)` : ''}`, 'success')
+                        } catch (err) {
+                          showToast(err.message || 'Erreur lors de l\'envoi des emails', 'error')
+                        } finally {
+                          setLoadingInscriptions(false)
+                        }
+                      }}
+                    >
+                      📧 Envoyer aux en attente
+                    </button>
+
+                    {selectedInscriptionIds.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          style={{ 
+                            padding: '0.4rem 0.75rem', 
+                            fontSize: '0.8rem',
+                            opacity: loadingActions['bulk-confirm'] ? 0.6 : 1,
+                            cursor: loadingActions['bulk-confirm'] ? 'not-allowed' : 'pointer'
+                          }}
+                          onClick={() => handleBulkInscriptionsAction('confirm')}
+                          disabled={loadingActions['bulk-confirm']}
+                        >
+                          {loadingActions['bulk-confirm'] ? '⏳' : ''} Confirmer la sélection
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{
+                            padding: '0.4rem 0.75rem',
+                            fontSize: '0.8rem',
+                            backgroundColor: '#f97316',
+                            borderColor: '#f97316',
+                            opacity: loadingActions['bulk-reject'] ? 0.6 : 1,
+                            cursor: loadingActions['bulk-reject'] ? 'not-allowed' : 'pointer'
+                          }}
+                          onClick={() => handleBulkInscriptionsAction('reject')}
+                          disabled={loadingActions['bulk-reject']}
+                        >
+                          {loadingActions['bulk-reject'] ? '⏳' : ''} Rejeter la sélection
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{
+                            padding: '0.4rem 0.75rem',
+                            fontSize: '0.8rem',
+                            backgroundColor: '#dc2626',
+                            borderColor: '#dc2626',
+                            opacity: loadingActions['bulk-delete'] ? 0.6 : 1,
+                            cursor: loadingActions['bulk-delete'] ? 'not-allowed' : 'pointer'
+                          }}
+                          onClick={() => handleBulkInscriptionsAction('delete')}
+                          disabled={loadingActions['bulk-delete']}
+                        >
+                          {loadingActions['bulk-delete'] ? '⏳' : ''} Supprimer la sélection
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{
+                            padding: '0.4rem 0.75rem',
+                            fontSize: '0.8rem',
+                            opacity: loadingActions['bulk-invite'] ? 0.6 : 1,
+                            cursor: loadingActions['bulk-invite'] ? 'not-allowed' : 'pointer'
+                          }}
+                          onClick={() => handleBulkInscriptionsAction('invite')}
+                          disabled={loadingActions['bulk-invite']}
+                        >
+                          {loadingActions['bulk-invite'] ? '⏳' : ''} Envoyer les invitations
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="table-container">
@@ -8702,20 +9154,311 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                           onChange={toggleSelectAllVisible}
                         />
                       </th>
-                      <th>Nom</th>
-                      <th>Email</th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'ordre_attente') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('ordre_attente')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'ordre_attente' ? '600' : '400',
+                            color: inscriptionsSortBy === 'ordre_attente' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'ordre_attente') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'ordre_attente') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Ordre d'attente
+                          {inscriptionsSortBy === 'ordre_attente' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'nom') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('nom')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'nom' ? '600' : '400',
+                            color: inscriptionsSortBy === 'nom' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'nom') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'nom') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Nom
+                          {inscriptionsSortBy === 'nom' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'email') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('email')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'email' ? '600' : '400',
+                            color: inscriptionsSortBy === 'email' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'email') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'email') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Email
+                          {inscriptionsSortBy === 'email' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>Membre</th>
                       <th>Formation</th>
-                      <th>Niveau</th>
-                      <th>Statut</th>
-                      <th>Paiement</th>
-                      <th>Date</th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'niveau') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('niveau')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'niveau' ? '600' : '400',
+                            color: inscriptionsSortBy === 'niveau' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'niveau') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'niveau') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Niveau
+                          {inscriptionsSortBy === 'niveau' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'status') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('status')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'status' ? '600' : '400',
+                            color: inscriptionsSortBy === 'status' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'status') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'status') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Statut
+                          {inscriptionsSortBy === 'status' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'paiement_status') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('paiement_status')
+                              setInscriptionsSortOrder('asc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'paiement_status' ? '600' : '400',
+                            color: inscriptionsSortBy === 'paiement_status' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'paiement_status') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'paiement_status') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Paiement
+                          {inscriptionsSortBy === 'paiement_status' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
+                      <th>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (inscriptionsSortBy === 'date') {
+                              setInscriptionsSortOrder(inscriptionsSortOrder === 'asc' ? 'desc' : 'asc')
+                            } else {
+                              setInscriptionsSortBy('date')
+                              setInscriptionsSortOrder('desc')
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontWeight: inscriptionsSortBy === 'date' ? '600' : '400',
+                            color: inscriptionsSortBy === 'date' ? '#0066CC' : '#212529',
+                            borderRadius: '4px',
+                            width: '100%',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (inscriptionsSortBy !== 'date') {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (inscriptionsSortBy !== 'date') {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                            }
+                          }}
+                        >
+                          Date
+                          {inscriptionsSortBy === 'date' && (inscriptionsSortOrder === 'asc' ? ' ↑' : ' ↓')}
+                        </button>
+                      </th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredInscriptions.length === 0 ? (
+                    {loadingInscriptions && inscriptions.length === 0 ? (
                       <tr>
-                        <td colSpan="9" style={{ textAlign: 'center', padding: '2rem' }}>
+                        <td colSpan="11" style={{ textAlign: 'center', padding: '2rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+                            <div style={{ 
+                              width: '16px', 
+                              height: '16px', 
+                              border: '2px solid #e4e7ec', 
+                              borderTopColor: '#0066CC', 
+                              borderRadius: '50%', 
+                              animation: 'spin 0.8s linear infinite' 
+                            }}></div>
+                            Chargement des inscriptions...
+                          </div>
+                        </td>
+                      </tr>
+                    ) : filteredInscriptions.length === 0 ? (
+                      <tr>
+                        <td colSpan="11" style={{ textAlign: 'center', padding: '2rem' }}>
                           Aucune inscription
                         </td>
                       </tr>
@@ -8725,6 +9468,7 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                           (f) => f.id === inscription.formation_id
                         )
                         const isSelected = selectedInscriptionIds.includes(inscription.id)
+                        const isMember = inscription.is_member || !!inscription.membre_id
                         return (
                           <tr key={inscription.id}>
                             <td>
@@ -8734,10 +9478,53 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                 onChange={() => toggleSelectInscription(inscription.id)}
                               />
                             </td>
+                            <td style={{ textAlign: 'center' }}>
+                              {inscription.status === 'pending' && inscription.ordre_attente ? (
+                                <span style={{
+                                  display: 'inline-block',
+                                  padding: '0.25rem 0.5rem',
+                                  background: '#f3f4f6',
+                                  borderRadius: '4px',
+                                  fontWeight: '600',
+                                  color: '#374151',
+                                  fontSize: '0.875rem'
+                                }}>
+                                  #{inscription.ordre_attente}
+                                </span>
+                              ) : (
+                                '—'
+                              )}
+                            </td>
                             <td style={{ fontWeight: '600' }}>
                               {inscription.prenom} {inscription.nom}
                             </td>
                             <td>{inscription.email || '—'}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              {isMember ? (
+                                <span style={{
+                                  display: 'inline-block',
+                                  padding: '0.25rem 0.5rem',
+                                  background: '#dbeafe',
+                                  color: '#1e40af',
+                                  borderRadius: '4px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '600'
+                                }}>
+                                  ✓ Membre
+                                </span>
+                              ) : (
+                                <span style={{
+                                  display: 'inline-block',
+                                  padding: '0.25rem 0.5rem',
+                                  background: '#f3f4f6',
+                                  color: '#6b7280',
+                                  borderRadius: '4px',
+                                  fontSize: '0.75rem'
+                                }}>
+                                  Non membre
+                                </span>
+                              )}
+                            </td>
                             <td>{formation?.titre || '—'}</td>
                             <td>{inscription.niveau || '—'}</td>
                             <td>
@@ -8747,6 +9534,8 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                     ? 'approved'
                                     : inscription.status === 'pending'
                                     ? 'pending'
+                                    : inscription.status === 'cancelled'
+                                    ? 'rejected'
                                     : 'rejected'
                                 }`}
                               >
@@ -8754,6 +9543,8 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                   ? 'Confirmée'
                                   : inscription.status === 'pending'
                                   ? 'En attente'
+                                  : inscription.status === 'cancelled'
+                                  ? 'Annulée'
                                   : 'Annulée'}
                               </span>
                             </td>
@@ -8783,15 +9574,25 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                       type="button"
                                       className="btn-link"
                                       onClick={() => handleConfirmInscription(inscription.id)}
+                                      disabled={loadingActions[`confirm-${inscription.id}`]}
+                                      style={{ 
+                                        opacity: loadingActions[`confirm-${inscription.id}`] ? 0.6 : 1,
+                                        cursor: loadingActions[`confirm-${inscription.id}`] ? 'not-allowed' : 'pointer'
+                                      }}
                                     >
-                                      Confirmer
+                                      {loadingActions[`confirm-${inscription.id}`] ? '⏳' : ''} Confirmer
                                     </button>
                                     <button
                                       type="button"
                                       className="btn-link danger"
                                       onClick={() => handleRejectInscription(inscription.id)}
+                                      disabled={loadingActions[`reject-${inscription.id}`]}
+                                      style={{ 
+                                        opacity: loadingActions[`reject-${inscription.id}`] ? 0.6 : 1,
+                                        cursor: loadingActions[`reject-${inscription.id}`] ? 'not-allowed' : 'pointer'
+                                      }}
                                     >
-                                      Rejeter
+                                      {loadingActions[`reject-${inscription.id}`] ? '⏳' : ''} Rejeter
                                     </button>
                                   </>
                                 )}
@@ -8800,8 +9601,13 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                                     type="button"
                                     className="btn-link"
                                     onClick={() => handleSendInvitation(inscription.id)}
+                                    disabled={loadingActions[`invite-${inscription.id}`]}
+                                    style={{ 
+                                      opacity: loadingActions[`invite-${inscription.id}`] ? 0.6 : 1,
+                                      cursor: loadingActions[`invite-${inscription.id}`] ? 'not-allowed' : 'pointer'
+                                    }}
                                   >
-                                    Envoyer invitation
+                                    {loadingActions[`invite-${inscription.id}`] ? '⏳' : ''} Envoyer invitation
                                   </button>
                                 )}
                                 <button
@@ -8831,9 +9637,99 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                   </tbody>
                 </table>
               </div>
+              {/* Pagination */}
+              {inscriptionsPagination.totalPages > 1 && (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center', 
+                  marginTop: '20px',
+                  padding: '16px',
+                  borderTop: '1px solid #e4e7ec'
+                }}>
+                  <div style={{ fontSize: '14px', color: '#64748b' }}>
+                    Page {inscriptionsPage} sur {inscriptionsPagination.totalPages} • 
+                    {(inscriptionsPage - 1) * inscriptionsPagination.limit + 1} - {Math.min(inscriptionsPage * inscriptionsPagination.limit, inscriptionsPagination.total)} sur {inscriptionsPagination.total}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => setInscriptionsPage(p => Math.max(1, p - 1))}
+                      disabled={inscriptionsPage === 1 || loadingInscriptions}
+                      className="btn-secondary"
+                      style={{ 
+                        padding: '8px 16px',
+                        opacity: inscriptionsPage === 1 || loadingInscriptions ? 0.5 : 1,
+                        cursor: inscriptionsPage === 1 || loadingInscriptions ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      ← Précédent
+                    </button>
+                    <button
+                      onClick={() => setInscriptionsPage(p => Math.min(inscriptionsPagination.totalPages, p + 1))}
+                      disabled={inscriptionsPage >= inscriptionsPagination.totalPages || loadingInscriptions}
+                      className="btn-primary"
+                      style={{ 
+                        padding: '8px 16px',
+                        opacity: inscriptionsPage >= inscriptionsPagination.totalPages || loadingInscriptions ? 0.5 : 1,
+                        cursor: inscriptionsPage >= inscriptionsPagination.totalPages || loadingInscriptions ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      Suivant →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </section>
         )}
+
+        {/* Toast Notification */}
+        {toast.show && (
+          <div
+            style={{
+              position: 'fixed',
+              right: '24px',
+              bottom: '24px',
+              background: toast.type === 'success' ? '#10b981' : '#ef4444',
+              color: 'white',
+              padding: '14px 20px',
+              borderRadius: '8px',
+              boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              zIndex: 10000,
+              animation: 'fadeInSlide 0.3s ease',
+              fontSize: '14px',
+              fontWeight: '500',
+              minWidth: '250px',
+              maxWidth: '400px'
+            }}
+          >
+            <span style={{ fontSize: '18px' }}>
+              {toast.type === 'success' ? '✓' : '✕'}
+            </span>
+            <span>{toast.message}</span>
+          </div>
+        )}
+        
+        <style>{`
+          @keyframes fadeInSlide {
+            from {
+              opacity: 0;
+              transform: translateX(100px);
+            }
+            to {
+              opacity: 1;
+              transform: translateX(0);
+            }
+          }
+          @keyframes spin {
+            to {
+              transform: rotate(360deg);
+            }
+          }
+        `}</style>
 
         {activeTab === 'formateurs' && (
           <section className="table-section">
@@ -8898,14 +9794,37 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                             f.email?.toLowerCase().includes(search)
                         })
                         .map((formateur) => {
-                          // Trouver les formations associées
-                          const formateurFormations = formations.filter(f => 
-                            f.formateurs_list?.some(ff => ff.id === formateur.id) || 
-                            f.formateur_id === formateur.id
-                          )
-                          const formateurInscriptions = inscriptions.filter(i => 
-                            formateurFormations.some(f => f.id === i.formation_id)
-                          )
+                          // Utiliser les stats du backend si disponibles, sinon calculer depuis les données chargées
+                          const formationsCount = formateur.formations_count !== undefined 
+                            ? formateur.formations_count 
+                            : formations.filter(f => 
+                                f.formateurs_list?.some(ff => ff.id === formateur.id) || 
+                                f.formateur_id === formateur.id
+                              ).length
+                          
+                          const inscriptionsCount = formateur.inscriptions_count !== undefined
+                            ? formateur.inscriptions_count
+                            : (() => {
+                                const formateurFormations = formations.filter(f => 
+                                  f.formateurs_list?.some(ff => ff.id === formateur.id) || 
+                                  f.formateur_id === formateur.id
+                                )
+                                return inscriptions.filter(i => 
+                                  formateurFormations.some(f => f.id === i.formation_id)
+                                ).length
+                              })()
+                          
+                          const confirmedInscriptionsCount = formateur.confirmed_inscriptions_count !== undefined
+                            ? formateur.confirmed_inscriptions_count
+                            : (() => {
+                                const formateurFormations = formations.filter(f => 
+                                  f.formateurs_list?.some(ff => ff.id === formateur.id) || 
+                                  f.formateur_id === formateur.id
+                                )
+                                return inscriptions.filter(i => 
+                                  formateurFormations.some(f => f.id === i.formation_id) && i.status === 'confirmed'
+                                ).length
+                              })()
                           
                           return (
                             <tr key={formateur.id}>
@@ -8961,23 +9880,31 @@ Exemple : Bonjour {{prenom}}, nous avons le plaisir de vous informer que..."
                               </td>
                               <td>
                                 <span style={{ fontWeight: '600', color: '#0066CC' }}>
-                                  {formateurFormations.length}
+                                  {formationsCount}
                                 </span>
-                                {formateurFormations.length > 0 && (
-                                  <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
-                                    {formateurFormations.slice(0, 2).map(f => f.titre).join(', ')}
-                                    {formateurFormations.length > 2 && ` +${formateurFormations.length - 2}`}
-                                  </div>
-                                )}
+                                {formationsCount > 0 && (() => {
+                                  const formateurFormations = formations.filter(f => 
+                                    f.formateurs_list?.some(ff => ff.id === formateur.id) || 
+                                    f.formateur_id === formateur.id
+                                  )
+                                  return (
+                                    <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                                      {formateurFormations.slice(0, 2).map(f => f.titre).join(', ')}
+                                      {formateurFormations.length > 2 && ` +${formateurFormations.length - 2}`}
+                                    </div>
+                                  )
+                                })()}
                               </td>
                               <td>
                                 <span style={{ fontWeight: '600' }}>
-                                  {formateurInscriptions.length}
+                                  {inscriptionsCount}
                                 </span>
                                 {' '}
-                                <span style={{ fontSize: '0.85rem', color: '#666' }}>
-                                  ({formateurInscriptions.filter(i => i.status === 'confirmed').length} confirmées)
-                                </span>
+                                {confirmedInscriptionsCount > 0 && (
+                                  <span style={{ fontSize: '0.85rem', color: '#666' }}>
+                                    ({confirmedInscriptionsCount} confirmées)
+                                  </span>
+                                )}
                               </td>
                               <td>
                                 <div className="table-actions">

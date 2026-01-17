@@ -4,7 +4,7 @@ import { verify } from "https://deno.land/x/djwt@v3.0.2/mod.ts"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 }
@@ -105,7 +105,7 @@ Deno.serve(async (req) => {
       if (formationId) {
         const { data: formation } = await supabaseFormation
           .from("formations")
-          .select("titre, mode, slug")
+          .select("titre, mode, slug, prochaine_session")
           .eq("id", formationId)
           .maybeSingle()
 
@@ -113,18 +113,42 @@ Deno.serve(async (req) => {
           context.formationTitle = formation.titre || ""
           context.formationMode = formation.mode || ""
           context.formationSlug = formation.slug || ""
+          
+          // Si pas de session_id mais qu'on a prochaine_session, l'utiliser
+          if (!sessionId && formation.prochaine_session) {
+            context.sessionDate = formation.prochaine_session
+          }
         }
       }
 
       if (sessionId) {
         const { data: session } = await supabaseFormation
           .from("sessions")
-          .select("date_debut")
+          .select("date_debut, date_fin")
           .eq("id", sessionId)
           .maybeSingle()
 
         if (session?.date_debut) {
           context.sessionDate = session.date_debut
+          return context // Priorité absolue à la session spécifique, ne pas chercher ailleurs
+        }
+      }
+      
+      // Si pas de session_id ou si la session spécifiée n'a pas de date, chercher les fallbacks
+      if (formationId && !context.sessionDate) {
+        // Si pas de session_id spécifique, chercher la prochaine session de la formation
+        const today = new Date().toISOString().split("T")[0]
+        const { data: nextSession } = await supabaseFormation
+          .from("sessions")
+          .select("date_debut")
+          .eq("formation_id", formationId)
+          .gte("date_debut", today)
+          .order("date_debut", { ascending: true })
+          .limit(1)
+          .maybeSingle()
+
+        if (nextSession?.date_debut) {
+          context.sessionDate = nextSession.date_debut
         }
       }
 
@@ -245,12 +269,13 @@ Deno.serve(async (req) => {
         throw new Error("Erreur lors de la récupération des formations")
       }
 
-      // Enrichir avec les stats
+      // Enrichir avec les stats et les formateurs
       const formationsWithStats = await Promise.all(
         (data || []).map(async (formation: any) => {
           const [
             { count: inscriptionsCount },
             { count: confirmedCount },
+            { data: formateursAssociations },
           ] = await Promise.all([
             supabaseFormation
               .from("inscriptions")
@@ -261,7 +286,16 @@ Deno.serve(async (req) => {
               .select("*", { count: "exact", head: true })
               .eq("formation_id", formation.id)
               .eq("status", "confirmed"),
+            supabaseFormation
+              .from("formation_formateurs")
+              .select("formateur_id, formateurs(id, nom, prenom, email, photo_url)")
+              .eq("formation_id", formation.id),
           ])
+
+          // Construire la liste des formateurs
+          const formateursList = (formateursAssociations || [])
+            .map((assoc: any) => assoc.formateurs)
+            .filter(Boolean)
 
           return {
             ...formation,
@@ -270,6 +304,7 @@ Deno.serve(async (req) => {
             places_restantes: formation.participants_max
               ? formation.participants_max - (confirmedCount || 0)
               : null,
+            formateurs_list: formateursList,
           }
         }),
       )
@@ -305,6 +340,7 @@ Deno.serve(async (req) => {
         image_url,
         prix,
         formateur_id,
+        inscriptions_ouvertes,
       } = body
 
       if (!slug || !titre || !categorie || !niveau) {
@@ -351,6 +387,7 @@ Deno.serve(async (req) => {
           prix: prix ? parseFloat(prix) : null,
           formateur_id: formateur_id || null,
           is_active: true,
+          inscriptions_ouvertes: inscriptions_ouvertes !== undefined ? (inscriptions_ouvertes === true || inscriptions_ouvertes === "true") : true,
         })
         .select()
         .single()
@@ -495,6 +532,7 @@ Deno.serve(async (req) => {
         if (body.prix !== undefined) updateObj.prix = body.prix ? parseFloat(body.prix) : null
         if (body.formateur_id !== undefined) updateObj.formateur_id = body.formateur_id
         if (body.is_active !== undefined) updateObj.is_active = body.is_active
+        if (body.inscriptions_ouvertes !== undefined) updateObj.inscriptions_ouvertes = body.inscriptions_ouvertes === true || body.inscriptions_ouvertes === "true"
 
         const { data: formation, error: updateError } = await supabaseFormation
           .from("formations")
@@ -512,6 +550,43 @@ Deno.serve(async (req) => {
           success: true,
           message: "Formation mise à jour avec succès",
           data: formation,
+        })
+      }
+
+      // PATCH /formations/:id/toggle-inscriptions - Basculer le statut inscriptions_ouvertes
+      if (req.method === "PATCH" && subPath === "toggle-inscriptions") {
+        // Récupérer l'état actuel
+        const { data: current } = await supabaseFormation
+          .from("formations")
+          .select("id, inscriptions_ouvertes")
+          .eq("id", formationId)
+          .maybeSingle()
+
+        if (!current) {
+          return jsonResponse(
+            { success: false, message: "Formation introuvable" },
+            { status: 404 },
+          )
+        }
+
+        // Basculer le statut
+        const newStatus = !current.inscriptions_ouvertes
+        const { data: updated, error } = await supabaseFormation
+          .from("formations")
+          .update({ inscriptions_ouvertes: newStatus })
+          .eq("id", formationId)
+          .select()
+          .single()
+
+        if (error) {
+          console.error("toggleInscriptions error", error)
+          throw new Error("Erreur lors de la mise à jour du statut")
+        }
+
+        return jsonResponse({
+          success: true,
+          message: `Inscriptions ${newStatus ? "ouvertes" : "fermées"}`,
+          data: updated,
         })
       }
 
@@ -820,16 +895,25 @@ Deno.serve(async (req) => {
 
     // GET /inscriptions - Liste des inscriptions
     if (req.method === "GET" && relativePath === "inscriptions") {
+      const search = searchParams.get("search") || ""
+      const sortBy = searchParams.get("sortBy") || ""
+      const sortOrder = searchParams.get("sortOrder") || "asc"
       const page = parseInt(searchParams.get("page") || "1", 10)
-      const limit = Math.min(parseInt(searchParams.get("limit") || "20", 10), 500)
+      const limit = Math.min(parseInt(searchParams.get("limit") || "50", 10), 500)
       const formation_id = searchParams.get("formation_id") || ""
       const session_id = searchParams.get("session_id") || ""
       const status = searchParams.get("status") || ""
+      const is_member = searchParams.get("is_member")
 
+      console.log("🔍 Filtre is_member reçu:", is_member, typeof is_member)
+
+      // Requête de base sans jointure cross-schema
+      // IMPORTANT: On applique WHERE (filtres + recherche) et ORDER BY AVANT la pagination
       let query = supabaseFormation
         .from("inscriptions")
         .select("*", { count: "exact" })
 
+      // ========== ÉTAPE 1: FILTRES (WHERE) ==========
       if (formation_id) {
         query = query.eq("formation_id", formation_id)
       }
@@ -839,15 +923,60 @@ Deno.serve(async (req) => {
       if (status) {
         query = query.eq("status", status)
       }
-
-      // Trier : si status='pending', utiliser ordre_attente, sinon created_at DESC
-      if (status === "pending") {
-        query = query.order("ordre_attente", { ascending: true, nullsLast: true })
-          .order("created_at", { ascending: true })
+      // Filtre is_member: true = seulement membres, false = seulement non-membres
+      if (is_member !== null && is_member !== undefined && is_member !== "") {
+        console.log("✅ Application du filtre is_member:", is_member, "type:", typeof is_member)
+        const isMemberBool = String(is_member).toLowerCase() === "true"
+        if (isMemberBool) {
+          console.log("🔵 Filtre: Membres uniquement (membre_id IS NOT NULL)")
+          query = query.not("membre_id", "is", null)
+        } else {
+          console.log("⚪ Filtre: Non-membres uniquement (membre_id IS NULL)")
+          query = query.is("membre_id", null)
+        }
       } else {
-        query = query.order("created_at", { ascending: false })
+        console.log("ℹ️ Pas de filtre is_member appliqué (valeur:", is_member, ")")
       }
 
+      // Recherche textuelle sur plusieurs colonnes (WHERE)
+      if (search) {
+        query = query.or(
+          `prenom.ilike.%${search}%,nom.ilike.%${search}%,email.ilike.%${search}%,niveau.ilike.%${search}%,paiement_status.ilike.%${search}%`
+        )
+      }
+
+      // ========== ÉTAPE 2: TRI (ORDER BY) ==========
+      // Le tri est appliqué AVANT la pagination pour avoir un ordre global
+      if (sortBy) {
+        const ascending = sortOrder === "asc"
+        if (sortBy === "nom" || sortBy === "prenom") {
+          // Trier par nom ou prénom nécessite de trier par les deux colonnes
+          if (sortBy === "nom") {
+            query = query.order("nom", { ascending }).order("prenom", { ascending })
+          } else {
+            query = query.order("prenom", { ascending }).order("nom", { ascending })
+          }
+        } else if (sortBy === "date") {
+          query = query.order("created_at", { ascending })
+        } else if (sortBy === "ordre_attente") {
+          query = query.order("ordre_attente", { ascending, nullsLast: true })
+        } else {
+          // Trier par la colonne spécifiée
+          query = query.order(sortBy, { ascending })
+        }
+      } else {
+        // Tri par défaut : si status='pending', utiliser ordre_attente, sinon created_at DESC
+        if (status === "pending") {
+          query = query.order("ordre_attente", { ascending: true, nullsLast: true })
+            .order("created_at", { ascending: true })
+        } else {
+          query = query.order("created_at", { ascending: false })
+        }
+      }
+
+      // ========== ÉTAPE 3: PAGINATION (LIMIT/OFFSET) ==========
+      // La pagination est appliquée APRÈS le tri et les filtres
+      // Cela garantit que le tri est global, pas seulement sur la page courante
       const from = (page - 1) * limit
       const to = from + limit - 1
       query = query.range(from, to)
@@ -862,7 +991,7 @@ Deno.serve(async (req) => {
       // Enrichir avec les données de formation, session et statut membre
       const inscriptionsEnriched = await Promise.all(
         (data || []).map(async (inscription: any) => {
-          const [formation, session] = await Promise.all([
+          const [formation, session, member] = await Promise.all([
             supabaseFormation
               .from("formations")
               .select("titre, slug")
@@ -875,20 +1004,49 @@ Deno.serve(async (req) => {
                   .eq("id", inscription.session_id)
                   .maybeSingle()
               : Promise.resolve({ data: null }),
+            inscription.membre_id
+              ? supabaseAdhesion
+                  .from("members")
+                  .select("id, prenom, nom, email, numero_membre")
+                  .eq("id", inscription.membre_id)
+                  .maybeSingle()
+              : Promise.resolve({ data: null }),
           ])
+
+          // Si recherche active, filtrer aussi côté serveur sur le titre de formation
+          let matchesSearch = true
+          if (search && formation?.data?.titre) {
+            const searchLower = search.toLowerCase()
+            matchesSearch =
+              inscription.prenom?.toLowerCase().includes(searchLower) ||
+              inscription.nom?.toLowerCase().includes(searchLower) ||
+              inscription.email?.toLowerCase().includes(searchLower) ||
+              inscription.niveau?.toLowerCase().includes(searchLower) ||
+              formation.data.titre?.toLowerCase().includes(searchLower)
+          }
 
           return {
             ...inscription,
             formation: formation?.data || null,
             session: session?.data || null,
             is_member: !!inscription.membre_id,
+            member_details: member?.data || null,
+            _matchesSearch: matchesSearch, // Pour le filtrage côté serveur si nécessaire
           }
         }),
       )
 
+      // Filtrer les résultats si recherche et que la formation ne correspond pas
+      const finalInscriptions = search
+        ? inscriptionsEnriched.filter((i) => i._matchesSearch !== false)
+        : inscriptionsEnriched
+
+      // Retirer le champ temporaire
+      const cleanInscriptions = finalInscriptions.map(({ _matchesSearch, ...rest }) => rest)
+
       return jsonResponse({
         success: true,
-        inscriptions: inscriptionsEnriched,
+        inscriptions: cleanInscriptions,
         pagination: {
           page,
           limit,
@@ -1234,9 +1392,23 @@ Deno.serve(async (req) => {
 
       // POST /inscriptions/:id/reject - Rejeter une inscription
       if (req.method === "POST" && subPath === "reject") {
+        // Récupérer l'inscription AVANT la mise à jour pour avoir la session correcte
+        const { data: inscriptionBeforeUpdate } = await supabaseFormation
+          .from("inscriptions")
+          .select("formation_id, session_id, email, prenom, nom")
+          .eq("id", inscriptionId)
+          .maybeSingle()
+
+        if (!inscriptionBeforeUpdate) {
+          return jsonResponse(
+            { success: false, message: "Inscription introuvable" },
+            { status: 404 },
+          )
+        }
+
         const { data, error } = await supabaseFormation
           .from("inscriptions")
-          .update({ status: "rejected" })
+          .update({ status: "cancelled" })
           .eq("id", inscriptionId)
           .select()
           .single()
@@ -1253,8 +1425,8 @@ Deno.serve(async (req) => {
           )
         }
 
-        // Envoyer notification (via webhook)
-        const context = await getFormationEmailContext(data.formation_id, data.session_id)
+        // Envoyer notification (via webhook) - utiliser session_id de l'inscription originale
+        const context = await getFormationEmailContext(inscriptionBeforeUpdate.formation_id, inscriptionBeforeUpdate.session_id)
         const APPSCRIPT_WEBHOOK_URL = Deno.env.get("APPSCRIPT_CONTACT_WEBHOOK_URL") || ""
         const APPSCRIPT_WEBHOOK_TOKEN = Deno.env.get("APPSCRIPT_CONTACT_TOKEN") || ""
 
@@ -1270,10 +1442,10 @@ Deno.serve(async (req) => {
               },
               body: JSON.stringify({
                 event_type: "formation_status",
-                status: "rejected",
-                email: data.email,
-                prenom: data.prenom,
-                nom: data.nom,
+                status: "cancelled",
+                email: inscriptionBeforeUpdate.email || data.email,
+                prenom: inscriptionBeforeUpdate.prenom || data.prenom,
+                nom: inscriptionBeforeUpdate.nom || data.nom,
                 formation_title: context.formationTitle,
                 session_date: context.sessionDate,
                 token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
@@ -1358,7 +1530,7 @@ Deno.serve(async (req) => {
 
     // ========== FORMATEURS ==========
 
-    // GET /formateurs - Liste des formateurs
+    // GET /formateurs - Liste des formateurs avec statistiques
     if (req.method === "GET" && relativePath === "formateurs") {
       const { data, error } = await supabaseFormation
         .from("formateurs")
@@ -1370,9 +1542,53 @@ Deno.serve(async (req) => {
         throw new Error("Erreur lors de la récupération des formateurs")
       }
 
+      // Enrichir avec les statistiques (formations et inscriptions)
+      const formateursWithStats = await Promise.all(
+        (data || []).map(async (formateur: any) => {
+          // Récupérer les formations associées
+          const { data: formationsAssoc } = await supabaseFormation
+            .from("formation_formateurs")
+            .select("formation_id")
+            .eq("formateur_id", formateur.id)
+
+          const formationIds = (formationsAssoc || []).map((f: any) => f.formation_id)
+
+          // Compter les inscriptions pour toutes les formations de ce formateur
+          let inscriptionsCount = 0
+          let confirmedInscriptionsCount = 0
+
+          if (formationIds.length > 0) {
+            const [
+              { count: totalInscriptions },
+              { count: confirmedInscriptions },
+            ] = await Promise.all([
+              supabaseFormation
+                .from("inscriptions")
+                .select("*", { count: "exact", head: true })
+                .in("formation_id", formationIds),
+              supabaseFormation
+                .from("inscriptions")
+                .select("*", { count: "exact", head: true })
+                .in("formation_id", formationIds)
+                .eq("status", "confirmed"),
+            ])
+
+            inscriptionsCount = totalInscriptions || 0
+            confirmedInscriptionsCount = confirmedInscriptions || 0
+          }
+
+          return {
+            ...formateur,
+            formations_count: formationIds.length,
+            inscriptions_count: inscriptionsCount,
+            confirmed_inscriptions_count: confirmedInscriptionsCount,
+          }
+        }),
+      )
+
       return jsonResponse({
         success: true,
-        data: data || [],
+        data: formateursWithStats || [],
       })
     }
 

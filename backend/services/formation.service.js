@@ -342,10 +342,17 @@ export async function getFormationInscriptions(formationId, { status = '', page 
       .from('inscriptions')
       .select('*', { count: 'exact' })
       .eq('formation_id', formationId)
-      .order('created_at', { ascending: false })
 
     if (status) {
       query = query.eq('status', status)
+    }
+
+    // Trier : si status='pending', utiliser ordre_attente, sinon created_at DESC
+    if (status === 'pending') {
+      query = query.order('ordre_attente', { ascending: true, nullsLast: true })
+        .order('created_at', { ascending: true })
+    } else {
+      query = query.order('created_at', { ascending: false })
     }
 
     // Pagination
@@ -360,8 +367,14 @@ export async function getFormationInscriptions(formationId, { status = '', page 
       throw new Error('Erreur lors de la récupération des inscriptions')
     }
 
+    // Enrichir avec le statut membre
+    const inscriptionsEnriched = (data || []).map(inscription => ({
+      ...inscription,
+      is_member: !!inscription.membre_id,
+    }))
+
     return {
-      inscriptions: data || [],
+      inscriptions: inscriptionsEnriched,
       pagination: {
         page,
         limit,
@@ -372,6 +385,36 @@ export async function getFormationInscriptions(formationId, { status = '', page 
   } catch (err) {
     logError('getFormationInscriptions exception', err)
     throw err
+  }
+}
+
+/**
+ * Recalcule les ordres d'attente pour une formation après modification
+ */
+async function recalculateOrdreAttente(formationId) {
+  try {
+    // Récupérer toutes les inscriptions en attente pour cette formation, triées par created_at
+    const { data: pendingInscriptions } = await supabaseFormation
+      .from('inscriptions')
+      .select('id')
+      .eq('formation_id', formationId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+
+    // Mettre à jour l'ordre d'attente pour chacune
+    if (pendingInscriptions && pendingInscriptions.length > 0) {
+      await Promise.all(
+        pendingInscriptions.map((ins, index) =>
+          supabaseFormation
+            .from('inscriptions')
+            .update({ ordre_attente: index + 1 })
+            .eq('id', ins.id)
+        )
+      )
+    }
+  } catch (err) {
+    logError('recalculateOrdreAttente error', err)
+    // Ne pas faire échouer la requête principale si le recalcul échoue
   }
 }
 
@@ -410,12 +453,13 @@ export async function confirmInscription(inscriptionId, adminId) {
       }
     }
 
-    // Mettre à jour le statut
+    // Mettre à jour le statut et réinitialiser ordre_attente (plus en attente)
     const { data, error } = await supabaseFormation
       .from('inscriptions')
       .update({
         status: 'confirmed',
         confirmed_at: new Date().toISOString(),
+        ordre_attente: null, // Plus en liste d'attente
       })
       .eq('id', inscriptionId)
       .select()
@@ -424,6 +468,11 @@ export async function confirmInscription(inscriptionId, adminId) {
     if (error) {
       logError('confirmInscription error', error)
       throw new Error('Erreur lors de la confirmation de l\'inscription')
+    }
+
+    // Recalculer les ordres d'attente pour les autres inscriptions en attente
+    if (inscription.status === 'pending') {
+      await recalculateOrdreAttente(inscription.formation_id)
     }
 
     logInfo('Inscription confirmée', { id: inscriptionId, adminId })
@@ -439,9 +488,19 @@ export async function confirmInscription(inscriptionId, adminId) {
  */
 export async function rejectInscription(inscriptionId, adminId) {
   try {
+    // Récupérer formation_id avant la mise à jour pour recalculer ordre_attente
+    const { data: existingInscription } = await supabaseFormation
+      .from('inscriptions')
+      .select('formation_id, status')
+      .eq('id', inscriptionId)
+      .maybeSingle()
+
     const { data, error } = await supabaseFormation
       .from('inscriptions')
-      .update({ status: 'rejected' })
+      .update({ 
+        status: 'rejected',
+        ordre_attente: null, // Plus en liste d'attente
+      })
       .eq('id', inscriptionId)
       .select()
       .single()
@@ -449,6 +508,11 @@ export async function rejectInscription(inscriptionId, adminId) {
     if (error) {
       logError('rejectInscription error', error)
       throw new Error('Erreur lors du rejet de l\'inscription')
+    }
+
+    // Recalculer les ordres d'attente pour les autres inscriptions en attente
+    if (existingInscription && existingInscription.status === 'pending') {
+      await recalculateOrdreAttente(existingInscription.formation_id)
     }
 
     if (!data) {
@@ -718,7 +782,6 @@ export async function getAllInscriptions({ page = 1, limit = 20, formation_id = 
     let query = supabaseFormation
       .from('inscriptions')
       .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
 
     if (formation_id) {
       query = query.eq('formation_id', formation_id)
@@ -732,6 +795,14 @@ export async function getAllInscriptions({ page = 1, limit = 20, formation_id = 
       query = query.eq('status', status)
     }
 
+    // Trier : si status='pending', utiliser ordre_attente, sinon created_at DESC
+    if (status === 'pending') {
+      query = query.order('ordre_attente', { ascending: true, nullsLast: true })
+        .order('created_at', { ascending: true })
+    } else {
+      query = query.order('created_at', { ascending: false })
+    }
+
     const from = (page - 1) * limit
     const to = from + limit - 1
     query = query.range(from, to)
@@ -743,7 +814,7 @@ export async function getAllInscriptions({ page = 1, limit = 20, formation_id = 
       throw new Error('Erreur lors de la récupération des inscriptions')
     }
 
-    // Enrichir avec les données de formation et session
+    // Enrichir avec les données de formation, session et statut membre
     const inscriptionsEnriched = await Promise.all(
       (data || []).map(async (inscription) => {
         const [formation, session] = await Promise.all([
@@ -765,6 +836,7 @@ export async function getAllInscriptions({ page = 1, limit = 20, formation_id = 
           ...inscription,
           formation: formation?.data || null,
           session: session?.data || null,
+          is_member: !!inscription.membre_id,
         }
       })
     )
@@ -811,6 +883,21 @@ export async function createInscription(inscriptionData) {
       throw new Error('prenom, nom, email, formation_id et niveau sont requis')
     }
 
+    // Calculer ordre_attente si status='pending'
+    const inscriptionStatus = inscriptionData.status || 'pending'
+    let ordre_attente = null
+    
+    if (inscriptionStatus === 'pending') {
+      // Compter les inscriptions en attente pour cette formation
+      const { count } = await supabaseFormation
+        .from('inscriptions')
+        .select('*', { count: 'exact', head: true })
+        .eq('formation_id', formation_id)
+        .eq('status', 'pending')
+      
+      ordre_attente = (count || 0) + 1
+    }
+
     const { data: inscription, error } = await supabaseFormation
       .from('inscriptions')
       .insert({
@@ -829,7 +916,8 @@ export async function createInscription(inscriptionData) {
         paiement_status: paiement_status || 'non payé',
         source: source || 'site web',
         notes_admin: notes_admin || null,
-        status: 'pending',
+        status: inscriptionStatus,
+        ordre_attente: ordre_attente,
       })
       .select()
       .single()
@@ -865,6 +953,17 @@ export async function createInscription(inscriptionData) {
  */
 export async function updateInscription(inscriptionId, updateData) {
   try {
+    // Récupérer les données existantes pour vérifier les changements de status
+    const { data: existingInscription } = await supabaseFormation
+      .from('inscriptions')
+      .select('formation_id, status')
+      .eq('id', inscriptionId)
+      .maybeSingle()
+
+    if (!existingInscription) {
+      throw new Error('Inscription introuvable')
+    }
+
     const updateObj = {}
     if (updateData.prenom !== undefined) updateObj.prenom = updateData.prenom
     if (updateData.nom !== undefined) updateObj.nom = updateData.nom
@@ -872,7 +971,22 @@ export async function updateInscription(inscriptionId, updateData) {
     if (updateData.session_id !== undefined) updateObj.session_id = updateData.session_id || null
     if (updateData.niveau !== undefined) updateObj.niveau = updateData.niveau
     if (updateData.niveau_etude !== undefined) updateObj.niveau_etude = updateData.niveau_etude
-    if (updateData.status !== undefined) updateObj.status = updateData.status
+    if (updateData.status !== undefined) {
+      updateObj.status = updateData.status
+      // Si le statut change de pending à autre chose, réinitialiser ordre_attente
+      if (existingInscription.status === 'pending' && updateData.status !== 'pending') {
+        updateObj.ordre_attente = null
+      }
+      // Si le statut change à pending, calculer ordre_attente
+      if (existingInscription.status !== 'pending' && updateData.status === 'pending') {
+        const { count } = await supabaseFormation
+          .from('inscriptions')
+          .select('*', { count: 'exact', head: true })
+          .eq('formation_id', existingInscription.formation_id)
+          .eq('status', 'pending')
+        updateObj.ordre_attente = (count || 0) + 1
+      }
+    }
     if (updateData.paiement_status !== undefined) updateObj.paiement_status = updateData.paiement_status
     if (updateData.notes_admin !== undefined) updateObj.notes_admin = updateData.notes_admin
     if (updateData.status === 'confirmed' && !updateData.confirmed_at) {
@@ -891,8 +1005,11 @@ export async function updateInscription(inscriptionId, updateData) {
       throw new Error('Erreur lors de la mise à jour de l\'inscription')
     }
 
-    if (!data) {
-      throw new Error('Inscription introuvable')
+    // Recalculer les ordres d'attente si le statut a changé
+    if (updateData.status !== undefined && updateData.status !== existingInscription.status) {
+      if (existingInscription.status === 'pending' || updateData.status === 'pending') {
+        await recalculateOrdreAttente(existingInscription.formation_id)
+      }
     }
 
     logInfo('Inscription mise à jour', { id: inscriptionId })
@@ -908,6 +1025,13 @@ export async function updateInscription(inscriptionId, updateData) {
  */
 export async function deleteInscription(inscriptionId) {
   try {
+    // Récupérer formation_id et status avant la suppression pour recalculer ordre_attente
+    const { data: existingInscription } = await supabaseFormation
+      .from('inscriptions')
+      .select('formation_id, status')
+      .eq('id', inscriptionId)
+      .maybeSingle()
+
     const { error } = await supabaseFormation
       .from('inscriptions')
       .delete()
@@ -916,6 +1040,11 @@ export async function deleteInscription(inscriptionId) {
     if (error) {
       logError('deleteInscription error', error)
       throw new Error('Erreur lors de la suppression de l\'inscription')
+    }
+
+    // Recalculer les ordres d'attente si l'inscription supprimée était en attente
+    if (existingInscription && existingInscription.status === 'pending') {
+      await recalculateOrdreAttente(existingInscription.formation_id)
     }
 
     logInfo('Inscription supprimée', { id: inscriptionId })
