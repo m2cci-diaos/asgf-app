@@ -586,7 +586,7 @@ async function sendMemberEmail(
     type: "member_email",
     recipients,
     subject,
-    bodyTemplate: body,
+    bodyTemplate: body.replace(/\n/g, "<br>"), // Convertir les retours à la ligne en <br> comme trésorerie
     attachments: validAttachments,
     token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
   }

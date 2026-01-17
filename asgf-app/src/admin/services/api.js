@@ -20,7 +20,9 @@ function buildQueryString(params = {}) {
   const searchParams = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') {
-      searchParams.append(key, value)
+      // Convertir les boolean en string pour que le backend les reçoive correctement
+      const stringValue = typeof value === 'boolean' ? String(value) : value
+      searchParams.append(key, stringValue)
     }
   })
   const queryString = searchParams.toString()
@@ -2542,6 +2544,23 @@ export async function deleteFormation(formationId) {
   return data
 }
 
+export async function toggleFormationInscriptions(formationId) {
+  const res = await fetch(`${ADMIN_FORMATION_URL}/formations/${formationId}/toggle-inscriptions`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour du statut')
+  }
+  return data?.data || data
+}
+
 export async function fetchSessions({ page = 1, limit = 20, formation_id = '', statut = '' }) {
   const params = { page, limit }
   if (formation_id) params.formation_id = formation_id
@@ -2615,7 +2634,7 @@ export async function deleteSession(sessionId) {
   return data
 }
 
-export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '', session_id = '', status = '', search = '', sortBy = '', sortOrder = 'asc' }) {
+export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '', session_id = '', status = '', search = '', sortBy = '', sortOrder = 'asc', is_member = undefined }) {
   const params = { page, limit }
   if (formation_id) params.formation_id = formation_id
   if (session_id) params.session_id = session_id
@@ -2623,6 +2642,7 @@ export async function fetchInscriptions({ page = 1, limit = 20, formation_id = '
   if (search) params.search = search
   if (sortBy) params.sortBy = sortBy
   if (sortOrder) params.sortOrder = sortOrder
+  if (is_member !== undefined) params.is_member = String(is_member) // Convertir boolean en string pour le backend
 
   const res = await fetch(`${ADMIN_FORMATION_URL}/inscriptions${buildQueryString(params)}`, {
     headers: getAuthHeaders(),

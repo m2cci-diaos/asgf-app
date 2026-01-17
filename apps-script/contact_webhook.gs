@@ -142,7 +142,7 @@ function doPost(e) {
       return jsonResponse({ success: false, message: 'Unauthorized' })
     }
 
-    const type = body.type || EVENT_TYPES.CONTACT
+    const type = body.type || body.event_type || EVENT_TYPES.CONTACT
     console.log(`📋 Type d'événement: ${type}`)
     
     if (type === EVENT_TYPES.MEMBER_EMAIL) {
@@ -415,11 +415,14 @@ function handleFormationStatus(body) {
 
   const isConfirmed = status === 'confirmed'
   const isPending = status === 'pending'
+  const isCancelled = status === 'cancelled' || status === 'rejected'
 
   const subject = isConfirmed
     ? `ASGF – Votre inscription à "${formationTitle}" est validée`
     : isPending
     ? `ASGF — Vous êtes en liste d'attente (Formation : ${formationTitle})`
+    : isCancelled
+    ? `ASGF – Votre inscription à "${formationTitle}" n'a pas été retenue`
     : `ASGF – Mise à jour concernant "${formationTitle}"`
 
   const intro = `Bonjour ${prenom} ${nom},`
@@ -445,10 +448,15 @@ function handleFormationStatus(body) {
         'Dès qu\'une place se libère, nous vous contacterons par e-mail pour vous confirmer votre inscription.',
       ].filter(Boolean)
     }
-  } else {
+  } else if (isCancelled) {
     paragraphs = [
       `Après étude de votre dossier, nous ne pouvons malheureusement pas retenir votre inscription pour la formation "${formationTitle}".`,
+      '',
       'Nous restons à votre disposition pour échanger et serons ravis de vous accueillir sur une prochaine session.',
+    ]
+  } else {
+    paragraphs = [
+      `Votre inscription à la formation "${formationTitle}" a été mise à jour.`,
     ]
   }
 
@@ -456,13 +464,15 @@ function handleFormationStatus(body) {
     ? 'Merci de noter la date dans votre agenda. À très vite !'
     : isPending
     ? 'Merci pour votre intérêt et votre confiance,'
-    : 'Merci pour votre intérêt et votre compréhension.'
+    : isCancelled
+    ? 'Merci pour votre intérêt et votre compréhension,'
+    : 'Merci pour votre confiance,'
 
   const recap = [
     { label: 'Formation', value: formationTitle },
     { label: 'Session', value: dateLabel },
     ...(isPending && ordre_attente ? [{ label: 'Position', value: ordre_attente.toString() }] : []),
-    { label: 'Statut', value: isConfirmed ? 'Confirmée' : isPending ? 'Liste d\'attente' : 'Non retenue' },
+    { label: 'Statut', value: isConfirmed ? 'Confirmée' : isPending ? 'Liste d\'attente' : isCancelled ? 'Non retenue' : 'En cours' },
   ]
 
   // Pour les emails en liste d'attente, utiliser le format texte brut uniquement
@@ -488,9 +498,9 @@ function handleFormationStatus(body) {
   }
 
   const htmlBody = buildHtmlEmail({
-    title: isConfirmed ? 'Inscription confirmée' : isPending ? 'Inscription en attente' : 'Mise à jour de votre inscription',
+    title: isConfirmed ? 'Inscription confirmée' : isPending ? '⏳ Inscription en attente' : isCancelled ? 'Inscription non retenue' : 'Mise à jour de votre inscription',
     intro,
-    paragraphs,
+    paragraphs: paragraphs,
     recap,
     footer,
   })

@@ -124,3 +124,4 @@ asgf-admin/
 
 **Note:** Le `.gitignore` a été amélioré pour couvrir tous les fichiers sensibles et temporaires.
 Vous pouvez maintenant me dire quels fichiers/éléments vous voulez ajouter au repository.
+

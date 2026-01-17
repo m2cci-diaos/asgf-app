@@ -127,10 +127,10 @@ Deno.serve(async (req) => {
       )
     }
 
-    // Vérifier que la formation existe et est active
+    // Vérifier que la formation existe, est active et que les inscriptions sont ouvertes
     const { data: formation, error: formationError } = await supabaseFormation
       .from("formations")
-      .select("id, titre, is_active, participants_max")
+      .select("id, titre, is_active, participants_max, inscriptions_ouvertes")
       .eq("id", formation_id)
       .maybeSingle()
 
@@ -145,6 +145,13 @@ Deno.serve(async (req) => {
       return jsonResponse(
         { success: false, message: "Cette formation n'est plus disponible" },
         { status: 400 },
+      )
+    }
+
+    if (formation.inscriptions_ouvertes === false) {
+      return jsonResponse(
+        { success: false, message: "Les inscriptions pour cette formation sont actuellement fermées." },
+        { status: 403 },
       )
     }
 

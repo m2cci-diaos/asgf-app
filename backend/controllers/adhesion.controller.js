@@ -296,10 +296,13 @@ export async function sendMemberEmailController(req, res) {
       }))
     })
 
+    // Convertir les retours à la ligne en <br> comme dans trésorerie
+    const htmlMessage = body.replace(/\n/g, "<br>")
+    
     const payload = {
       recipients,
       subject,
-      bodyTemplate: body,
+      bodyTemplate: htmlMessage,
       attachments: validAttachments,
     }
 

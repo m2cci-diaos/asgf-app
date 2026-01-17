@@ -409,7 +409,7 @@ function Formation() {
     const hasDate = formation.prochaineSession && new Date(formation.prochaineSession).getTime() > 0
     // Désactiver seulement si pas de session ET pas de date (affiche "À venir")
     const isDisabled = !hasSession && !hasDate
-    const isRegistrationClosed = formation.is_registration_open === false
+    const isRegistrationClosed = formation.inscriptions_ouvertes === false
 
     return (
       <div 

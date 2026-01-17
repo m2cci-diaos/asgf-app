@@ -47,3 +47,4 @@ ON secretariat.documents(reunion_id);
 COMMENT ON COLUMN secretariat.documents.reunion_id IS 'Référence vers la réunion (nullable pour documents indépendants)';
 
 
+

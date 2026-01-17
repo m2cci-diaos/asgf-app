@@ -174,3 +174,4 @@ Après avoir appliqué la migration, réessayez de créer un document dans l'int
    - Le résultat de la requête de vérification du schéma
 
 
+

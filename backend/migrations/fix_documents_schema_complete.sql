@@ -156,3 +156,4 @@ COMMENT ON COLUMN secretariat.documents.uploaded_by IS 'ID du membre qui a uploa
 COMMENT ON COLUMN secretariat.documents.type_document IS 'Type de document (optionnel)';
 
 
+
