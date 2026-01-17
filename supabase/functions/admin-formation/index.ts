@@ -829,7 +829,6 @@ Deno.serve(async (req) => {
       let query = supabaseFormation
         .from("inscriptions")
         .select("*", { count: "exact" })
-        .order("created_at", { ascending: false })
 
       if (formation_id) {
         query = query.eq("formation_id", formation_id)
@@ -839,6 +838,14 @@ Deno.serve(async (req) => {
       }
       if (status) {
         query = query.eq("status", status)
+      }
+
+      // Trier : si status='pending', utiliser ordre_attente, sinon created_at DESC
+      if (status === "pending") {
+        query = query.order("ordre_attente", { ascending: true, nullsLast: true })
+          .order("created_at", { ascending: true })
+      } else {
+        query = query.order("created_at", { ascending: false })
       }
 
       const from = (page - 1) * limit
@@ -852,7 +859,7 @@ Deno.serve(async (req) => {
         throw new Error("Erreur lors de la récupération des inscriptions")
       }
 
-      // Enrichir avec les données de formation et session
+      // Enrichir avec les données de formation, session et statut membre
       const inscriptionsEnriched = await Promise.all(
         (data || []).map(async (inscription: any) => {
           const [formation, session] = await Promise.all([
@@ -874,13 +881,14 @@ Deno.serve(async (req) => {
             ...inscription,
             formation: formation?.data || null,
             session: session?.data || null,
+            is_member: !!inscription.membre_id,
           }
         }),
       )
 
       return jsonResponse({
         success: true,
-        data: inscriptionsEnriched,
+        inscriptions: inscriptionsEnriched,
         pagination: {
           page,
           limit,
@@ -971,6 +979,99 @@ Deno.serve(async (req) => {
       })
     }
 
+    // POST /inscriptions/bulk-send-pending - Envoyer des emails aux inscrits en attente
+    if (req.method === "POST" && relativePath === "inscriptions/bulk-send-pending") {
+      const body = await req.json().catch(() => ({}))
+      const { inscription_ids, message } = body
+
+      if (!inscription_ids || !Array.isArray(inscription_ids) || inscription_ids.length === 0) {
+        return jsonResponse(
+          { success: false, message: "La liste des IDs d'inscriptions est requise" },
+          { status: 400 },
+        )
+      }
+
+      // Récupérer les inscriptions en attente
+      const { data: pendingInscriptions, error: fetchError } = await supabaseFormation
+        .from("inscriptions")
+        .select("*")
+        .in("id", inscription_ids)
+        .eq("status", "pending")
+
+      if (fetchError) {
+        console.error("Error fetching pending inscriptions", fetchError)
+        return jsonResponse(
+          { success: false, message: "Erreur lors de la récupération des inscriptions" },
+          { status: 500 },
+        )
+      }
+
+      if (!pendingInscriptions || pendingInscriptions.length === 0) {
+        return jsonResponse(
+          { success: false, message: "Aucune inscription en attente trouvée" },
+          { status: 404 },
+        )
+      }
+
+      const APPSCRIPT_WEBHOOK_URL = Deno.env.get("APPSCRIPT_CONTACT_WEBHOOK_URL") || ""
+      const APPSCRIPT_WEBHOOK_TOKEN = Deno.env.get("APPSCRIPT_CONTACT_TOKEN") || ""
+
+      if (!APPSCRIPT_WEBHOOK_URL) {
+        return jsonResponse(
+          { success: false, message: "Configuration webhook manquante" },
+          { status: 500 },
+        )
+      }
+
+      // Envoyer les emails
+      let successCount = 0
+      let errorCount = 0
+
+        for (const inscription of pendingInscriptions) {
+          try {
+            const context = await getFormationEmailContext(inscription.formation_id, inscription.session_id)
+
+            await fetch(APPSCRIPT_WEBHOOK_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(APPSCRIPT_WEBHOOK_TOKEN && {
+                  "x-contact-token": APPSCRIPT_WEBHOOK_TOKEN,
+                }),
+              },
+              body: JSON.stringify({
+                type: "formation_status",
+                event_type: "formation_status",
+                status: "pending",
+                email: inscription.email,
+                prenom: inscription.prenom,
+                nom: inscription.nom,
+                formation_title: context.formationTitle,
+                session_date: context.sessionDate,
+                ordre_attente: inscription.ordre_attente || null,
+                message: message || undefined,
+                token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+              }),
+            })
+
+          successCount++
+        } catch (err) {
+          console.error(`Error sending email to ${inscription.email}:`, err)
+          errorCount++
+        }
+      }
+
+      return jsonResponse({
+        success: true,
+        message: `${successCount} email(s) envoyé(s) avec succès${errorCount > 0 ? `, ${errorCount} erreur(s)` : ""}`,
+        data: {
+          sent: successCount,
+          errors: errorCount,
+          total: pendingInscriptions.length,
+        },
+      })
+    }
+
     // Routes avec ID d'inscription
     const inscriptionIdMatch = relativePath.match(/^inscriptions\/([0-9a-fA-F-]+)(?:\/(.*))?$/)
     if (inscriptionIdMatch) {
@@ -1021,7 +1122,7 @@ Deno.serve(async (req) => {
         })
       }
 
-      // DELETE /inscriptions/:id - Supprimer une inscription
+      // POST /inscriptions/:id/bulk-send-pending - Cet endpoint n'existe pas ici
       if (req.method === "DELETE" && subPath === "") {
         const { error } = await supabaseFormation
           .from("inscriptions")
@@ -1252,6 +1353,7 @@ Deno.serve(async (req) => {
           message: "Invitation formation envoyée avec succès",
         })
       }
+
     }
 
     // ========== FORMATEURS ==========

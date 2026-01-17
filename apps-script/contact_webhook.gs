@@ -397,6 +397,8 @@ function handleFormationStatus(body) {
     formation_title: formationTitle = 'Formation ASGF',
     session_date: sessionDate = '',
     status = 'pending',
+    ordre_attente = null,
+    message = '',
   } = body
 
   if (!email) {
@@ -412,37 +414,81 @@ function handleFormationStatus(body) {
     : 'À venir'
 
   const isConfirmed = status === 'confirmed'
+  const isPending = status === 'pending'
 
   const subject = isConfirmed
-    ? `✅ ASGF – Votre inscription à "${formationTitle}" est validée`
-    : `⛔ ASGF – Mise à jour concernant "${formationTitle}"`
+    ? `ASGF – Votre inscription à "${formationTitle}" est validée`
+    : isPending
+    ? `ASGF — Vous êtes en liste d'attente (Formation : ${formationTitle})`
+    : `ASGF – Mise à jour concernant "${formationTitle}"`
 
-  const intro = isConfirmed
-    ? `Bonjour ${prenom} ${nom},`
-    : `Bonjour ${prenom} ${nom},`
+  const intro = `Bonjour ${prenom} ${nom},`
 
-  const paragraphs = isConfirmed
-    ? [
-        `Bonne nouvelle ! Votre inscription à la formation <strong>${formationTitle}</strong> est confirmée.`,
-        'Vous recevrez prochainement toutes les informations pratiques (lien de connexion, matériel, etc.).',
-      ]
-    : [
-        `Après étude de votre dossier, nous ne pouvons malheureusement pas retenir votre inscription pour la formation <strong>${formationTitle}</strong>.`,
-        'Nous restons à votre disposition pour échanger et serons ravis de vous accueillir sur une prochaine session.',
-      ]
+  let paragraphs = []
+  if (isConfirmed) {
+    paragraphs = [
+      `Bonne nouvelle ! Votre inscription à la formation "${formationTitle}" est confirmée.`,
+      'Vous recevrez prochainement toutes les informations pratiques (lien de connexion, matériel, etc.).',
+    ]
+  } else if (isPending) {
+    if (message) {
+      // Si un message personnalisé est fourni, l'utiliser
+      paragraphs = message.split('\n').filter(Boolean)
+    } else {
+      // Message par défaut pour la liste d'attente
+      paragraphs = [
+        `Nous vous informons que votre demande d'inscription à la formation « ${formationTitle} » a bien été prise en compte, mais que la session est actuellement complète.`,
+        '',
+        'Vous êtes donc placé(e) en liste d\'attente.',
+        ordre_attente ? `Votre position actuelle : ${ordre_attente}.` : 'Votre position actuelle sera communiquée prochainement.',
+        '',
+        'Dès qu\'une place se libère, nous vous contacterons par e-mail pour vous confirmer votre inscription.',
+      ].filter(Boolean)
+    }
+  } else {
+    paragraphs = [
+      `Après étude de votre dossier, nous ne pouvons malheureusement pas retenir votre inscription pour la formation "${formationTitle}".`,
+      'Nous restons à votre disposition pour échanger et serons ravis de vous accueillir sur une prochaine session.',
+    ]
+  }
 
   const footer = isConfirmed
     ? 'Merci de noter la date dans votre agenda. À très vite !'
+    : isPending
+    ? 'Merci pour votre intérêt et votre confiance,'
     : 'Merci pour votre intérêt et votre compréhension.'
 
   const recap = [
     { label: 'Formation', value: formationTitle },
     { label: 'Session', value: dateLabel },
-    { label: 'Statut', value: isConfirmed ? 'Confirmée ✅' : 'Non retenue ⛔' },
+    ...(isPending && ordre_attente ? [{ label: 'Position', value: ordre_attente.toString() }] : []),
+    { label: 'Statut', value: isConfirmed ? 'Confirmée' : isPending ? 'Liste d\'attente' : 'Non retenue' },
   ]
 
+  // Pour les emails en liste d'attente, utiliser le format texte brut uniquement
+  if (isPending && !message) {
+    const plainText = [
+      intro,
+      '',
+      ...paragraphs,
+      '',
+      'Cordialement,',
+      '',
+      "L'équipe ASGF",
+      '',
+      'https://association-asgf.fr',
+      '',
+      ...recap.map(r => `${r.label} : ${r.value}`),
+    ].filter(Boolean).join('\n')
+
+    // Envoyer uniquement en texte brut, sans HTML
+    GmailApp.sendEmail(email, subject, plainText)
+
+    return jsonResponse({ success: true })
+  }
+
   const htmlBody = buildHtmlEmail({
-    title: isConfirmed ? '🎉 Inscription confirmée' : 'ℹ️ Mise à jour de votre inscription',
+    title: isConfirmed ? 'Inscription confirmée' : isPending ? 'Inscription en attente' : 'Mise à jour de votre inscription',
     intro,
     paragraphs,
     recap,
@@ -450,11 +496,16 @@ function handleFormationStatus(body) {
   })
 
   // Créer une version texte plain en retirant les balises HTML
-  const plainText = `${intro}\n\n${paragraphs.map(p => p.replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}\n\n${footer}`
+  let plainText = `${intro}\n\n${paragraphs.map(p => (p || '').replace(/<[^>]*>/g, '')).join('\n')}\n\n${recap.map(r => `${r.label}: ${r.value}`).join('\n')}\n\n${footer}`
   
-  GmailApp.sendEmail(email, subject, plainText, {
-    htmlBody,
-  })
+  // Pour les emails en attente, envoyer uniquement en texte brut (sans HTML)
+  if (isPending) {
+    GmailApp.sendEmail(email, subject, plainText)
+  } else {
+    GmailApp.sendEmail(email, subject, plainText, {
+      htmlBody,
+    })
+  }
 
   return jsonResponse({ success: true })
 }
