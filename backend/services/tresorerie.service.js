@@ -1,9 +1,17 @@
 // backend/services/tresorerie.service.js
 import { supabaseTresorerie, supabaseAdhesion } from '../config/supabase.js'
-import { logError, logInfo } from '../utils/logger.js'
+import { logError, logInfo, logWarning } from '../utils/logger.js'
 import { Parser as Json2CsvParser } from 'json2csv'
 import ExcelJS from 'exceljs'
 import PDFDocument from 'pdfkit'
+import { notifyMemberEmail } from './notifications.service.js'
+import path from 'path'
+import fs from 'fs'
+import { fileURLToPath } from 'url'
+// Sharp sera importé dynamiquement dans la fonction si disponible
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 const MEMBER_FIELDS = 'id, prenom, nom, email, numero_membre, pays'
 const SENEGAL_KEYWORDS = ['senegal', 'sénégal']
@@ -423,7 +431,16 @@ export async function validateCotisation(cotisationId, { date_paiement = null, a
       referenceDate: effectiveDate,
     })
 
-    const { data, error } = await supabaseTresorerie
+    logInfo('validateCotisation: Mise à jour', { 
+      cotisationId, 
+      statut_paiement: 'paye', 
+      date_paiement: effectiveDate,
+      periode_mois: periode.periode_mois,
+      periode_annee: periode.periode_annee
+    })
+
+    // Mettre à jour la cotisation
+    const { data: updateResult, error: updateError } = await supabaseTresorerie
       .from('cotisations')
       .update({
         statut_paiement: 'paye',
@@ -435,23 +452,143 @@ export async function validateCotisation(cotisationId, { date_paiement = null, a
       .select()
       .single()
 
-    if (error) {
-      logError('validateCotisation error', error)
-      throw new Error('Impossible de valider la cotisation')
+    if (updateError) {
+      logError('validateCotisation error', updateError)
+      logError('validateCotisation error details', { 
+        message: updateError.message, 
+        details: updateError.details, 
+        hint: updateError.hint,
+        code: updateError.code
+      })
+      throw new Error(`Impossible de valider la cotisation: ${updateError.message || 'Erreur inconnue'}`)
     }
 
-    if (!data) {
+    if (!updateResult) {
+      logWarning('validateCotisation: Aucune donnée retournée après mise à jour', { cotisationId })
       return null
     }
 
+    // Re-fetch la cotisation pour s'assurer d'avoir les données complètes après le trigger
+    const { data: fetchedData, error: fetchError } = await supabaseTresorerie
+      .from('cotisations')
+      .select('*')
+      .eq('id', cotisationId)
+      .single()
+
+    if (fetchError) {
+      logError('validateCotisation: Erreur lors de la récupération après mise à jour', fetchError)
+      // Utiliser updateResult si disponible
+      if (updateResult) {
+        logWarning('validateCotisation: Utilisation des données de mise à jour', { cotisationId })
+      } else {
+        return null
+      }
+    }
+
+    const finalData = fetchedData || updateResult
+
+    if (!finalData) {
+      logWarning('validateCotisation: Aucune donnée retournée après mise à jour', { cotisationId })
+      return null
+    }
+
+    logInfo('validateCotisation: Succès', { 
+      cotisationId, 
+      statut_paiement: finalData.statut_paiement,
+      date_paiement: finalData.date_paiement
+    })
+
     await logHistoriqueAction('cotisation_validated', {
-      membre_id: data.membre_id,
-      montant: data.montant,
-      description: `Cotisation validée ${buildPeriodLabel(data.periode_mois, data.periode_annee, data.date_paiement)}`,
+      membre_id: finalData.membre_id,
+      montant: finalData.montant,
+      description: `Cotisation validée ${buildPeriodLabel(finalData.periode_mois, finalData.periode_annee, finalData.date_paiement)}`,
       admin_id,
     })
 
-    return data
+    // Envoyer un email de confirmation au membre
+    try {
+      // Récupérer les informations du membre
+      const { data: membre, error: membreError } = await supabaseAdhesion
+        .from('members')
+        .select('id, prenom, nom, email, numero_membre, pays')
+        .eq('id', finalData.membre_id)
+        .single()
+
+      if (!membreError && membre && membre.email) {
+        // Formater la période en français (ex: "Novembre 2025")
+        const moisNoms = ['', 'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre']
+        const mois = finalData.periode_mois || (finalData.date_paiement ? new Date(finalData.date_paiement).getMonth() + 1 : new Date().getMonth() + 1)
+        const annee = finalData.periode_annee || (finalData.date_paiement ? new Date(finalData.date_paiement).getFullYear() : new Date().getFullYear())
+        const periodeLabel = `${moisNoms[mois] || 'Mois'} ${annee}`
+        
+        const tarifInfo = getTarifInfoForCountry(membre.pays)
+        const montantAffiche = `${finalData.montant} ${tarifInfo.symbol}`
+        const datePaiementFormatee = new Date(finalData.date_paiement).toLocaleDateString('fr-FR', { 
+          day: 'numeric', 
+          month: 'long', 
+          year: 'numeric' 
+        })
+        
+        const subject = `ASGF - Confirmation de paiement de cotisation - ${periodeLabel}`
+        const messageBody = `Bonjour {{prenom}} {{nom}},
+
+Nous vous confirmons la réception de votre paiement de cotisation pour la période ${periodeLabel}.
+
+Détails du paiement :
+• Montant : ${montantAffiche}
+• Date de paiement : ${datePaiementFormatee}
+• Numéro de membre : {{numero_membre}}
+
+Votre cotisation est maintenant à jour. Merci pour votre contribution à l'Association des Géomaticiens Sénégalais de France.
+
+Cordialement,
+L'équipe ASGF`
+
+        // Envoyer l'email
+        await notifyMemberEmail({
+          recipients: [{
+            email: membre.email,
+            prenom: membre.prenom,
+            nom: membre.nom,
+            numero_membre: membre.numero_membre || '',
+            pays: membre.pays || '',
+          }],
+          subject,
+          bodyTemplate: messageBody,
+          memberIds: [membre.id],
+        })
+
+        logInfo('Email de confirmation de paiement envoyé', { 
+          membre_id: membre.id, 
+          email: membre.email,
+          cotisation_id: cotisationId
+        })
+      } else {
+        logWarning('validateCotisation: Impossible d\'envoyer l\'email de confirmation', {
+          membre_id: finalData.membre_id,
+          error: membreError?.message,
+          hasEmail: !!membre?.email
+        })
+      }
+    } catch (emailErr) {
+      logError('validateCotisation: Erreur envoi email confirmation', emailErr)
+      // Ne pas faire échouer la validation si l'email échoue
+    }
+
+    // S'assurer que le statut est bien 'paye' dans la réponse
+    const responseData = {
+      ...finalData,
+      statut_paiement: 'paye', // Forcer le statut à 'paye' pour être sûr
+    }
+
+    logInfo('validateCotisation: Données retournées', { 
+      id: responseData.id,
+      statut_paiement: responseData.statut_paiement,
+      date_paiement: responseData.date_paiement,
+      allFields: Object.keys(responseData)
+    })
+
+    return responseData
   } catch (err) {
     logError('validateCotisation exception', err)
     throw err
@@ -1205,6 +1342,21 @@ export async function getAllRelances({ page = 1, limit = 20, annee = '', type_re
  */
 export async function createRelance(relanceData) {
   try {
+    // Récupérer les informations du membre
+    let membre = null
+    if (relanceData.membre_id) {
+      const { data: membreData, error: membreError } = await supabaseAdhesion
+        .from('members')
+        .select('id, prenom, nom, email, numero_membre, pays')
+        .eq('id', relanceData.membre_id)
+        .single()
+
+      if (!membreError && membreData) {
+        membre = membreData
+      }
+    }
+
+    // Créer la relance dans la base de données
     const { data, error } = await supabaseTresorerie
       .from('relances')
       .insert({
@@ -1223,9 +1375,481 @@ export async function createRelance(relanceData) {
     }
 
     logInfo('Relance créée', { id: data.id })
+
+    // Envoyer un email au membre si disponible
+    if (membre && membre.email) {
+      try {
+        const { notifyMemberEmail } = await import('./notifications.service.js')
+        
+        // Construire le message selon le type de relance
+        let subject = 'Rappel ASGF'
+        let messageBody = ''
+
+        if (relanceData.type_relance === 'cotisation') {
+          subject = `Rappel : Cotisation ASGF - ${relanceData.annee || new Date().getFullYear()}`
+          
+          // Déterminer les modalités de paiement selon le pays
+          const paysNormalise = membre.pays ? membre.pays.toLowerCase().trim() : ''
+          const isSenegal = paysNormalise.includes('senegal') || paysNormalise.includes('sénégal')
+          
+          let modalitesPaiement = ''
+          if (isSenegal) {
+            modalitesPaiement = `🇸🇳 Pour les membres au Sénégal
+
+Paiement géré par Mame Khady Niasse :
+Wave & Orange Money : +221 77 474 65 98`
+          } else {
+            modalitesPaiement = `🇫🇷 Pour les membres en France
+
+Wero : +33 6 52 45 47 85
+(Préciser dans le libellé : "Cotisation ASGF")
+
+Virement bancaire :
+Domiciliation : Crédit Agricole
+Code établissement : 13606
+Code guichet : 00045
+Numéro de compte : 46331012920
+Clé RIB : 80
+IBAN : FR76 1360 6000 4546 3310 1292 080
+BIC : AGRIFRPP836`
+          }
+          
+          // Déterminer le tarif selon le pays
+          const tarifInfo = getTarifInfoForCountry(membre.pays)
+          const tarifAffiche = `${tarifInfo.montant} ${tarifInfo.symbol}`
+          
+          messageBody = `Bonjour {{prenom}} {{nom}},
+
+Votre cotisation ASGF pour l'année ${relanceData.annee || new Date().getFullYear()} est en attente de paiement (${tarifAffiche}).
+
+💳 Modalités de paiement
+
+${modalitesPaiement}
+
+Cordialement,
+L'équipe ASGF`
+        } else if (relanceData.type_relance === 'carte_membre') {
+          subject = 'Rappel : Paiement de votre carte membre ASGF'
+          
+          // Déterminer les modalités de paiement selon le pays
+          const paysNormalise = membre.pays ? membre.pays.toLowerCase().trim() : ''
+          const isSenegal = paysNormalise.includes('senegal') || paysNormalise.includes('sénégal')
+          
+          let modalitesPaiement = ''
+          if (isSenegal) {
+            modalitesPaiement = `🇸🇳 Pour les membres au Sénégal
+
+Paiement géré par Mame Khady Niasse :
+Wave & Orange Money : +221 77 474 65 98`
+          } else {
+            modalitesPaiement = `🇫🇷 Pour les membres en France
+
+Wero : +33 6 52 45 47 85
+(Préciser dans le libellé : "Achat Carte Membre")
+
+Virement bancaire :
+Domiciliation : Crédit Agricole
+Code établissement : 13606
+Code guichet : 00045
+Numéro de compte : 46331012920
+Clé RIB : 80
+IBAN : FR76 1360 6000 4546 3310 1292 080
+BIC : AGRIFRPP836`
+          }
+          
+          // Construire le message propre et professionnel
+          // Déterminer le tarif selon le pays
+          const tarifInfo = getTarifInfoForCountry(membre.pays)
+          const tarifAffiche = `${tarifInfo.montant} ${tarifInfo.symbol}`
+          
+          messageBody = `Bonjour {{prenom}} {{nom}},
+
+Votre carte membre ASGF ({{numero_membre}}) est en attente de paiement (${tarifAffiche}).
+
+💳 Modalités de paiement
+
+${modalitesPaiement}
+
+Cordialement,
+L'équipe ASGF`
+        } else {
+          messageBody = `Bonjour {{prenom}} {{nom}},
+
+${relanceData.commentaire || 'Rappel important de l\'ASGF.'}
+
+Cordialement,
+L'équipe ASGF`
+        }
+
+        // Convertir les sauts de ligne en <br> pour le HTML
+        const htmlMessage = messageBody.replace(/\n/g, '<br>')
+
+        // Formater les données selon le format attendu par handleMemberEmail dans Apps Script
+        await notifyMemberEmail({
+          recipients: [{
+            email: membre.email,
+            prenom: membre.prenom,
+            nom: membre.nom,
+            numero_membre: membre.numero_membre || '',
+            pays: membre.pays || '',
+          }],
+          subject,
+          bodyTemplate: htmlMessage,
+          memberIds: [membre.id],
+        })
+
+        logInfo('Email de relance envoyé', { membre_id: membre.id, email: membre.email })
+      } catch (emailErr) {
+        logError('Erreur envoi email relance', emailErr)
+        // Ne pas faire échouer la création de relance si l'email échoue
+      }
+    }
+
     return data
   } catch (err) {
     logError('createRelance exception', err)
+    throw err
+  }
+}
+
+/**
+ * Génère automatiquement les cotisations mensuelles pour les membres qui n'ont pas encore payé
+ * @param {number} mois - Mois à traiter (1-12)
+ * @param {number} annee - Année à traiter
+ */
+export async function generateMonthlyCotisations(mois, annee) {
+  try {
+    logInfo('Génération cotisations mensuelles', { mois, annee })
+
+    // Récupérer tous les membres approuvés (actifs ou non, car is_active peut être null)
+    const { data: membres, error: membresError } = await supabaseAdhesion
+      .from('members')
+      .select('id, prenom, nom, email, numero_membre, pays, status')
+      .eq('status', 'approved')
+
+    if (membresError) {
+      logError('Erreur récupération membres pour génération cotisations', membresError)
+      throw new Error('Erreur lors de la récupération des membres')
+    }
+
+    if (!membres || membres.length === 0) {
+      logInfo('Aucun membre actif trouvé')
+      return { created: 0, skipped: 0 }
+    }
+
+    let created = 0
+    let skipped = 0
+
+    // Pour chaque membre, vérifier s'il a déjà une cotisation pour ce mois
+    for (const membre of membres) {
+      try {
+        // Vérifier si une cotisation existe déjà pour ce membre, ce mois et cette année
+        // Utiliser une requête plus stricte pour éviter les doublons
+        const { data: existingCotisations, error: checkError } = await supabaseTresorerie
+          .from('cotisations')
+          .select('id')
+          .eq('membre_id', membre.id)
+          .eq('periode_mois', mois)
+          .eq('periode_annee', annee)
+
+        if (checkError) {
+          logError(`Erreur vérification cotisation existante pour membre ${membre.id}`, checkError)
+          skipped++
+          continue
+        }
+
+        if (existingCotisations && existingCotisations.length > 0) {
+          skipped++
+          logInfo('Cotisation déjà existante, ignorée', { membre_id: membre.id, mois, annee })
+          continue
+        }
+
+        // Créer la cotisation avec statut "en_attente"
+        const tarifInfo = getTarifInfoForCountry(membre.pays)
+        const { error: insertError } = await supabaseTresorerie
+          .from('cotisations')
+          .insert({
+            membre_id: membre.id,
+            annee,
+            periode_mois: mois,
+            periode_annee: annee,
+            montant: tarifInfo.montant,
+            statut_paiement: 'en_attente',
+            mode_paiement: null,
+            date_paiement: null,
+            preuve_url: null,
+          })
+
+        if (insertError) {
+          logError(`Erreur création cotisation pour membre ${membre.id}`, insertError)
+          skipped++
+        } else {
+          created++
+          logInfo('Cotisation générée', { membre_id: membre.id, mois, annee })
+        }
+      } catch (err) {
+        logError(`Erreur traitement membre ${membre.id}`, err)
+        skipped++
+      }
+    }
+
+    logInfo('Génération cotisations terminée', { created, skipped, total: membres.length })
+    return { created, skipped, total: membres.length }
+  } catch (err) {
+    logError('generateMonthlyCotisations exception', err)
+    throw err
+  }
+}
+
+/**
+ * Crée des cotisations manquantes pour tous les membres approuvés qui n'en ont pas
+ * Utile pour synchroniser les membres avec les cotisations
+ */
+export async function createMissingCotisations(annee = null, mois = null) {
+  try {
+    const currentYear = annee || new Date().getFullYear()
+    const currentMonth = mois || new Date().getMonth() + 1
+
+    logInfo('Création cotisations manquantes', { annee: currentYear, mois: currentMonth })
+
+    // Récupérer tous les membres approuvés
+    const { data: membres, error: membresError } = await supabaseAdhesion
+      .from('members')
+      .select('id, prenom, nom, email, numero_membre, pays, status')
+      .eq('status', 'approved')
+
+    if (membresError) {
+      logError('Erreur récupération membres pour cotisations manquantes', membresError)
+      throw new Error('Erreur lors de la récupération des membres')
+    }
+
+    if (!membres || membres.length === 0) {
+      logInfo('Aucun membre approuvé trouvé')
+      return { created: 0, skipped: 0, total: 0 }
+    }
+
+    let created = 0
+    let skipped = 0
+    const membersWithoutCotisations = []
+
+    // Pour chaque membre, vérifier s'il a au moins une cotisation
+    for (const membre of membres) {
+      try {
+        // Vérifier si le membre a au moins une cotisation (peu importe le mois/année)
+        const { data: existingCotisations, error: checkError } = await supabaseTresorerie
+          .from('cotisations')
+          .select('id')
+          .eq('membre_id', membre.id)
+          .limit(1)
+
+        if (checkError) {
+          logError(`Erreur vérification cotisations pour membre ${membre.id}`, checkError)
+          skipped++
+          continue
+        }
+
+        // Si le membre n'a aucune cotisation, créer une pour le mois/année courant
+        if (!existingCotisations || existingCotisations.length === 0) {
+          const tarifInfo = getTarifInfoForCountry(membre.pays)
+          const periode = resolvePeriode({
+            periode_mois: currentMonth,
+            periode_annee: currentYear,
+            referenceDate: new Date(),
+          })
+
+          const { error: insertError } = await supabaseTresorerie
+            .from('cotisations')
+            .insert({
+              membre_id: membre.id,
+              annee: currentYear,
+              periode_mois: periode.periode_mois,
+              periode_annee: periode.periode_annee,
+              montant: tarifInfo.montant,
+              statut_paiement: 'en_attente',
+              mode_paiement: null,
+              date_paiement: null,
+              preuve_url: null,
+            })
+
+          if (insertError) {
+            logError(`Erreur création cotisation manquante pour membre ${membre.id}`, insertError)
+            skipped++
+            membersWithoutCotisations.push({
+              membre_id: membre.id,
+              numero_membre: membre.numero_membre,
+              error: insertError.message,
+            })
+          } else {
+            created++
+            logInfo('Cotisation manquante créée', { 
+              membre_id: membre.id, 
+              numero_membre: membre.numero_membre,
+              mois: currentMonth,
+              annee: currentYear
+            })
+          }
+        } else {
+          skipped++
+        }
+      } catch (err) {
+        logError(`Erreur traitement membre ${membre.id} pour cotisations manquantes`, err)
+        skipped++
+        membersWithoutCotisations.push({
+          membre_id: membre.id,
+          numero_membre: membre.numero_membre,
+          error: err.message,
+        })
+      }
+    }
+
+    logInfo('Création cotisations manquantes terminée', { 
+      created, 
+      skipped, 
+      total: membres.length,
+      membersWithoutCotisations: membersWithoutCotisations.length
+    })
+
+    return { 
+      created, 
+      skipped, 
+      total: membres.length,
+      membersWithoutCotisations 
+    }
+  } catch (err) {
+    logError('createMissingCotisations exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour les statuts des cotisations en retard (passe de "en_attente" à "non_paye" si le mois est dépassé)
+ */
+export async function updateOverdueCotisations() {
+  try {
+    logInfo('Mise à jour des cotisations en retard')
+
+    const now = new Date()
+    const currentMonth = now.getMonth() + 1 // 1-12
+    const currentYear = now.getFullYear()
+
+    // Récupérer toutes les cotisations "en_attente" dont le mois est dépassé
+    // Récupérer d'abord celles de l'année précédente
+    const { data: oldYearCotisations, error: error1 } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id, periode_mois, periode_annee, statut_paiement')
+      .eq('statut_paiement', 'en_attente')
+      .lt('periode_annee', currentYear)
+
+    // Récupérer celles de l'année courante mais mois dépassé
+    const { data: currentYearCotisations, error: error2 } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id, periode_mois, periode_annee, statut_paiement')
+      .eq('statut_paiement', 'en_attente')
+      .eq('periode_annee', currentYear)
+      .lt('periode_mois', currentMonth)
+
+    if (error1 || error2) {
+      logError('Erreur récupération cotisations en retard', error1 || error2)
+      throw new Error('Erreur lors de la récupération des cotisations en retard')
+    }
+
+    const overdueCotisations = [
+      ...(oldYearCotisations || []),
+      ...(currentYearCotisations || [])
+    ]
+
+    if (!overdueCotisations || overdueCotisations.length === 0) {
+      logInfo('Aucune cotisation en retard trouvée')
+      return { updated: 0 }
+    }
+
+    // Mettre à jour le statut à "non_paye"
+    const ids = overdueCotisations.map(c => c.id)
+    const { error: updateError } = await supabaseTresorerie
+      .from('cotisations')
+      .update({ statut_paiement: 'non_paye' })
+      .in('id', ids)
+
+    if (updateError) {
+      logError('Erreur mise à jour cotisations en retard', updateError)
+      throw new Error('Erreur lors de la mise à jour des cotisations')
+    }
+
+    logInfo('Cotisations en retard mises à jour', { count: ids.length })
+    return { updated: ids.length }
+  } catch (err) {
+    logError('updateOverdueCotisations exception', err)
+    throw err
+  }
+}
+
+/**
+ * Nettoie les doublons de cotisations (garde la plus récente pour chaque membre/mois/année)
+ */
+export async function cleanDuplicateCotisations() {
+  try {
+    logInfo('Nettoyage des doublons de cotisations')
+
+    // Récupérer toutes les cotisations
+    const { data: allCotisations, error } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id, membre_id, periode_mois, periode_annee, created_at')
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      logError('Erreur récupération cotisations pour nettoyage', error)
+      throw new Error('Erreur lors de la récupération des cotisations')
+    }
+
+    if (!allCotisations || allCotisations.length === 0) {
+      logInfo('Aucune cotisation à nettoyer')
+      return { removed: 0 }
+    }
+
+    // Grouper par membre_id + periode_mois + periode_annee
+    const groups = {}
+    allCotisations.forEach(cot => {
+      const key = `${cot.membre_id}_${cot.periode_mois}_${cot.periode_annee}`
+      if (!groups[key]) {
+        groups[key] = []
+      }
+      groups[key].push(cot)
+    })
+
+    // Pour chaque groupe, garder la plus récente et supprimer les autres
+    let removed = 0
+    const idsToRemove = []
+
+    Object.values(groups).forEach(group => {
+      if (group.length > 1) {
+        // Trier par created_at décroissant (plus récent en premier)
+        group.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+        // Garder la première (plus récente), supprimer les autres
+        const duplicates = group.slice(1)
+        duplicates.forEach(dup => {
+          idsToRemove.push(dup.id)
+          removed++
+        })
+      }
+    })
+
+    if (idsToRemove.length > 0) {
+      const { error: deleteError } = await supabaseTresorerie
+        .from('cotisations')
+        .delete()
+        .in('id', idsToRemove)
+
+      if (deleteError) {
+        logError('Erreur suppression doublons', deleteError)
+        throw new Error('Erreur lors de la suppression des doublons')
+      }
+
+      logInfo('Doublons supprimés', { count: removed })
+    }
+
+    return { removed }
+  } catch (err) {
+    logError('cleanDuplicateCotisations exception', err)
     throw err
   }
 }
@@ -1235,9 +1859,11 @@ export async function createRelance(relanceData) {
 /**
  * Récupère toutes les cartes membres avec pagination et filtres
  */
-export async function getAllCartesMembres({ page = 1, limit = 20, search = '', statut_carte = '', statut_paiement = '' }) {
+export async function getAllCartesMembres({ page = 1, limit = 1000, search = '', statut_carte = '', statut_paiement = '' }) {
   try {
     logInfo('getAllCartesMembres: Requête initiale', { page, limit, search, statut_carte, statut_paiement })
+    
+    // Récupérer toutes les cartes sans limite de pagination pour avoir tous les membres
     let query = supabaseTresorerie
       .from('cartes_membres')
       .select('*', { count: 'exact' })
@@ -1255,10 +1881,7 @@ export async function getAllCartesMembres({ page = 1, limit = 20, search = '', s
       query = query.ilike('numero_membre', `%${search}%`)
     }
 
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-    query = query.range(from, to)
-
+    // Ne pas utiliser .range() pour récupérer tous les membres
     const { data: cartes, error, count } = await query
 
     if (error) {
@@ -1268,22 +1891,53 @@ export async function getAllCartesMembres({ page = 1, limit = 20, search = '', s
 
     logInfo('getAllCartesMembres: Cartes récupérées', { count: cartes?.length || 0, total: count || 0 })
 
-    const cartesWithTarif = (cartes || []).map((carte) => {
-      const info = getTarifInfoForCountry(carte.pays)
-      return {
-        ...carte,
-        devise: info.devise,
-        currencySymbol: info.symbol,
-      }
-    })
+    // Récupérer les informations des membres pour chaque carte
+    const cartesWithMembers = await Promise.all(
+      (cartes || []).map(async (carte) => {
+        const info = getTarifInfoForCountry(carte.pays)
+        
+        // Récupérer les informations du membre depuis la table members
+        let membreInfo = null
+        if (carte.numero_membre) {
+          try {
+            const { data: membre, error: membreError } = await supabaseAdhesion
+              .from('members')
+              .select('id, prenom, nom, email, numero_membre, pays')
+              .eq('numero_membre', carte.numero_membre)
+              .maybeSingle()
+            
+            if (!membreError && membre) {
+              membreInfo = {
+                id: membre.id, // Inclure l'ID du membre pour les relances
+                prenom: membre.prenom || '',
+                nom: membre.nom || '',
+                email: membre.email || '',
+              }
+            }
+          } catch (membreErr) {
+            logWarning('Erreur récupération membre pour carte', {
+              numeroMembre: carte.numero_membre,
+              error: membreErr.message,
+            })
+          }
+        }
+
+        return {
+          ...carte,
+          devise: info.devise,
+          currencySymbol: info.symbol,
+          membre: membreInfo,
+        }
+      })
+    )
 
     return {
-      cartes: cartesWithTarif,
+      cartes: cartesWithMembers,
       pagination: {
-        page,
-        limit,
+        page: 1,
+        limit: count || 0,
         total: count || 0,
-        totalPages: Math.ceil((count || 0) / limit),
+        totalPages: 1,
       },
     }
   } catch (err) {
@@ -1293,45 +1947,826 @@ export async function getAllCartesMembres({ page = 1, limit = 20, search = '', s
 }
 
 /**
+ * Génère le PDF de la carte membre
+ */
+async function generateCarteMembrePDF(membre, carteData) {
+  // Format A4 paysage (comme dans le design HTML)
+  // Utiliser une résolution plus élevée pour éviter le flou
+  const doc = new PDFDocument({ 
+    size: 'A4',
+    layout: 'landscape',
+    margin: 0,
+    compress: false, // Désactiver la compression pour préserver la qualité maximale des images
+    // Augmenter la résolution pour une meilleure qualité
+    info: {
+      Title: 'Carte Membre ASGF',
+      Author: 'ASGF',
+      Subject: 'Carte de membre officielle',
+      Creator: 'ASGF Admin'
+    }
+  })
+  
+  const chunks = []
+  doc.on('data', (chunk) => chunks.push(chunk))
+
+  // Dimensions de la page en points
+  const pageWidth = doc.page.width
+  const pageHeight = doc.page.height
+
+  // Couleurs avec meilleur contraste pour netteté
+  const cardBg = '#ffffff'
+  const cardText = '#0f172a' // Noir plus foncé pour meilleur contraste
+  const cardTextSecondary = '#334155' // Gris plus foncé pour labels
+  const brandBlue = '#3b82f6'
+  const brandAmber = '#f59e0b'
+  const brandGreen = '#22c55e'
+  const lightGray = '#9ca3af' // Gris plus visible pour les lignes
+
+  // Fond blanc
+  doc.rect(0, 0, pageWidth, pageHeight)
+    .fill(cardBg)
+  
+  // Dégradés de fond subtils (comme dans le CSS)
+  // IMPORTANT : toujours remettre l'opacité à 1 après avoir utilisé fillOpacity
+  // Dégradé bleu en haut gauche
+  doc.circle(pageWidth * 0.1, pageHeight * 0.15, 200)
+    .fillOpacity(0.15)
+    .fill('#93c5fd')
+    .fillOpacity(1) // remettre l'opacité à 1 pour le reste des éléments
+  
+  // Dégradé vert en bas droite
+  doc.circle(pageWidth * 0.9, pageHeight * 0.85, 200)
+    .fillOpacity(0.12)
+    .fill('#86efac')
+    .fillOpacity(1) // remettre l'opacité à 1 pour la suite
+
+  // En-tête avec logo (comme dans le design HTML)
+  const headerTop = 24
+  const headerLeft = 30
+  const logoSize = 48
+  
+  // Logo ASGF (si disponible)
+  // Depuis backend/services -> backend -> asgf-admin -> asgf-app
+  const logoPath = path.join(__dirname, '../../asgf-app/public/assets/images/Logo_officiel_ASGF.png')
+  let logoX = headerLeft
+  if (fs.existsSync(logoPath)) {
+    try {
+      doc.image(logoPath, logoX, headerTop, {
+        width: logoSize,
+        height: logoSize,
+        fit: [logoSize, logoSize]
+      })
+      logoX += logoSize + 14
+    } catch (err) {
+      logWarning('Erreur chargement logo', { error: err.message })
+    }
+  }
+  
+  // Nom de l'association (gras, 18px) - contraste amélioré
+  doc.fontSize(18)
+    .fillColor('#0f172a') // Presque noir pour netteté
+    .font('Helvetica-Bold')
+    .text('Association des Sénégalais Géomaticiens de France', logoX, headerTop + 5, { 
+      width: pageWidth - logoX - 30 
+    })
+  
+  // "Carte de membre officielle" (gris, 15px) - contraste amélioré
+  doc.fontSize(15)
+    .fillColor('#475569') // Gris foncé pour meilleure lisibilité
+    .font('Helvetica-Bold')
+    .text('Carte de membre officielle', logoX, headerTop + 25, { 
+      width: pageWidth - logoX - 30 
+    })
+  
+  const headerHeight = headerTop + logoSize + 20
+
+  // Zone de contenu principale (comme dans le design HTML)
+  const contentTop = headerHeight
+  const contentLeft = 30
+  const gap = 30
+  
+  // Photo (augmenter la taille pour meilleure qualité - 320px pour une meilleure résolution)
+  // Plus la photo est grande dans le PDF, meilleure sera la qualité finale
+  const photoWidth = 320
+  const photoHeight = (photoWidth * 4) / 3
+  const infoLeft = contentLeft + photoWidth + gap
+  const photoTop = contentTop
+  const photoLeft = contentLeft
+  
+  // Photo avec bordure arrondie (simulée avec rectangle + bordure blanche)
+  // Bordure blanche de 4px
+  doc.rect(photoLeft, photoTop, photoWidth, photoHeight)
+    .fill('#ffffff')
+  
+  // Ombre portée (simulée)
+  doc.rect(photoLeft + 2, photoTop + 2, photoWidth, photoHeight)
+    .fillOpacity(0.1)
+    .fill('#000000')
+    .fillOpacity(1) // très important : retourner à une opacité normale
+
+  // Télécharger et inclure la photo si disponible
+  const photoUrl = carteData.photo_url || membre?.photo_url || null
+  if (photoUrl) {
+    try {
+      let photoBuffer = null
+      let imageType = 'JPEG'
+
+      // Vérifier si c'est une data URL (base64)
+      if (photoUrl.startsWith('data:image/')) {
+        logInfo('Photo en format base64 détectée')
+        // Extraire le type et les données base64
+        const matches = photoUrl.match(/^data:image\/(\w+);base64,(.+)$/)
+        if (matches) {
+          imageType = matches[1].toUpperCase()
+          const base64Data = matches[2]
+          photoBuffer = Buffer.from(base64Data, 'base64')
+          logInfo('Photo base64 décodée', { imageType, size: photoBuffer.length })
+        }
+      } else {
+        // C'est une URL, télécharger l'image
+        logInfo('Téléchargement photo membre depuis URL', { photoUrl: photoUrl.substring(0, 100) })
+        const fetch = (await import('node-fetch')).default
+        
+        // Pour les URLs Supabase Storage, essayer de récupérer l'image en haute résolution
+        // En enlevant les paramètres de transformation qui peuvent réduire la qualité
+        let downloadUrl = photoUrl
+        // Si c'est une URL Supabase Storage avec transformation, récupérer l'original
+        if (photoUrl.includes('supabase.co/storage') && photoUrl.includes('transform')) {
+          // Enlever les paramètres de transformation pour récupérer l'image originale
+          downloadUrl = photoUrl.split('?')[0]
+          logInfo('URL Supabase détectée, récupération de l\'image originale sans transformation')
+        }
+        
+        const photoResponse = await fetch(downloadUrl, {
+          headers: {
+            'Accept': 'image/*',
+            // Certaines APIs nécessitent des headers spécifiques pour la meilleure qualité
+          }
+        })
+        
+        if (photoResponse.ok) {
+          photoBuffer = await photoResponse.buffer()
+          // Détecter le type d'image depuis l'URL ou le buffer
+          if (photoUrl.includes('.png') || photoBuffer[0] === 0x89) {
+            imageType = 'PNG'
+          } else if (photoUrl.includes('.gif') || photoBuffer[0] === 0x47) {
+            imageType = 'GIF'
+          } else if (photoUrl.includes('.webp')) {
+            imageType = 'WEBP'
+          }
+          logInfo('Photo téléchargée depuis URL', { 
+            imageType, 
+            size: photoBuffer.length,
+            sizeKB: (photoBuffer.length / 1024).toFixed(2),
+            originalUrl: photoUrl.substring(0, 100),
+            downloadUrl: downloadUrl.substring(0, 100)
+          })
+        } else {
+          logWarning('Impossible de télécharger la photo', { 
+            status: photoResponse.status,
+            url: downloadUrl.substring(0, 100)
+          })
+        }
+      }
+
+      // Ajouter l'image au PDF si disponible
+      // Utiliser Sharp pour redimensionner l'image en haute qualité avant insertion
+      if (photoBuffer) {
+        try {
+          // Calculer les dimensions cibles dans le PDF (avec bordure blanche de 4px)
+          const imageWidth = photoWidth - 6
+          const imageHeight = photoHeight - 6
+          
+          // Pour éviter le flou, on redimensionne l'image à 2.5x la taille cible
+          // avec Sharp (qui utilise un algorithme de redimensionnement de haute qualité)
+          // puis on l'insère dans le PDF. Cela donne une meilleure qualité car PDFKit
+          // n'a pas besoin de redimensionner beaucoup.
+          const scaleFactor = 2.5 // Multiplier par 2.5 pour une meilleure qualité
+          const targetWidth = Math.round(imageWidth * scaleFactor)
+          const targetHeight = Math.round(imageHeight * scaleFactor)
+          
+          let processedImageBuffer = photoBuffer
+          
+          // Utiliser Sharp pour redimensionner l'image en haute qualité
+          // Import dynamique de Sharp pour éviter les erreurs si non installé
+          try {
+            const sharpModule = await import('sharp')
+            const sharp = sharpModule.default
+            
+            processedImageBuffer = await sharp(photoBuffer)
+                .resize(targetWidth, targetHeight, {
+                  fit: 'cover', // Couvrir toute la zone sans déformation
+                  position: 'center', // Centrer l'image
+                  kernel: sharp.kernel.lanczos3, // Algorithme de haute qualité pour le redimensionnement
+                  withoutEnlargement: false, // Permettre d'agrandir si l'image est plus petite
+                })
+                .jpeg({ 
+                  quality: 95, // Qualité JPEG élevée (95%)
+                  mozjpeg: true // Utiliser mozjpeg pour meilleure compression
+                })
+                .toBuffer()
+              
+              logInfo('Image redimensionnée avec Sharp', {
+                originalSize: photoBuffer.length,
+                processedSize: processedImageBuffer.length,
+                targetDimensions: `${targetWidth}x${targetHeight}`,
+                pdfDimensions: `${imageWidth}x${imageHeight}`,
+                scaleFactor
+              })
+            } catch (sharpError) {
+              // Si Sharp n'est pas installé ou échoue, utiliser l'image originale
+              if (sharpError.code === 'MODULE_NOT_FOUND' || sharpError.message?.includes('Cannot find module')) {
+                logWarning('Sharp non installé. Pour améliorer la qualité des images, installez Sharp avec: npm install sharp')
+              } else {
+                logWarning('Erreur Sharp, utilisation de l\'image originale', { error: sharpError.message })
+              }
+              processedImageBuffer = photoBuffer
+            }
+          
+          // Insérer l'image dans le PDF
+          // Si Sharp a été utilisé, l'image est déjà redimensionnée en haute qualité
+          // Sinon, on utilise fit pour préserver les proportions
+          if (processedImageBuffer !== photoBuffer) {
+            // Image traitée par Sharp, utiliser width/height directement
+            doc.image(processedImageBuffer, photoLeft + 3, photoTop + 3, {
+              width: imageWidth,
+              height: imageHeight
+            })
+          } else {
+            // Image non traitée, utiliser fit pour préserver les proportions
+            doc.image(processedImageBuffer, photoLeft + 3, photoTop + 3, {
+              fit: [imageWidth, imageHeight],
+              align: 'center',
+              valign: 'center'
+            })
+          }
+          
+          logInfo('Photo incluse dans le PDF avec succès', { 
+            imageType, 
+            dimensions: `${imageWidth}x${imageHeight}`,
+            bufferSize: processedImageBuffer.length,
+            originalPhotoSize: `${photoWidth}x${photoHeight}`,
+            processed: true
+          })
+        } catch (imageErr) {
+          logWarning('Erreur ajout image au PDF', { error: imageErr.message })
+          // Continuer sans photo
+        }
+      }
+    } catch (photoErr) {
+      logWarning('Erreur traitement photo', { error: photoErr.message })
+      // Continuer sans photo
+    }
+  } else {
+    logInfo('Aucune photo fournie pour la carte membre')
+  }
+
+  // Matricule sous la photo - contraste amélioré
+  // On laisse un vrai espace entre la photo et le bloc matricule pour respirer
+  const matriculeY = photoTop + photoHeight + 16
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour label
+    .font('Helvetica-Bold')
+    .text('Matricule', photoLeft, matriculeY, { 
+      width: photoWidth, 
+      align: 'center' 
+    })
+  
+  // On laisse un écart vertical suffisant entre le label et la valeur
+  doc.fontSize(16)
+    .fillColor('#0f172a') // Presque noir pour valeur
+    .font('Helvetica-Bold')
+    .text(carteData.numero_membre || membre?.numero_membre || 'XXXX-000', photoLeft, matriculeY + 14, { 
+      width: photoWidth, 
+      align: 'center' 
+    })
+
+  // Informations du membre (à droite)
+  const prenom = membre?.prenom || carteData.prenom || ''
+  const nom = membre?.nom || carteData.nom || ''
+  const numeroMembre = carteData.numero_membre || membre?.numero_membre || ''
+  const dateEmission = carteData.date_emission || new Date().toISOString().split('T')[0]
+  const dateValidite = carteData.date_validite || null
+  const statutCarte = carteData.statut_carte || 'Membre actif'
+  const fonction = carteData.fonction || membre?.fonction || ''
+  const pays = carteData.pays || membre?.pays || ''
+  const ville = carteData.ville || membre?.ville || ''
+  const section = pays ? `${pays}${ville ? ` / ${ville}` : ''}` : 'France'
+
+  // Nom du membre (40px, très foncé pour netteté)
+  doc.fontSize(40)
+    .fillColor('#0a0a0a') // Presque noir pour maximum de contraste
+    .font('Helvetica-Bold')
+    .text(`${prenom} ${nom.toUpperCase()}`, infoLeft, contentTop + 10, { 
+      width: pageWidth - infoLeft - 30 
+    })
+  
+  // Rôle/Fonction (20px, bleu, font-weight 600)
+  if (fonction) {
+    doc.fontSize(20)
+      .fillColor(brandBlue)
+      .font('Helvetica-Bold')
+      .text(fonction, infoLeft, contentTop + 56, { 
+        width: pageWidth - infoLeft - 30 
+      })
+  }
+
+  // Informations détaillées (grille comme dans le CSS)
+  // On descend légèrement le bloc Statut/Section/Validité pour plus de respiration
+  let infoY = contentTop + 110
+  const gridGap = 16
+  const gridColWidth = (pageWidth - infoLeft - 30 - gridGap) / 2
+
+  // Statut (label 12px, valeur 16px) - contraste amélioré
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour labels
+    .font('Helvetica-Bold')
+    .text('Statut', infoLeft, infoY, { width: gridColWidth })
+  
+  doc.fontSize(16)
+    .fillColor('#0f172a') // Presque noir pour valeurs
+    .font('Helvetica-Bold')
+    .text(statutCarte, infoLeft, infoY + 12, { width: gridColWidth })
+
+  // Section
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour labels
+    .font('Helvetica-Bold')
+    .text('Section', infoLeft + gridColWidth + gridGap, infoY, { width: gridColWidth })
+  
+  doc.fontSize(16)
+    .fillColor('#0f172a') // Presque noir pour valeurs
+    .font('Helvetica-Bold')
+    .text(section, infoLeft + gridColWidth + gridGap, infoY + 12, { width: gridColWidth })
+
+  // Validité (sur 2 colonnes comme dans le CSS) - contraste amélioré
+  infoY += 40
+  doc.fontSize(12)
+    .fillColor('#475569') // Gris foncé pour labels
+    .font('Helvetica-Bold')
+    .text('Validité', infoLeft, infoY, { width: pageWidth - infoLeft - 30 })
+  
+  if (dateEmission && dateValidite) {
+    const dateEmissionFR = new Date(dateEmission + 'T00:00:00').toLocaleDateString('fr-FR', { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric' 
+    })
+    const dateValiditeFR = new Date(dateValidite + 'T00:00:00').toLocaleDateString('fr-FR', { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric' 
+    })
+    doc.fontSize(16)
+      .fillColor('#0f172a') // Presque noir pour valeurs
+      .font('Helvetica-Bold')
+      .text(`${dateEmissionFR} au ${dateValiditeFR}`, infoLeft, infoY + 12, { 
+        width: pageWidth - infoLeft - 30 
+      })
+  }
+
+  // Footer avec signatures et date (comme dans le design HTML)
+  // On remonte légèrement l'ensemble pour mieux séparer du texte de droite
+  const footerY = pageHeight - 90
+  const signatureLineLength = 140
+  const signatureSpacing = 200
+  const presidentX = infoLeft
+
+  // Signature image du Président (si disponible)
+  try {
+    const signaturePath = path.join(__dirname, '../../asgf-app/src/admin/img/signature_omar.png')
+    if (fs.existsSync(signaturePath)) {
+      const signatureWidth = 120
+      const signatureHeight = 40
+      // On décale légèrement la signature vers le haut pour qu'elle ne touche pas la zone matricule
+      const signatureY = footerY - 40
+      doc.image(signaturePath, presidentX + (signatureLineLength - signatureWidth) / 2, signatureY, {
+        width: signatureWidth,
+        height: signatureHeight,
+      })
+    }
+  } catch (err) {
+    logWarning('Erreur chargement signature président', { error: err.message })
+  }
+
+  // Ligne signature Président (gauche)
+  doc.moveTo(presidentX, footerY)
+    .lineTo(presidentX + signatureLineLength, footerY)
+    .lineWidth(2)
+    .strokeColor(lightGray)
+    .stroke()
+  
+  doc.fontSize(11)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    .text('Le Président', presidentX, footerY + 6, { width: signatureLineLength, align: 'center' })
+  
+  // Nom du Président sous la ligne (ex: SOD)
+  doc.fontSize(11)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    .text('SOD', presidentX, footerY + 22, { width: signatureLineLength, align: 'center' })
+  
+  // Ligne signature Trésorier Général (droite)
+  const tresorierX = infoLeft + signatureSpacing
+  doc.moveTo(tresorierX, footerY)
+    .lineTo(tresorierX + signatureLineLength, footerY)
+    .lineWidth(2)
+    .strokeColor(lightGray)
+    .stroke()
+  
+  doc.fontSize(11)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    .text('Le Trésorier Général', tresorierX, footerY + 4, { width: signatureLineLength, align: 'center' })
+  
+  // Date d'émission et site web en bas à droite (12px, gras)
+  const footerRightX = pageWidth - 200
+  if (dateEmission) {
+    const dateEmissionFR = new Date(dateEmission + 'T00:00:00').toLocaleDateString('fr-FR', { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric' 
+    })
+    doc.fontSize(12)
+      .fillColor(cardTextSecondary)
+      .font('Helvetica-Bold')
+      // On place la date plus bas que la ligne de signature du trésorier pour bien séparer
+      .text(`Émis le ${dateEmissionFR}`, footerRightX, footerY + 16, { width: 170, align: 'right' })
+  }
+  
+  doc.fontSize(12)
+    .fillColor(cardTextSecondary)
+    .font('Helvetica-Bold')
+    // Et le site encore un peu plus bas pour laisser de l'air
+    .text('© www.votre-site.org', footerRightX, footerY + 32, { width: 170, align: 'right' })
+  
+  // Barre de couleur en bas (dégradé bleu-ambre-vert comme dans le CSS)
+  const barHeight = 10
+  doc.rect(0, pageHeight - barHeight, pageWidth, barHeight)
+    .fill(brandBlue)
+  
+  // Dégradé (simulé avec rectangles)
+  const barThird = pageWidth / 3
+  doc.rect(barThird, pageHeight - barHeight, barThird, barHeight)
+    .fill(brandAmber)
+  
+  doc.rect(barThird * 2, pageHeight - barHeight, barThird, barHeight)
+    .fill(brandGreen)
+
+  doc.end()
+
+  const buffer = await new Promise((resolve, reject) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)))
+    doc.on('error', reject)
+  })
+
+  return buffer
+}
+
+/**
+ * Upload le PDF sur Google Drive via Google Apps Script
+ */
+async function uploadCartePDFToDrive(pdfBuffer, numeroMembre) {
+  const APPSCRIPT_WEBHOOK_URL = process.env.APPSCRIPT_CONTACT_WEBHOOK_URL || ''
+  const APPSCRIPT_WEBHOOK_TOKEN = process.env.APPSCRIPT_CONTACT_TOKEN || ''
+  const GOOGLE_DRIVE_FOLDER_ID = '1iSFImqsc4AeDFeTesNpDl8uIsi1ocdx6'
+
+  if (!APPSCRIPT_WEBHOOK_URL) {
+    logWarning('Apps Script webhook non configuré, upload PDF ignoré')
+    return null
+  }
+
+  try {
+    // Convertir le buffer en base64
+    const pdfBase64 = pdfBuffer.toString('base64')
+    const fileName = `CARTE-${numeroMembre}.pdf`
+
+    const payload = {
+      type: 'upload_pdf',
+      folderId: GOOGLE_DRIVE_FOLDER_ID,
+      fileName: fileName,
+      fileData: pdfBase64,
+      mimeType: 'application/pdf',
+      token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+    }
+
+    logInfo('Upload PDF carte membre vers Google Drive', {
+      fileName,
+      folderId: GOOGLE_DRIVE_FOLDER_ID,
+      size: `${(pdfBuffer.length / 1024).toFixed(2)} KB`,
+      webhookUrl: APPSCRIPT_WEBHOOK_URL ? 'Configuré' : 'Non configuré',
+      hasToken: !!APPSCRIPT_WEBHOOK_TOKEN,
+      payloadSize: `${(JSON.stringify(payload).length / 1024).toFixed(2)} KB`,
+    })
+
+    if (!APPSCRIPT_WEBHOOK_URL) {
+      logError('APPSCRIPT_WEBHOOK_URL non configuré - Impossible d\'uploader le PDF')
+      return null
+    }
+
+    const fetch = (await import('node-fetch')).default
+    
+    logInfo('Envoi requête vers Google Apps Script', {
+      url: APPSCRIPT_WEBHOOK_URL.substring(0, 50) + '...',
+      method: 'POST',
+      hasToken: !!APPSCRIPT_WEBHOOK_TOKEN,
+    })
+    
+    const response = await fetch(APPSCRIPT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(APPSCRIPT_WEBHOOK_TOKEN && { 'x-contact-token': APPSCRIPT_WEBHOOK_TOKEN }),
+      },
+      body: JSON.stringify(payload),
+    })
+
+    logInfo('Réponse reçue de Google Apps Script', {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok,
+    })
+
+    const responseText = await response.text()
+    
+    if (!response.ok) {
+      logError('Erreur upload PDF vers Google Drive', {
+        status: response.status,
+        statusText: response.statusText,
+        body: responseText.substring(0, 500),
+      })
+      return null
+    }
+
+    try {
+      logInfo('Parsing réponse Google Apps Script', {
+        responseLength: responseText.length,
+        preview: responseText.substring(0, 200),
+      })
+      
+      const responseData = JSON.parse(responseText)
+      
+      logInfo('Réponse parsée', {
+        success: responseData.success,
+        hasFileUrl: !!responseData.fileUrl,
+        message: responseData.message,
+        error: responseData.error,
+      })
+      
+      if (responseData.success && responseData.fileUrl) {
+        logInfo('PDF uploadé avec succès sur Google Drive', {
+          fileName,
+          fileUrl: responseData.fileUrl,
+          fileId: responseData.fileId,
+          folderId: responseData.folderId,
+        })
+        return responseData.fileUrl
+      } else {
+        logWarning('Upload PDF échoué - Réponse indique échec', {
+          message: responseData.message,
+          error: responseData.error,
+          success: responseData.success,
+        })
+        return null
+      }
+    } catch (parseErr) {
+      logError('Erreur parsing réponse upload PDF', {
+        error: parseErr.message,
+        responseText: responseText.substring(0, 500),
+        responseLength: responseText.length,
+      })
+      return null
+    }
+  } catch (err) {
+    logError('Exception upload PDF vers Google Drive', err)
+    return null
+  }
+}
+
+/**
  * Crée une nouvelle carte membre
  */
 export async function createCarteMembre(carteData) {
   try {
+    logInfo('createCarteMembre appelé', { 
+      carteDataKeys: Object.keys(carteData),
+      membre_id: carteData.membre_id,
+      numero_membre: carteData.numero_membre,
+    })
+    
     let membre = null
     if (carteData.membre_id) {
-      membre = await fetchMemberById(carteData.membre_id)
+      // Récupérer toutes les informations du membre pour la carte
+      logInfo('Récupération membre par ID', { membre_id: carteData.membre_id })
+      const { data, error } = await supabaseAdhesion
+        .from('members')
+        .select('*')
+        .eq('id', carteData.membre_id)
+        .maybeSingle()
+      if (error) {
+        logError('fetchMemberById error', error)
+        throw new Error("Impossible de récupérer le membre associé à la carte")
+      }
+      membre = data
+      logInfo('Membre récupéré par ID', { 
+        membreId: membre?.id, 
+        numeroMembre: membre?.numero_membre,
+        nom: membre?.nom,
+        prenom: membre?.prenom,
+      })
     } else if (carteData.numero_membre) {
-      membre = await fetchMemberByNumero(carteData.numero_membre)
+      // Récupérer toutes les informations du membre pour la carte
+      logInfo('Récupération membre par numéro', { numero_membre: carteData.numero_membre })
+      const { data, error } = await supabaseAdhesion
+        .from('members')
+        .select('*')
+        .eq('numero_membre', carteData.numero_membre)
+        .maybeSingle()
+      if (error) {
+        logError('fetchMemberByNumero error', error)
+        throw new Error("Impossible de récupérer le membre associé à la carte")
+      }
+      membre = data
+      logInfo('Membre récupéré par numéro', { 
+        membreId: membre?.id, 
+        numeroMembre: membre?.numero_membre,
+        nom: membre?.nom,
+        prenom: membre?.prenom,
+      })
+    } else {
+      logWarning('Aucun membre_id ni numero_membre fourni dans carteData', { carteData })
     }
 
     const numeroMembre = carteData.numero_membre || membre?.numero_membre
     if (!numeroMembre) {
+      logError('Numéro de membre manquant', { 
+        carteData,
+        membre,
+        membreId: membre?.id,
+      })
       throw new Error('Le numéro de membre est obligatoire pour créer une carte')
     }
+    
+    logInfo('Numéro de membre trouvé', { numeroMembre })
 
     const pays = carteData.pays || membre?.pays || null
     const tarifInfo = getTarifInfoForCountry(pays)
 
-    const { data, error } = await supabaseTresorerie
-      .from('cartes_membres')
-      .insert({
-        numero_membre: numeroMembre,
-        date_emission: carteData.date_emission || null,
-        date_validite: carteData.date_validite || null,
-        pays,
-        statut_carte: carteData.statut_carte || null,
-        statut_paiement: carteData.statut_paiement || null,
-        lien_pdf: carteData.lien_pdf || null,
+    // Générer le PDF de la carte
+    let lienPdf = null
+    try {
+      logInfo('Génération PDF carte membre', { numeroMembre, membreId: membre?.id })
+      const pdfBuffer = await generateCarteMembrePDF(membre, carteData)
+      logInfo('PDF généré avec succès', { 
+        numeroMembre, 
+        size: `${(pdfBuffer.length / 1024).toFixed(2)} KB` 
       })
-      .select()
-      .single()
-
-    if (error) {
-      logError('createCarteMembre error', error)
-      throw new Error('Erreur lors de la création de la carte membre')
+      
+      lienPdf = await uploadCartePDFToDrive(pdfBuffer, numeroMembre)
+      
+      if (!lienPdf) {
+        logWarning('PDF non uploadé, carte créée sans lien PDF', { 
+          numeroMembre,
+          note: 'Vérifiez les logs pour plus de détails sur l\'erreur d\'upload'
+        })
+      } else {
+        logInfo('PDF uploadé avec succès', { numeroMembre, lienPdf })
+      }
+    } catch (pdfErr) {
+      logError('Erreur génération/upload PDF carte membre', {
+        numeroMembre,
+        error: pdfErr.message,
+        stack: pdfErr.stack,
+      })
+      // Ne pas bloquer la création de la carte si le PDF échoue
+      // mais logger l'erreur pour diagnostic
     }
 
-    logInfo('Carte membre créée', { id: data.id })
+    logInfo('Sauvegarde carte membre dans la base de données', {
+      numeroMembre,
+      lienPdf,
+      hasLienPdf: !!lienPdf,
+    })
+
+    // Vérifier si la carte existe déjà
+    const { data: existingCarte } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .eq('numero_membre', numeroMembre)
+      .maybeSingle()
+
+    let data
+    let error
+
+    if (existingCarte) {
+      // Mettre à jour la carte existante
+      logInfo('Carte existante trouvée, mise à jour', {
+        carteId: existingCarte.id,
+        numeroMembre,
+        existingLienPdf: existingCarte.lien_pdf,
+        newLienPdf: lienPdf,
+      })
+      
+      const updateData = {
+        ...(carteData.date_emission && { date_emission: carteData.date_emission }),
+        ...(carteData.date_validite && { date_validite: carteData.date_validite }),
+        ...(pays && { pays }),
+        ...(carteData.statut_carte && { statut_carte: carteData.statut_carte }),
+        ...(carteData.statut_paiement !== undefined && { statut_paiement: carteData.statut_paiement }),
+        ...(lienPdf && { lien_pdf: lienPdf }), // Mettre à jour le lien PDF si généré
+      }
+
+      const result = await supabaseTresorerie
+        .from('cartes_membres')
+        .update(updateData)
+        .eq('id', existingCarte.id)
+        .select()
+        .single()
+
+      data = result.data
+      error = result.error
+    } else {
+      // Créer une nouvelle carte
+      const result = await supabaseTresorerie
+        .from('cartes_membres')
+        .insert({
+          numero_membre: numeroMembre,
+          date_emission: carteData.date_emission || null,
+          date_validite: carteData.date_validite || null,
+          pays,
+          statut_carte: carteData.statut_carte || null,
+          statut_paiement: carteData.statut_paiement || null,
+          lien_pdf: lienPdf || carteData.lien_pdf || null,
+        })
+        .select()
+        .single()
+
+      data = result.data
+      error = result.error
+    }
+
+    if (error) {
+      logError('createCarteMembre error - Erreur insertion/mise à jour base de données', {
+        error,
+        errorCode: error.code,
+        errorMessage: error.message,
+        errorDetails: error.details,
+        numeroMembre,
+        lienPdf,
+        isUpdate: !!existingCarte,
+      })
+      
+      // Si c'est une erreur de contrainte unique, c'est que la carte existe déjà
+      if (error.code === '23505') {
+        logWarning('Carte existe déjà, tentative de mise à jour', { numeroMembre })
+        // Essayer de mettre à jour la carte existante
+        try {
+          const updateResult = await supabaseTresorerie
+            .from('cartes_membres')
+            .update({
+              ...(carteData.date_emission && { date_emission: carteData.date_emission }),
+              ...(carteData.date_validite && { date_validite: carteData.date_validite }),
+              ...(pays && { pays }),
+              ...(carteData.statut_carte && { statut_carte: carteData.statut_carte }),
+              ...(carteData.statut_paiement !== undefined && { statut_paiement: carteData.statut_paiement }),
+              ...(lienPdf && { lien_pdf: lienPdf }),
+            })
+            .eq('numero_membre', numeroMembre)
+            .select()
+            .single()
+          
+          if (updateResult.error) {
+            throw updateResult.error
+          }
+          
+          data = updateResult.data
+          error = null
+          logInfo('Carte mise à jour avec succès après erreur de contrainte', { numeroMembre, carteId: data.id })
+        } catch (updateErr) {
+          logError('Erreur lors de la mise à jour après contrainte unique', { error: updateErr })
+          throw new Error(`Erreur lors de la création/mise à jour de la carte membre: ${error.message}`)
+        }
+      } else {
+        throw new Error(`Erreur lors de la création/mise à jour de la carte membre: ${error.message}`)
+      }
+    }
+
+    logInfo('Carte membre créée avec succès', { 
+      id: data.id, 
+      numeroMembre: data.numero_membre,
+      lienPdf: data.lien_pdf,
+      lienPdfSaved: !!data.lien_pdf,
+    })
+    
+    // Vérifier que le lien PDF a bien été sauvegardé
+    if (lienPdf && !data.lien_pdf) {
+      logError('ATTENTION: lienPdf généré mais non sauvegardé dans la base de données', {
+        lienPdf,
+        savedLienPdf: data.lien_pdf,
+        carteId: data.id,
+      })
+    }
     return {
       ...data,
       devise: tarifInfo.devise,
@@ -1344,10 +2779,265 @@ export async function createCarteMembre(carteData) {
 }
 
 /**
+ * Met à jour le lien PDF d'une carte en cherchant le fichier sur Google Drive
+ */
+export async function updateCartePDFLink(numeroMembre) {
+  try {
+    logInfo('Mise à jour lien PDF pour carte', { numeroMembre })
+    
+    // Récupérer la carte
+    const { data: carte, error: carteError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .eq('numero_membre', numeroMembre)
+      .maybeSingle()
+
+    if (carteError) {
+      logError('Erreur récupération carte', { numeroMembre, error: carteError })
+      throw new Error('Erreur lors de la récupération de la carte')
+    }
+
+    if (!carte) {
+      throw new Error('Carte non trouvée')
+    }
+
+    // Le fichier devrait être sur Google Drive avec le nom CARTE-{numeroMembre}.pdf
+    // On ne peut pas le récupérer directement depuis le backend, mais on peut
+    // demander à Google Apps Script de le chercher et retourner le lien
+    const APPSCRIPT_WEBHOOK_URL = process.env.APPSCRIPT_CONTACT_WEBHOOK_URL || ''
+    const APPSCRIPT_WEBHOOK_TOKEN = process.env.APPSCRIPT_CONTACT_TOKEN || ''
+    const GOOGLE_DRIVE_FOLDER_ID = '1iSFImqsc4AeDFeTesNpDl8uIsi1ocdx6'
+
+    if (!APPSCRIPT_WEBHOOK_URL) {
+      throw new Error('APPSCRIPT_WEBHOOK_URL non configuré')
+    }
+
+    const fileName = `CARTE-${numeroMembre}.pdf`
+    const payload = {
+      type: 'find_pdf_file',
+      folderId: GOOGLE_DRIVE_FOLDER_ID,
+      fileName: fileName,
+      token: APPSCRIPT_WEBHOOK_TOKEN || undefined,
+    }
+
+    logInfo('Recherche fichier PDF sur Google Drive', { fileName, folderId: GOOGLE_DRIVE_FOLDER_ID })
+
+    const fetch = (await import('node-fetch')).default
+    const response = await fetch(APPSCRIPT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+
+    const responseText = await response.text()
+    
+    if (!response.ok) {
+      logError('Erreur recherche PDF sur Google Drive', {
+        status: response.status,
+        body: responseText,
+      })
+      throw new Error('Erreur lors de la recherche du PDF sur Google Drive')
+    }
+
+    try {
+      const responseData = JSON.parse(responseText)
+      if (responseData.success && responseData.fileUrl) {
+        // Mettre à jour la carte avec le lien
+        const { data: updatedCarte, error: updateError } = await supabaseTresorerie
+          .from('cartes_membres')
+          .update({ lien_pdf: responseData.fileUrl })
+          .eq('id', carte.id)
+          .select()
+          .single()
+
+        if (updateError) {
+          logError('Erreur mise à jour carte avec lien PDF', { carteId: carte.id, error: updateError })
+          throw new Error('Erreur lors de la mise à jour de la carte')
+        }
+
+        logInfo('Lien PDF mis à jour avec succès', { 
+          carteId: carte.id, 
+          numeroMembre,
+          lienPdf: responseData.fileUrl,
+        })
+
+        return updatedCarte
+      } else {
+        throw new Error(responseData.message || 'PDF non trouvé sur Google Drive')
+      }
+    } catch (parseErr) {
+      logError('Erreur parsing réponse recherche PDF', {
+        error: parseErr.message,
+        responseText: responseText.substring(0, 500),
+      })
+      throw new Error('Erreur lors de la recherche du PDF')
+    }
+  } catch (err) {
+    logError('updateCartePDFLink exception', err)
+    throw err
+  }
+}
+
+/**
+ * Génère le PDF pour une carte existante qui n'a pas de PDF
+ */
+export async function generatePDFForCarte(carteId) {
+  try {
+    logInfo('Génération PDF pour carte existante', { carteId })
+    
+    // Récupérer la carte
+    const { data: carte, error: carteError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .eq('id', carteId)
+      .single()
+
+    if (carteError || !carte) {
+      logError('Carte non trouvée', { carteId, error: carteError })
+      throw new Error('Carte non trouvée')
+    }
+
+    // Récupérer le membre
+    const { data: membre, error: membreError } = await supabaseAdhesion
+      .from('members')
+      .select('*')
+      .eq('numero_membre', carte.numero_membre)
+      .maybeSingle()
+
+    if (membreError) {
+      logError('Erreur récupération membre', { numeroMembre: carte.numero_membre, error: membreError })
+      throw new Error('Impossible de récupérer le membre')
+    }
+
+    if (!membre) {
+      logError('Membre non trouvé', { numeroMembre: carte.numero_membre })
+      throw new Error('Membre non trouvé')
+    }
+
+    // Générer le PDF
+    logInfo('Génération PDF', { numeroMembre: carte.numero_membre })
+    const pdfBuffer = await generateCarteMembrePDF(membre, carte)
+    logInfo('PDF généré', { 
+      numeroMembre: carte.numero_membre, 
+      size: `${(pdfBuffer.length / 1024).toFixed(2)} KB` 
+    })
+
+    // Uploader le PDF
+    const lienPdf = await uploadCartePDFToDrive(pdfBuffer, carte.numero_membre)
+
+    if (!lienPdf) {
+      logWarning('PDF non uploadé', { numeroMembre: carte.numero_membre })
+      throw new Error('Échec de l\'upload du PDF')
+    }
+
+    // Mettre à jour la carte avec le lien PDF
+    const { data: updatedCarte, error: updateError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .update({ lien_pdf: lienPdf })
+      .eq('id', carteId)
+      .select()
+      .single()
+
+    if (updateError) {
+      logError('Erreur mise à jour carte avec lien PDF', { carteId, error: updateError })
+      throw new Error('Erreur lors de la mise à jour de la carte')
+    }
+
+    logInfo('PDF généré et enregistré avec succès', { 
+      carteId, 
+      numeroMembre: carte.numero_membre,
+      lienPdf 
+    })
+
+    return updatedCarte
+  } catch (err) {
+    logError('generatePDFForCarte exception', err)
+    throw err
+  }
+}
+
+/**
+ * Génère les PDF pour toutes les cartes qui n'ont pas de PDF
+ */
+export async function generateMissingPDFs() {
+  try {
+    logInfo('Génération PDF manquants - Début')
+    
+    // Récupérer toutes les cartes sans PDF
+    const { data: cartes, error } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('*')
+      .is('lien_pdf', null)
+
+    if (error) {
+      logError('Erreur récupération cartes sans PDF', error)
+      throw new Error('Erreur lors de la récupération des cartes')
+    }
+
+    logInfo(`Trouvé ${cartes?.length || 0} cartes sans PDF`)
+
+    const results = {
+      success: 0,
+      errors: 0,
+      details: [],
+    }
+
+    for (const carte of cartes || []) {
+      try {
+        await generatePDFForCarte(carte.id)
+        results.success++
+        results.details.push({
+          carteId: carte.id,
+          numeroMembre: carte.numero_membre,
+          status: 'success',
+        })
+      } catch (err) {
+        results.errors++
+        results.details.push({
+          carteId: carte.id,
+          numeroMembre: carte.numero_membre,
+          status: 'error',
+          error: err.message,
+        })
+        logError('Erreur génération PDF pour carte', {
+          carteId: carte.id,
+          numeroMembre: carte.numero_membre,
+          error: err.message,
+        })
+      }
+    }
+
+    logInfo('Génération PDF manquants - Terminé', results)
+    return results
+  } catch (err) {
+    logError('generateMissingPDFs exception', err)
+    throw err
+  }
+}
+
+/**
  * Met à jour une carte membre
  */
 export async function updateCarteMembre(carteId, updates) {
   try {
+    // Récupérer l'ancien statut avant la mise à jour
+    const { data: oldCarte, error: fetchError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('statut_paiement, numero_membre')
+      .eq('id', carteId)
+      .single()
+
+    if (fetchError) {
+      logWarning('Impossible de récupérer l\'ancien statut de la carte', { carteId, error: fetchError.message })
+    }
+
+    const oldStatutPaiement = oldCarte?.statut_paiement
+    const isNowPaid = updates.statut_paiement === 'oui' || updates.statut_paiement === 'paye'
+    const wasNotPaid = oldStatutPaiement !== 'oui' && oldStatutPaiement !== 'paye'
+
+    // Mettre à jour la carte
     const { data, error } = await supabaseTresorerie
       .from('cartes_membres')
       .update(updates)
@@ -1361,6 +3051,85 @@ export async function updateCarteMembre(carteId, updates) {
     }
 
     logInfo('Carte membre mise à jour', { id: carteId })
+
+    // Envoyer un email de confirmation si le statut passe à "payé"
+    if (isNowPaid && wasNotPaid && data.numero_membre) {
+      try {
+        // Récupérer les informations du membre
+        const { data: membre, error: membreError } = await supabaseAdhesion
+          .from('members')
+          .select('id, prenom, nom, email, numero_membre, pays')
+          .eq('numero_membre', data.numero_membre)
+          .single()
+
+        if (!membreError && membre && membre.email) {
+          const { notifyMemberEmail } = await import('./notifications.service.js')
+          
+          // Formater les dates
+          const dateEmission = data.date_emission 
+            ? new Date(data.date_emission).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+            : '—'
+          const dateValidite = data.date_validite
+            ? new Date(data.date_validite).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+            : '—'
+          
+          // Déterminer le tarif selon le pays
+          const tarifInfo = getTarifInfoForCountry(membre.pays || data.pays)
+          const tarifAffiche = `${tarifInfo.montant} ${tarifInfo.symbol}`
+          
+          const subject = 'ASGF - Confirmation de paiement de votre carte membre'
+          const messageBody = `Bonjour {{prenom}} {{nom}},
+
+Nous vous confirmons la réception du paiement de votre carte membre ASGF.
+
+Détails de votre carte :
+• Numéro de membre : {{numero_membre}}
+• Date d'émission : ${dateEmission}
+• Date de validité : ${dateValidite}
+• Statut : ${data.statut_carte || 'Membre actif'}
+• Montant payé : ${tarifAffiche}
+
+Votre carte membre est maintenant active. Merci pour votre contribution à l'Association des Géomaticiens Sénégalais de France.
+
+Cordialement,
+L'équipe ASGF`
+
+          // Convertir les sauts de ligne en <br> pour le HTML
+          const htmlMessage = messageBody.replace(/\n/g, '<br>')
+
+          await notifyMemberEmail({
+            recipients: [{
+              email: membre.email,
+              prenom: membre.prenom,
+              nom: membre.nom,
+              numero_membre: membre.numero_membre || '',
+              pays: membre.pays || '',
+            }],
+            subject,
+            bodyTemplate: htmlMessage,
+            memberIds: [membre.id],
+          })
+
+          logInfo('Email de confirmation de paiement carte membre envoyé', { 
+            membre_id: membre.id, 
+            email: membre.email,
+            carte_id: carteId,
+            numero_membre: data.numero_membre
+          })
+        } else {
+          logWarning('updateCarteMembre: Impossible d\'envoyer l\'email de confirmation', {
+            carte_id: carteId,
+            numero_membre: data.numero_membre,
+            error: membreError?.message,
+            hasEmail: !!membre?.email
+          })
+        }
+      } catch (emailErr) {
+        logError('updateCarteMembre: Erreur envoi email confirmation', emailErr)
+        // Ne pas faire échouer la mise à jour si l'email échoue
+      }
+    }
+
     return data
   } catch (err) {
     logError('updateCarteMembre exception', err)
@@ -1430,10 +3199,21 @@ export async function getTresorerieStats() {
       .select('*', { count: 'exact', head: true })
       .eq('statut_paiement', 'en_attente')
 
-    // Total paiements
+    // Total paiements (dons/subventions)
     const { count: totalPaiements } = await supabaseTresorerie
       .from('paiements')
       .select('*', { count: 'exact', head: true })
+
+    // Montant total des paiements validés (dons/subventions)
+    const { data: paiementsData } = await supabaseTresorerie
+      .from('paiements')
+      .select('montant, statut')
+      .eq('statut', 'valide')
+
+    let totalPaiementsDonsEur = 0
+    ;(paiementsData || []).forEach((pai) => {
+      totalPaiementsDonsEur += pai.montant || 0
+    })
 
     // Montant total des cotisations payées (conversion en EUR + breakdown)
     const { data: cotisationsData } = await supabaseTresorerie
@@ -1494,6 +3274,23 @@ export async function getTresorerieStats() {
       }
     })
 
+    // Revenus des cartes membres (cartes payées)
+    const { data: cartesMembresData } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('pays, statut_paiement')
+      .or('statut_paiement.eq.paye,statut_paiement.eq.oui')
+
+    let revenusCartesMembresEur = 0
+    let cartesPayees = 0
+    if (cartesMembresData && cartesMembresData.length > 0) {
+      cartesMembresData.forEach((carte) => {
+        const tarifInfo = getTarifInfoForCountry(carte.pays)
+        const montantEur = convertToEuro(tarifInfo.montant, tarifInfo)
+        revenusCartesMembresEur += montantEur
+        cartesPayees += 1
+      })
+    }
+
     // Total relances
     const { count: totalRelances } = await supabaseTresorerie
       .from('relances')
@@ -1517,11 +3314,17 @@ export async function getTresorerieStats() {
       }
     })
 
+    // Calcul du solde total (recettes - dépenses)
+    // Recettes = cotisations payées + dons/subventions + revenus cartes membres
+    const recettesTotal = montantTotalEur + totalPaiementsDonsEur + revenusCartesMembresEur
+    const soldeTotal = recettesTotal - depensesValideesEur
+
     return {
       total_cotisations: totalCotisations || 0,
       cotisations_payees: cotisationsPayees || 0,
       cotisations_en_attente: cotisationsEnAttente || 0,
       total_paiements: totalPaiements || 0,
+      total_paiements_dons_eur: totalPaiementsDonsEur,
       montant_total: montantTotalEur,
       montant_total_eur: montantTotalEur,
       montant_senegal_eur: montantSenegalEur,
@@ -1534,6 +3337,9 @@ export async function getTresorerieStats() {
       depenses_validees: depensesValidees,
       total_relances: totalRelances || 0,
       repartition_par_annee: repartitionParAnnee,
+      revenus_cartes_membres_eur: revenusCartesMembresEur,
+      cartes_membres_payees: cartesPayees,
+      solde_total_eur: soldeTotal,
     }
   } catch (err) {
     logError('getTresorerieStats exception', err)

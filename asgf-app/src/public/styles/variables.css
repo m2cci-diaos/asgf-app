@@ -1,0 +1,81 @@
+/* Variables CSS - css/variables.css */
+/* Couleurs adaptées au logo ASGF - Palette inspirée des couleurs sénégalaises */
+:root {
+    /* Couleurs principales - Adaptées au logo ASGF */
+    /* Bleu (couleur principale du logo ASGF) */
+    --primary-color: #0066CC; /* Bleu moderne et professionnel */
+    --primary-dark: #0052A3; /* Version plus foncée */
+    --primary-light: #1a7fdd; /* Version plus claire */
+    
+    /* Rouge/Orange (couleur secondaire du drapeau) */
+    --secondary-color: #E63946; /* Rouge moderne */
+    --secondary-dark: #c72e3a; /* Version plus foncée */
+    --secondary-light: #f55c6a; /* Version plus claire */
+    
+    /* Jaune/Or (couleur d'accent du drapeau) */
+    --accent-color: #F4A261; /* Jaune/Or chaleureux */
+    --accent-dark: #e8914d; /* Version plus foncée */
+    --accent-light: #f6b380; /* Version plus claire */
+    
+    /* Couleurs neutres */
+    --dark-color: #2d3436;
+    --dark-light: #636e72;
+    --light-color: #ddd;
+    --light-dark: #b2bec3;
+    --white: #ffffff;
+    --gray-100: #f8f9fa;
+    --gray-200: #e9ecef;
+    --gray-300: #dee2e6;
+    
+    /* Dégradés - Basés sur les couleurs du logo */
+    --gradient: linear-gradient(135deg, #0066CC, #0052A3);
+    --gradient-dark: linear-gradient(135deg, #0052A3, #004080);
+    --gradient-secondary: linear-gradient(135deg, #E63946, #c72e3a);
+    --gradient-accent: linear-gradient(135deg, #F4A261, #e8914d);
+    --gradient-senegal: linear-gradient(135deg, #0066CC 0%, #F4A261 50%, #E63946 100%);
+    
+    /* Ombres */
+    --shadow-sm: 0 4px 20px rgba(0,0,0,0.1);
+    --shadow-md: 0 10px 30px rgba(0,0,0,0.1);
+    --shadow-lg: 0 20px 40px rgba(0,0,0,0.15);
+    
+    /* Espacements */
+    --spacing-xs: 0.5rem;
+    --spacing-sm: 1rem;
+    --spacing-md: 2rem;
+    --spacing-lg: 4rem;
+    --spacing-xl: 6rem;
+    
+    /* Bordures */
+    --border-radius-sm: 8px;
+    --border-radius-md: 15px;
+    --border-radius-lg: 25px;
+    --border-radius-full: 50px;
+    
+    /* Transitions */
+    --transition-fast: 0.2s ease;
+    --transition-normal: 0.3s ease;
+    --transition-slow: 0.6s ease;
+    
+    /* Typographie */
+    --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    --font-size-sm: 0.9rem;
+    --font-size-base: 1rem;
+    --font-size-lg: 1.1rem;
+    --font-size-xl: 1.3rem;
+    --font-size-2xl: 1.8rem;
+    --font-size-3xl: 2.5rem;
+    --font-size-4xl: 3.5rem;
+    
+    /* Largeurs */
+    --max-width: 1200px;
+    --max-width-narrow: 800px;
+}
+
+/* Variables pour le mode sombre (optionnel) */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --dark-color: #f8f9fa;
+        --light-color: #2d3436;
+    }
+}

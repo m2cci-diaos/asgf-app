@@ -684,6 +684,111 @@ export async function createRelance(req, res) {
   }
 }
 
+/**
+ * POST /api/tresorerie/cotisations/generate-monthly
+ * Génère automatiquement les cotisations mensuelles pour les membres qui n'ont pas payé
+ */
+export async function generateMonthlyCotisations(req, res) {
+  try {
+    const { mois, annee } = req.body
+
+    if (!mois || !annee) {
+      return res.status(400).json({
+        success: false,
+        message: 'mois et annee sont requis',
+      })
+    }
+
+    if (mois < 1 || mois > 12) {
+      return res.status(400).json({
+        success: false,
+        message: 'mois doit être entre 1 et 12',
+      })
+    }
+
+    const result = await tresorerieService.generateMonthlyCotisations(mois, annee)
+
+    return res.json({
+      success: true,
+      message: `${result.created} cotisation(s) générée(s), ${result.skipped} ignorée(s)`,
+      data: result,
+    })
+  } catch (err) {
+    logError('generateMonthlyCotisations error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la génération des cotisations',
+    })
+  }
+}
+
+/**
+ * POST /api/tresorerie/cotisations/update-overdue
+ * Met à jour les statuts des cotisations en retard
+ */
+export async function updateOverdueCotisations(req, res) {
+  try {
+    const result = await tresorerieService.updateOverdueCotisations()
+
+    return res.json({
+      success: true,
+      message: `${result.updated} cotisation(s) mise(s) à jour`,
+      data: result,
+    })
+  } catch (err) {
+    logError('updateOverdueCotisations error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la mise à jour des cotisations',
+    })
+  }
+}
+
+/**
+ * POST /api/tresorerie/cotisations/clean-duplicates
+ * Nettoie les doublons de cotisations
+ */
+export async function cleanDuplicateCotisations(req, res) {
+  try {
+    const result = await tresorerieService.cleanDuplicateCotisations()
+
+    return res.json({
+      success: true,
+      message: `${result.removed} doublon(s) supprimé(s)`,
+      data: result,
+    })
+  } catch (err) {
+    logError('cleanDuplicateCotisations error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors du nettoyage des doublons',
+    })
+  }
+}
+
+/**
+ * POST /api/tresorerie/cotisations/create-missing
+ * Crée des cotisations manquantes pour les membres approuvés qui n'en ont pas
+ */
+export async function createMissingCotisations(req, res) {
+  try {
+    const { annee, mois } = req.body || {}
+    const result = await tresorerieService.createMissingCotisations(annee, mois)
+
+    return res.json({
+      success: true,
+      message: `${result.created} cotisation(s) manquante(s) créée(s)`,
+      data: result,
+    })
+  } catch (err) {
+    logError('createMissingCotisations error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la création des cotisations manquantes',
+    })
+  }
+}
+
 // ========== CARTES MEMBRES ==========
 
 /**
@@ -771,6 +876,89 @@ export async function updateCarte(req, res) {
     return res.status(500).json({
       success: false,
       message: err.message || 'Erreur lors de la mise à jour de la carte membre',
+    })
+  }
+}
+
+/**
+ * POST /api/tresorerie/cartes/:id/generate-pdf
+ * Génère le PDF pour une carte existante
+ */
+export async function generateCartePDF(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const carte = await tresorerieService.generatePDFForCarte(req.params.id)
+
+    return res.json({
+      success: true,
+      message: 'PDF généré avec succès',
+      data: carte,
+    })
+  } catch (err) {
+    logError('generateCartePDF error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la génération du PDF',
+    })
+  }
+}
+
+/**
+ * POST /api/tresorerie/cartes/generate-missing-pdfs
+ * Génère les PDF pour toutes les cartes qui n'en ont pas
+ */
+export async function generateMissingPDFs(req, res) {
+  try {
+    const results = await tresorerieService.generateMissingPDFs()
+
+    return res.json({
+      success: true,
+      message: `Génération terminée: ${results.success} succès, ${results.errors} erreurs`,
+      data: results,
+    })
+  } catch (err) {
+    logError('generateMissingPDFs error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la génération des PDF manquants',
+    })
+  }
+}
+
+/**
+ * POST /api/tresorerie/cartes/numero/:numero/update-pdf-link
+ * Met à jour le lien PDF d'une carte en cherchant le fichier sur Google Drive
+ */
+export async function updateCartePDFLink(req, res) {
+  try {
+    const { numero } = req.params
+    if (!numero) {
+      return res.status(400).json({
+        success: false,
+        message: 'Numéro de membre requis',
+      })
+    }
+
+    const carte = await tresorerieService.updateCartePDFLink(numero)
+
+    return res.json({
+      success: true,
+      message: 'Lien PDF mis à jour avec succès',
+      data: carte,
+    })
+  } catch (err) {
+    logError('updateCartePDFLink error', err)
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Erreur lors de la mise à jour du lien PDF',
     })
   }
 }

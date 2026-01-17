@@ -93,6 +93,14 @@ export async function createCandidature(req, res) {
     })
   } catch (err) {
     logError('createCandidature error', err)
+    // Gérer les erreurs de doublon
+    if (err.code === 'DUPLICATE_CANDIDATURE') {
+      return res.status(409).json({
+        success: false,
+        code: 'DUPLICATE_CANDIDATURE',
+        message: err.message || 'Une candidature similaire existe déjà pour ce membre. Vérifiez avant de continuer.',
+      })
+    }
     return res.status(500).json({
       success: false,
       message: err.message || 'Erreur lors de la création de la candidature',
@@ -178,6 +186,14 @@ export async function createSuivi(req, res) {
     })
   } catch (err) {
     logError('createSuivi error', err)
+    // Gérer les erreurs de doublon
+    if (err.code === 'DUPLICATE_SUIVI') {
+      return res.status(409).json({
+        success: false,
+        code: 'DUPLICATE_SUIVI',
+        message: err.message || 'Un suivi identique existe déjà pour cette candidature.',
+      })
+    }
     return res.status(500).json({
       success: false,
       message: err.message || 'Erreur lors de la création du suivi',
@@ -333,6 +349,14 @@ export async function createRecommandation(req, res) {
     })
   } catch (err) {
     logError('createRecommandation error', err)
+    // Gérer les erreurs de doublon
+    if (err.code === 'DUPLICATE_RECOMMANDATION') {
+      return res.status(409).json({
+        success: false,
+        code: 'DUPLICATE_RECOMMANDATION',
+        message: err.message || 'Une recommandation existe déjà pour ce binôme mentor/mentoré.',
+      })
+    }
     return res.status(500).json({
       success: false,
       message: err.message || 'Erreur lors de la création de la recommandation',

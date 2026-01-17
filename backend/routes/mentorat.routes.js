@@ -13,6 +13,7 @@ import {
   getRelation,
   createRelation,
   updateRelation,
+  closeRelation,
   getObjectifs,
   createObjectif,
   updateObjectif,
@@ -49,6 +50,7 @@ router.get('/relations', listRelations)
 router.get('/relations/:id', getRelation)
 router.post('/relations', createRelation)
 router.put('/relations/:id', updateRelation)
+router.post('/relations/:id/close', closeRelation)
 
 // Routes pour les objectifs
 router.get('/relations/:id/objectifs', getObjectifs)

@@ -73,12 +73,18 @@ async function sendJsonRequest(endpoint, { method = 'GET', body } = {}) {
   return data?.data !== undefined ? data.data : data
 }
 
-// 🔐 Login admin (numéro de membre + mot de passe)
+// URL fonction Edge Supabase pour le login admin
+const ADMIN_LOGIN_URL =
+  import.meta.env.VITE_ADMIN_LOGIN_URL ||
+  'https://wooyxkfdzehvedvivhhd.functions.supabase.co/admin-login'
+
+// 🔐 Login admin (numéro de membre + mot de passe) via Supabase Edge Function
 export async function loginAdminApi({ numeroMembre, password }) {
-  const res = await fetch(`${API_URL}/auth/login`, {
+  const res = await fetch(ADMIN_LOGIN_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      // text/plain pour éviter un preflight CORS
+      'Content-Type': 'text/plain',
     },
     body: JSON.stringify({
       numero_membre: numeroMembre,
@@ -1005,6 +1011,25 @@ export async function fetchReunions(params = {}) {
   return data?.data || []
 }
 
+export async function fetchReunion(reunionId) {
+  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement de la réunion')
+  }
+
+  return data?.data || null
+}
+
 export async function createReunion(reunionData) {
   const res = await fetch(`${API_URL}/api/secretariat/reunions`, {
     method: 'POST',
@@ -1027,6 +1052,9 @@ export async function createReunion(reunionData) {
 }
 
 export async function addParticipant(participantData) {
+  // Si participantData est un tableau, on ajoute plusieurs participants
+  const isArray = Array.isArray(participantData)
+  
   const res = await fetch(`${API_URL}/api/secretariat/participants`, {
     method: 'POST',
     headers: getAuthHeaders(),
@@ -1108,6 +1136,209 @@ export async function createDocument(documentData) {
   }
 
   return data?.data || data
+}
+
+export async function fetchParticipants(reunionId) {
+  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}/participants`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des participants')
+  }
+
+  return data?.data || []
+}
+
+export async function updateParticipantsPresence(reunionId, participants) {
+  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}/participants/presence`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ participants }),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de la présence')
+  }
+
+  return data?.data || data
+}
+
+export async function generateReunionPDF(reunionId) {
+  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}/generate-pdf`, {
+    headers: getAuthHeaders(),
+  })
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    const data = await res.json().catch(() => null)
+    throw new Error(data?.message || 'Erreur lors de la génération du PDF')
+  }
+
+  // Télécharger le PDF
+  const blob = await res.blob()
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `reunion-${reunionId}.pdf`
+  document.body.appendChild(a)
+  a.click()
+  window.URL.revokeObjectURL(url)
+  document.body.removeChild(a)
+}
+
+export async function getCompteRendu(reunionId) {
+  const res = await fetch(`${API_URL}/api/secretariat/reunions/${reunionId}/compte-rendu`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    if (res.status === 404) {
+      return null // Pas de compte-rendu encore
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement du compte-rendu')
+  }
+
+  return data?.data || null
+}
+
+export async function fetchActions(params = {}) {
+  // Si reunionId est fourni, utiliser l'endpoint spécifique
+  if (params.reunionId) {
+    const res = await fetch(`${API_URL}/api/secretariat/reunions/${params.reunionId}/actions`, {
+      headers: getAuthHeaders(),
+    })
+
+    const data = await res.json().catch(() => null)
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        localStorage.removeItem('asgf_admin_token')
+        localStorage.removeItem('asgf_admin_info')
+        throw new Error('Session expirée. Veuillez vous reconnecter.')
+      }
+      throw new Error(data?.message || 'Erreur lors du chargement des actions')
+    }
+
+    return data?.data || []
+  }
+
+  // Sinon, utiliser l'endpoint général avec query params
+  const queryParams = new URLSearchParams({
+    ...(params.assigne_a && { assigne_a: params.assigne_a }),
+    ...(params.statut && { statut: params.statut }),
+    ...(params.limit && { limit: params.limit }),
+  }).toString()
+
+  const res = await fetch(`${API_URL}/api/secretariat/actions?${queryParams}`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des actions')
+  }
+
+  return data?.data || []
+}
+
+export async function createAction(actionData) {
+  const res = await fetch(`${API_URL}/api/secretariat/actions`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(actionData),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la création de l\'action')
+  }
+
+  return data?.data || data
+}
+
+export async function updateAction(actionId, updates) {
+  const res = await fetch(`${API_URL}/api/secretariat/actions/${actionId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updates),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors de la mise à jour de l\'action')
+  }
+
+  return data?.data || data
+}
+
+export async function fetchDocuments(params = {}) {
+  const queryParams = new URLSearchParams({
+    page: params.page || 1,
+    limit: params.limit || 20,
+    ...(params.search && { search: params.search }),
+    ...(params.categorie && { categorie: params.categorie }),
+  }).toString()
+
+  const res = await fetch(`${API_URL}/api/secretariat/documents?${queryParams}`, {
+    headers: getAuthHeaders(),
+  })
+
+  const data = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('asgf_admin_token')
+      localStorage.removeItem('asgf_admin_info')
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    throw new Error(data?.message || 'Erreur lors du chargement des documents')
+  }
+
+  return data?.data || []
 }
 
 // ============================================
@@ -1720,4 +1951,48 @@ export async function deletePresentateur(presentateurId) {
     throw new Error(data?.message || 'Erreur lors de la suppression du présentateur')
   }
   return data
+}
+
+// ============================================
+// BUREAU - Gestion des membres du bureau
+// ============================================
+
+// GET /bureau (public) via Supabase Edge Function
+export async function fetchBureauMembers() {
+  const res = await fetch('https://wooyxkfdzehvedvivhhd.functions.supabase.co/public-bureau', {
+    method: 'GET',
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new Error(data?.message || 'Erreur lors du chargement des membres du bureau')
+  }
+  return data?.data || []
+}
+
+// GET /api/admin/bureau - Récupérer tous les membres (admin, y compris inactifs)
+export async function fetchAllBureauMembers() {
+  return sendJsonRequest('/api/admin/bureau')
+}
+
+// POST /api/admin/bureau - Créer un membre du bureau
+export async function createBureauMember(memberData) {
+  return sendJsonRequest('/api/admin/bureau', {
+    method: 'POST',
+    body: memberData,
+  })
+}
+
+// PUT /api/admin/bureau/:id - Mettre à jour un membre du bureau
+export async function updateBureauMember(memberId, updates) {
+  return sendJsonRequest(`/api/admin/bureau/${memberId}`, {
+    method: 'PUT',
+    body: updates,
+  })
+}
+
+// DELETE /api/admin/bureau/:id - Désactiver un membre (soft delete)
+export async function deleteBureauMember(memberId) {
+  return sendJsonRequest(`/api/admin/bureau/${memberId}`, {
+    method: 'DELETE',
+  })
 }

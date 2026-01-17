@@ -1,32 +1,37 @@
 // backend/services/adhesion.service.js
-import { supabaseAdhesion } from '../config/supabase.js'
+import { supabaseAdhesion, supabaseTresorerie } from '../config/supabase.js'
 import { logError, logInfo } from '../utils/logger.js'
 
 /**
  * Récupère tous les membres avec pagination et filtres
  */
-export async function getAllMembers({ page = 1, limit = 20, search = '', status = '' }) {
+export async function getAllMembers({ page = 1, limit = 20, search = '', status = '', ids = null }) {
   try {
-    logInfo('getAllMembers: Requête initiale', { page, limit, search, status })
+    logInfo('getAllMembers: Requête initiale', { page, limit, search, status, ids: ids?.length || 0 })
     let query = supabaseAdhesion
       .from('members')
       .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
 
-    // Recherche par nom, prénom, email ou numéro de membre
-    if (search) {
-      query = query.or(`prenom.ilike.%${search}%,nom.ilike.%${search}%,email.ilike.%${search}%,numero_membre.ilike.%${search}%`)
-    }
+    // Filtre par IDs (prioritaire si fourni)
+    if (ids && Array.isArray(ids) && ids.length > 0) {
+      query = query.in('id', ids)
+    } else {
+      // Recherche par nom, prénom, email ou numéro de membre (seulement si pas de filtrage par IDs)
+      if (search) {
+        query = query.or(`prenom.ilike.%${search}%,nom.ilike.%${search}%,email.ilike.%${search}%,numero_membre.ilike.%${search}%`)
+      }
 
-    // Filtre par statut
-    if (status) {
-      query = query.eq('status', status)
-    }
+      // Filtre par statut
+      if (status) {
+        query = query.eq('status', status)
+      }
 
-    // Pagination
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-    query = query.range(from, to)
+      // Pagination (seulement si pas de filtrage par IDs)
+      const from = (page - 1) * limit
+      const to = from + limit - 1
+      query = query.range(from, to)
+    }
 
     const { data, error, count } = await query
 
@@ -35,7 +40,7 @@ export async function getAllMembers({ page = 1, limit = 20, search = '', status 
       throw new Error('Erreur lors de la récupération des membres')
     }
 
-    logInfo('getAllMembers: Membres récupérés', { count: data?.length || 0, total: count || 0 })
+    logInfo('getAllMembers: Membres récupérés', { count: data?.length || 0, total: count || 0, ids: ids?.length || 0 })
 
     return {
       members: data || [],
@@ -283,21 +288,241 @@ export async function getAdhesionStats() {
       : currentMonthCount > 0 ? '100.0' : '0.0'
 
     return {
+      total_membres: totalMembers || 0,
+      membres_actifs: activeCount || 0,
+      membres_en_attente: statusCounts.pending,
+      membres_approuves: statusCounts.approved,
+      membres_rejetes: statusCounts.rejected,
+      repartition_pays: countryDistribution,
+      evolution_mensuelle: monthlyEvolution,
+      repartition_niveau: levelDistribution,
+      repartition_universite: universityDistribution,
+      taux_croissance: parseFloat(growthRate),
+      nombre_mois_courant: currentMonthCount,
+      nombre_mois_precedent: lastMonthCount,
+      // Alias pour compatibilité
       total_members: totalMembers || 0,
       active_members: activeCount || 0,
       pending_members: statusCounts.pending,
       approved_members: statusCounts.approved,
       rejected_members: statusCounts.rejected,
+      // Alias pour les graphiques frontend
       country_distribution: countryDistribution,
       monthly_evolution: monthlyEvolution,
       level_distribution: levelDistribution,
-      university_distribution: universityDistribution,
-      growth_rate: parseFloat(growthRate),
-      current_month_count: currentMonthCount,
-      last_month_count: lastMonthCount,
     }
   } catch (err) {
     logError('getAdhesionStats exception', err)
+    throw err
+  }
+}
+
+/**
+ * Met à jour un membre
+ */
+export async function updateMember(memberId, memberData) {
+  try {
+    // Liste des colonnes autorisées dans la table members (selon le schéma)
+    const allowedColumns = [
+      'prenom', 'nom', 'email', 'telephone', 'date_naissance',
+      'universite', 'niveau_etudes', 'annee_universitaire', 'specialite',
+      'interets', 'motivation', 'competences',
+      'is_newsletter_subscribed', 'is_active',
+      'adresse', 'ville', 'pays',
+      'status', 'statut_pro', 'domaine', 'date_adhesion'
+    ]
+
+    // Préparer les données à mettre à jour (uniquement les colonnes autorisées)
+    const rawData = {
+      prenom: memberData.prenom,
+      nom: memberData.nom,
+      email: memberData.email,
+      telephone: memberData.telephone,
+      date_naissance: memberData.date_naissance,
+      universite: memberData.universite,
+      niveau_etudes: memberData.niveau_etudes,
+      annee_universitaire: memberData.annee_universitaire,
+      specialite: memberData.specialite,
+      interets: memberData.interets,
+      motivation: memberData.motivation,
+      competences: memberData.competences,
+      is_newsletter_subscribed: memberData.is_newsletter_subscribed,
+      is_active: memberData.is_active,
+      adresse: memberData.adresse,
+      ville: memberData.ville,
+      pays: memberData.pays,
+      status: memberData.status,
+      statut_pro: memberData.statut_pro,
+      domaine: memberData.domaine,
+      date_adhesion: memberData.date_adhesion,
+    }
+
+    // Filtrer uniquement les colonnes autorisées et nettoyer les valeurs
+    const updateData = {}
+    allowedColumns.forEach(key => {
+      if (rawData[key] !== undefined) {
+        // Gérer les intérêts (convertir string en tableau)
+        if (key === 'interets') {
+          if (!rawData[key] || rawData[key] === '') {
+            updateData[key] = null
+          } else if (Array.isArray(rawData[key])) {
+            updateData[key] = rawData[key].length > 0 ? rawData[key] : null
+          } else if (typeof rawData[key] === 'string') {
+            const interests = rawData[key].split(',').map(i => i.trim()).filter(i => i)
+            updateData[key] = interests.length > 0 ? interests : null
+          } else {
+            updateData[key] = null
+          }
+        }
+        // Gérer les booléens
+        else if (key === 'is_newsletter_subscribed' || key === 'is_active') {
+          updateData[key] = Boolean(rawData[key])
+        }
+        // Gérer les dates (chaînes vides → null)
+        else if (key === 'date_naissance' || key === 'date_adhesion') {
+          updateData[key] = rawData[key] && rawData[key] !== '' ? rawData[key] : null
+        }
+        // Gérer les champs texte optionnels (chaînes vides → null, sauf champs requis)
+        else if (key === 'prenom' || key === 'nom' || key === 'email') {
+          updateData[key] = rawData[key] || ''
+        }
+        // Autres champs texte optionnels
+        else {
+          updateData[key] = rawData[key] && rawData[key] !== '' ? rawData[key] : null
+        }
+      }
+    })
+
+    // S'assurer que les champs requis sont présents
+    if (!updateData.prenom || !updateData.nom || !updateData.email) {
+      throw new Error('Les champs prénom, nom et email sont requis')
+    }
+
+    // Logger les colonnes qui seront mises à jour (pour debug)
+    logInfo('updateMember: Colonnes à mettre à jour', { 
+      columns: Object.keys(updateData),
+      memberId 
+    })
+
+    const { data, error } = await supabaseAdhesion
+      .from('members')
+      .update(updateData)
+      .eq('id', memberId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('updateMember error', error)
+      // Inclure le message d'erreur de Supabase pour plus de détails
+      const errorMessage = error.message || 'Erreur lors de la mise à jour du membre'
+      throw new Error(errorMessage)
+    }
+
+    if (!data) {
+      throw new Error('Membre introuvable')
+    }
+
+    logInfo('Membre mis à jour', { id: memberId })
+    return data
+  } catch (err) {
+    logError('updateMember exception', err)
+    throw err
+  }
+}
+
+/**
+ * Supprime un membre
+ */
+export async function deleteMember(memberId) {
+  try {
+    // Récupérer le numéro de membre avant suppression pour vérifier les dépendances
+    const { data: member } = await supabaseAdhesion
+      .from('members')
+      .select('numero_membre')
+      .eq('id', memberId)
+      .single()
+
+    if (!member) {
+      throw new Error('Membre introuvable')
+    }
+
+    // Vérifier s'il y a des cartes membres associées
+    const { data: cartes, error: cartesError } = await supabaseTresorerie
+      .from('cartes_membres')
+      .select('id')
+      .eq('numero_membre', member.numero_membre)
+
+    if (cartesError) {
+      logError('Erreur vérification cartes membres', cartesError)
+    }
+
+    if (cartes && cartes.length > 0) {
+      // Supprimer d'abord les cartes membres associées
+      const { error: deleteCartesError } = await supabaseTresorerie
+        .from('cartes_membres')
+        .delete()
+        .eq('numero_membre', member.numero_membre)
+
+      if (deleteCartesError) {
+        logError('Erreur suppression cartes membres', deleteCartesError)
+        throw new Error('Impossible de supprimer les cartes membres associées')
+      }
+
+      logInfo('Cartes membres supprimées', { numero_membre: member.numero_membre, count: cartes.length })
+    }
+
+    // Vérifier s'il y a des cotisations associées
+    const { data: cotisations, error: cotisationsError } = await supabaseTresorerie
+      .from('cotisations')
+      .select('id')
+      .eq('membre_id', memberId)
+
+    if (cotisationsError) {
+      logError('Erreur vérification cotisations', cotisationsError)
+    }
+
+    if (cotisations && cotisations.length > 0) {
+      // Supprimer les cotisations associées
+      const { error: deleteCotisationsError } = await supabaseTresorerie
+        .from('cotisations')
+        .delete()
+        .eq('membre_id', memberId)
+
+      if (deleteCotisationsError) {
+        logError('Erreur suppression cotisations', deleteCotisationsError)
+        throw new Error('Impossible de supprimer les cotisations associées')
+      }
+
+      logInfo('Cotisations supprimées', { membre_id: memberId, count: cotisations.length })
+    }
+
+    // Maintenant supprimer le membre
+    const { data, error } = await supabaseAdhesion
+      .from('members')
+      .delete()
+      .eq('id', memberId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('deleteMember error', error)
+      
+      // Message d'erreur plus spécifique pour les contraintes de clé étrangère
+      if (error.code === '23503') {
+        throw new Error('Ce membre ne peut pas être supprimé car il est référencé dans d\'autres tables. Veuillez d\'abord supprimer les données associées (cartes membres, cotisations, etc.).')
+      }
+      
+      throw new Error('Erreur lors de la suppression du membre')
+    }
+
+    if (!data) {
+      throw new Error('Membre introuvable')
+    }
+
+    logInfo('Membre supprimé', { id: memberId })
+    return data
+  } catch (err) {
+    logError('deleteMember exception', err)
     throw err
   }
 }

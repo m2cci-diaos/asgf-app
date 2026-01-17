@@ -1,0 +1,88 @@
+-- ============================================
+-- POLITIQUES DE STORAGE POUR LE BUCKET "bureau-photos"
+-- ============================================
+-- Ce script configure les politiques RLS pour le bucket Storage "bureau-photos"
+-- 
+-- IMPORTANT: Les politiques de storage doivent être créées via l'interface Supabase
+-- ou via l'API. Ce fichier contient les instructions pour les créer manuellement.
+--
+-- ============================================
+-- INSTRUCTIONS POUR CONFIGURER LES POLITIQUES
+-- ============================================
+--
+-- 1. Allez dans Supabase Dashboard > Storage > bureau-photos > Policies
+--
+-- 2. Créez les politiques suivantes:
+--
+-- ============================================
+-- POLITIQUE 1: Lecture publique
+-- ============================================
+-- Policy name: "Allow public read access"
+-- Operation: SELECT
+-- Target roles: anon, authenticated
+-- Policy definition:
+--   bucket_id = 'bureau-photos'::text
+--
+-- ============================================
+-- POLITIQUE 2: Upload pour les utilisateurs authentifiés
+-- ============================================
+-- Policy name: "Allow authenticated uploads to photos folder"
+-- Operation: INSERT
+-- Target roles: authenticated
+-- Policy definition:
+--   (bucket_id = 'bureau-photos'::text) AND ((storage.foldername(name))[1] = 'photos'::text)
+--
+-- OU pour permettre l'upload depuis le frontend avec anon key:
+-- Policy name: "Allow anon uploads to photos folder"
+-- Operation: INSERT
+-- Target roles: anon, authenticated
+-- Policy definition:
+--   (bucket_id = 'bureau-photos'::text) AND ((storage.foldername(name))[1] = 'photos'::text)
+--
+-- ============================================
+-- POLITIQUE 3: Mise à jour pour les utilisateurs authentifiés
+-- ============================================
+-- Policy name: "Allow authenticated update in photos folder"
+-- Operation: UPDATE
+-- Target roles: authenticated
+-- Policy definition:
+--   (bucket_id = 'bureau-photos'::text) AND ((storage.foldername(name))[1] = 'photos'::text)
+--
+-- OU pour permettre depuis le frontend avec anon key:
+-- Policy name: "Allow anon update in photos folder"
+-- Operation: UPDATE
+-- Target roles: anon, authenticated
+-- Policy definition:
+--   (bucket_id = 'bureau-photos'::text) AND ((storage.foldername(name))[1] = 'photos'::text)
+--
+-- ============================================
+-- POLITIQUE 4: Suppression pour les utilisateurs authentifiés
+-- ============================================
+-- Policy name: "Allow authenticated delete in photos folder"
+-- Operation: DELETE
+-- Target roles: authenticated
+-- Policy definition:
+--   (bucket_id = 'bureau-photos'::text) AND ((storage.foldername(name))[1] = 'photos'::text)
+--
+-- OU pour permettre depuis le frontend avec anon key:
+-- Policy name: "Allow anon delete in photos folder"
+-- Operation: DELETE
+-- Target roles: anon, authenticated
+-- Policy definition:
+--   (bucket_id = 'bureau-photos'::text) AND ((storage.foldername(name))[1] = 'photos'::text)
+--
+-- ============================================
+-- NOTES IMPORTANTES
+-- ============================================
+-- 1. Si vous utilisez l'anon key côté frontend, vous devez créer les politiques
+--    avec "anon, authenticated" comme target roles.
+-- 2. Les fichiers seront stockés dans: bureau-photos/photos/member-{id}.jpg
+-- 3. Les URLs publiques seront générées automatiquement par Supabase
+-- 4. Pour plus de sécurité, vous pouvez restreindre l'upload aux utilisateurs
+--    authentifiés uniquement (authenticated seulement)
+
+
+
+
+
+

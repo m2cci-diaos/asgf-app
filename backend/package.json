@@ -18,9 +18,11 @@
     "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
-    "jsonwebtoken": "^9.0.2",
     "json2csv": "^5.0.7",
+    "jsonwebtoken": "^9.0.2",
+    "node-fetch": "^3.3.2",
     "openai": "^6.9.1",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.15.0",
+    "sharp": "^0.33.5"
   }
 }

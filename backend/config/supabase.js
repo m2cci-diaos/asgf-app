@@ -80,3 +80,21 @@ export const supabaseWebinaire = createClient(
     db: { schema: 'webinaire' },
   }
 )
+
+// 👉 client pour le schéma "public" (contact, pages publiques, etc.)
+export const supabasePublic = createClient(
+  supabaseUrl,
+  supabaseServiceKey,
+  {
+    db: { schema: 'public' },
+  }
+)
+
+// 👉 client pour le schéma "organisation" (table organisation.bureau_members)
+export const supabaseOrganisation = createClient(
+  supabaseUrl,
+  supabaseServiceKey,
+  {
+    db: { schema: 'organisation' },
+  }
+)

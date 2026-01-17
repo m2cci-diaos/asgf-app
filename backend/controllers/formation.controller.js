@@ -22,8 +22,15 @@ import {
   updateFormateur,
   deleteFormateur,
 } from '../services/formation.service.js'
+import { supabaseFormation } from '../config/supabase.js'
 import { validateId, validatePagination } from '../utils/validators.js'
 import { logError } from '../utils/logger.js'
+import {
+  notifyFormationInvitation,
+  notifyFormationReminder,
+  notifyFormationStatus,
+} from '../services/notifications.service.js'
+import { getFormationEmailContext } from '../utils/formationEmailContext.js'
 
 /**
  * GET /api/formation/formations
@@ -254,6 +261,20 @@ export async function confirmInscriptionController(req, res) {
     }
 
     const inscription = await confirmInscription(req.params.id, adminId)
+    const context = await getFormationEmailContext(
+      inscription.formation_id,
+      inscription.session_id
+    )
+
+    await notifyFormationStatus({
+      status: 'confirmed',
+      email: inscription.email,
+      prenom: inscription.prenom,
+      nom: inscription.nom,
+      formation_title: context.formationTitle,
+      session_date: context.sessionDate,
+    })
+
     return res.json({
       success: true,
       message: 'Inscription confirmée avec succès',
@@ -292,6 +313,20 @@ export async function rejectInscriptionController(req, res) {
     }
 
     const inscription = await rejectInscription(req.params.id, adminId)
+    const context = await getFormationEmailContext(
+      inscription.formation_id,
+      inscription.session_id
+    )
+
+    await notifyFormationStatus({
+      status: 'rejected',
+      email: inscription.email,
+      prenom: inscription.prenom,
+      nom: inscription.nom,
+      formation_title: context.formationTitle,
+      session_date: context.sessionDate,
+    })
+
     return res.json({
       success: true,
       message: 'Inscription rejetée avec succès',
@@ -302,6 +337,139 @@ export async function rejectInscriptionController(req, res) {
     return res.status(400).json({
       success: false,
       message: err.message || 'Erreur lors du rejet de l\'inscription',
+    })
+  }
+}
+
+/**
+ * POST /api/formation/inscriptions/:id/invitation
+ * Envoie un email d'invitation avec le lien d'accès
+ */
+export async function sendFormationInvitationController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const { access_link } = req.body || {}
+    if (!access_link) {
+      return res.status(400).json({
+        success: false,
+        message: "Le lien d'accès (access_link) est requis",
+      })
+    }
+
+    // Récupérer directement l'inscription par ID dans Supabase
+    const { data: inscription, error } = await supabaseFormation
+      .from('inscriptions')
+      .select('*')
+      .eq('id', req.params.id)
+      .maybeSingle()
+
+    if (error) {
+      throw new Error("Erreur lors de la récupération de l'inscription")
+    }
+
+    if (!inscription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inscription introuvable',
+      })
+    }
+
+    const context = await getFormationEmailContext(
+      inscription.formation_id,
+      inscription.session_id
+    )
+
+    await notifyFormationInvitation({
+      email: inscription.email,
+      prenom: inscription.prenom,
+      nom: inscription.nom,
+      formation_title: context.formationTitle,
+      session_date: context.sessionDate,
+      access_link,
+    })
+
+    return res.json({
+      success: true,
+      message: 'Invitation envoyée avec succès',
+    })
+  } catch (err) {
+    logError('sendFormationInvitationController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Erreur lors de l'envoi de l'invitation",
+    })
+  }
+}
+
+/**
+ * POST /api/formation/sessions/:id/reminder
+ * Envoie un rappel à toutes les inscriptions confirmées d'une session
+ */
+export async function sendFormationReminderController(req, res) {
+  try {
+    const idValidation = validateId(req.params.id)
+    if (!idValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Erreur de validation',
+        errors: idValidation.errors,
+      })
+    }
+
+    const { kind = 'generic', access_link } = req.body || {}
+
+    const { data: inscriptions, error } = await supabaseFormation
+      .from('inscriptions')
+      .select('*')
+      .eq('session_id', req.params.id)
+      .eq('status', 'confirmed')
+
+    if (error) {
+      throw new Error("Erreur lors de la récupération des inscriptions")
+    }
+
+    if (!inscriptions || inscriptions.length === 0) {
+      return res.json({
+        success: true,
+        message: 'Aucune inscription confirmée pour cette session',
+      })
+    }
+
+    const session = inscriptions[0]
+    const context = await getFormationEmailContext(
+      session.formation_id,
+      session.session_id
+    )
+
+    for (const inscription of inscriptions) {
+      await notifyFormationReminder({
+        kind,
+        email: inscription.email,
+        prenom: inscription.prenom,
+        nom: inscription.nom,
+        formation_title: context.formationTitle,
+        session_date: context.sessionDate,
+        access_link,
+      })
+    }
+
+    return res.json({
+      success: true,
+      message: 'Rappel envoyé aux participants',
+    })
+  } catch (err) {
+    logError('sendFormationReminderController error', err)
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Erreur lors de lenvoi du rappel',
     })
   }
 }

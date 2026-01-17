@@ -82,3 +82,14 @@ AND table_name = 'formation_formateurs'
 ORDER BY grantee, privilege_type;
 
 
+
+
+
+
+
+
+
+
+
+
+

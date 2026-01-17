@@ -141,9 +141,26 @@ export async function getMentorById(mentorId) {
 
 /**
  * Crée un nouveau mentor
+ * Gestion des doublons: vérifie si un mentor existe déjà pour ce membre_id
  */
 export async function createMentor(mentorData) {
   try {
+    // 🔒 VÉRIFICATION DOUBLONS AVANT INSERTION (optionnel, mais améliore l'UX)
+    const { data: existing, error: checkError } = await supabaseMentorat
+      .from('mentors')
+      .select('id')
+      .eq('membre_id', mentorData.membre_id)
+      .maybeSingle()
+
+    if (checkError) {
+      logError('createMentor check error', checkError)
+      throw new Error('Erreur lors de la vérification')
+    }
+
+    if (existing) {
+      throw new Error('Ce membre est déjà enregistré comme mentor. Un membre ne peut être mentor qu\'une seule fois.')
+    }
+
     const { data, error } = await supabaseMentorat
       .from('mentors')
       .insert({
@@ -160,6 +177,18 @@ export async function createMentor(mentorData) {
 
     if (error) {
       logError('createMentor error', error)
+      
+      // 🔒 GESTION ERREUR DOUBLON (code PostgreSQL 23505 = duplicate key)
+      const errorMessage = error.message || ''
+      if (
+        error.code === '23505' ||
+        errorMessage.includes('mentors_unique_membre') ||
+        errorMessage.toLowerCase().includes('duplicate key value') ||
+        errorMessage.toLowerCase().includes('unique constraint')
+      ) {
+        throw new Error('Ce membre est déjà enregistré comme mentor. Un membre ne peut être mentor qu\'une seule fois.')
+      }
+
       throw new Error('Erreur lors de la création du mentor')
     }
 
@@ -335,9 +364,26 @@ export async function getMenteeById(menteeId) {
 
 /**
  * Crée un nouveau mentoré
+ * Gestion des doublons: vérifie si un mentee existe déjà pour ce membre_id
  */
 export async function createMentee(menteeData) {
   try {
+    // 🔒 VÉRIFICATION DOUBLONS AVANT INSERTION (optionnel, mais améliore l'UX)
+    const { data: existing, error: checkError } = await supabaseMentorat
+      .from('mentees')
+      .select('id')
+      .eq('membre_id', menteeData.membre_id)
+      .maybeSingle()
+
+    if (checkError) {
+      logError('createMentee check error', checkError)
+      throw new Error('Erreur lors de la vérification')
+    }
+
+    if (existing) {
+      throw new Error('Ce membre est déjà enregistré comme mentoré. Un membre ne peut être mentoré qu\'une seule fois.')
+    }
+
     const { data, error } = await supabaseMentorat
       .from('mentees')
       .insert({
@@ -352,6 +398,18 @@ export async function createMentee(menteeData) {
 
     if (error) {
       logError('createMentee error', error)
+      
+      // 🔒 GESTION ERREUR DOUBLON (code PostgreSQL 23505 = duplicate key)
+      const errorMessage = error.message || ''
+      if (
+        error.code === '23505' ||
+        errorMessage.includes('mentees_unique_membre') ||
+        errorMessage.toLowerCase().includes('duplicate key value') ||
+        errorMessage.toLowerCase().includes('unique constraint')
+      ) {
+        throw new Error('Ce membre est déjà enregistré comme mentoré. Un membre ne peut être mentoré qu\'une seule fois.')
+      }
+
       throw new Error('Erreur lors de la création du mentoré')
     }
 
@@ -600,9 +658,32 @@ export async function getRelationById(relationId) {
 
 /**
  * Crée une nouvelle relation mentor/mentoré
+ * Gestion des doublons: vérifie s'il existe déjà une relation ACTIVE pour ce duo
  */
 export async function createRelation(relationData) {
   try {
+    const statutRelation = relationData.statut_relation || 'active'
+    
+    // 🔒 VÉRIFICATION DOUBLONS: ne pas autoriser deux relations ACTIVES avec le même pair mentor_id + mentee_id
+    if (statutRelation === 'active') {
+      const { data: existingActive, error: checkError } = await supabaseMentorat
+        .from('relations')
+        .select('id')
+        .eq('mentor_id', relationData.mentor_id)
+        .eq('mentee_id', relationData.mentee_id)
+        .eq('statut_relation', 'active')
+        .maybeSingle()
+
+      if (checkError) {
+        logError('createRelation check error', checkError)
+        throw new Error('Erreur lors de la vérification')
+      }
+
+      if (existingActive) {
+        throw new Error('Une relation active existe déjà entre ce mentor et ce mentoré. Veuillez clôturer la relation existante avant d\'en créer une nouvelle.')
+      }
+    }
+
     const { data, error } = await supabaseMentorat
       .from('relations')
       .insert({
@@ -610,7 +691,7 @@ export async function createRelation(relationData) {
         mentee_id: relationData.mentee_id,
         date_debut: relationData.date_debut || new Date().toISOString().split('T')[0],
         date_fin: relationData.date_fin || null,
-        statut_relation: relationData.statut_relation || 'active',
+        statut_relation: statutRelation,
         commentaire_admin: relationData.commentaire_admin || null,
       })
       .select()
@@ -618,6 +699,18 @@ export async function createRelation(relationData) {
 
     if (error) {
       logError('createRelation error', error)
+      
+      // 🔒 GESTION ERREUR DOUBLON (code PostgreSQL 23505 = duplicate key)
+      const errorMessage = error.message || ''
+      if (
+        error.code === '23505' ||
+        errorMessage.includes('idx_relations_unique_active') ||
+        errorMessage.toLowerCase().includes('duplicate key value') ||
+        errorMessage.toLowerCase().includes('unique constraint')
+      ) {
+        throw new Error('Une relation active existe déjà entre ce mentor et ce mentoré. Veuillez clôturer la relation existante avant d\'en créer une nouvelle.')
+      }
+
       throw new Error('Erreur lors de la création de la relation')
     }
 
@@ -650,6 +743,35 @@ export async function updateRelation(relationId, updates) {
     return data
   } catch (err) {
     logError('updateRelation exception', err)
+    throw err
+  }
+}
+
+/**
+ * Clôture une relation (passe le statut à 'terminée' et ajoute la date de fin)
+ */
+export async function closeRelation(relationId, commentaire = null) {
+  try {
+    const { data, error } = await supabaseMentorat
+      .from('relations')
+      .update({
+        statut_relation: 'terminee',
+        date_fin: new Date().toISOString().split('T')[0],
+        commentaire_admin: commentaire || null,
+      })
+      .eq('id', relationId)
+      .select()
+      .single()
+
+    if (error) {
+      logError('closeRelation error', error)
+      throw new Error('Erreur lors de la clôture de la relation')
+    }
+
+    logInfo('Relation clôturée', { id: relationId })
+    return data
+  } catch (err) {
+    logError('closeRelation exception', err)
     throw err
   }
 }
@@ -761,6 +883,7 @@ export async function getRendezVousByRelation(relationId) {
 
 /**
  * Crée un nouveau rendez-vous
+ * Gestion des doublons: vérifie s'il existe déjà un rendez-vous au même moment pour cette relation
  */
 export async function createRendezVous(rdvData) {
   try {
@@ -778,6 +901,18 @@ export async function createRendezVous(rdvData) {
 
     if (error) {
       logError('createRendezVous error', error)
+      
+      // 🔒 GESTION ERREUR DOUBLON (code PostgreSQL 23505 = duplicate key)
+      const errorMessage = error.message || ''
+      if (
+        error.code === '23505' ||
+        errorMessage.includes('idx_rdv_unique_relation_datetime') ||
+        errorMessage.toLowerCase().includes('duplicate key value') ||
+        errorMessage.toLowerCase().includes('unique constraint')
+      ) {
+        throw new Error('Un rendez-vous existe déjà à cette date et heure pour cette relation. Veuillez choisir un autre créneau.')
+      }
+
       throw new Error('Erreur lors de la création du rendez-vous')
     }
 

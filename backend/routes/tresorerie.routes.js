@@ -22,10 +22,17 @@ import {
   deleteDepenseAction,
   listRelances,
   createRelance,
+  generateMonthlyCotisations,
+  updateOverdueCotisations,
+  cleanDuplicateCotisations,
+  createMissingCotisations,
   listCartes,
   createCarte,
   updateCarte,
   getCarteByNumero,
+  generateCartePDF,
+  generateMissingPDFs,
+  updateCartePDFLink,
   listHistorique,
   createHistorique,
   getStats,
@@ -53,6 +60,10 @@ router.put('/cotisations/:id', updateCotisation)
 router.post('/cotisations/:id/validate', validateCotisationAction)
 router.post('/cotisations/:id/reset', resetCotisationAction)
 router.delete('/cotisations/:id', deleteCotisationAction)
+router.post('/cotisations/generate-monthly', generateMonthlyCotisations)
+router.post('/cotisations/update-overdue', updateOverdueCotisations)
+router.post('/cotisations/clean-duplicates', cleanDuplicateCotisations)
+router.post('/cotisations/create-missing', createMissingCotisations)
 
 // Routes pour les paiements
 router.get('/paiements', listPaiements)
@@ -79,6 +90,9 @@ router.get('/cartes', listCartes)
 router.get('/cartes/numero/:numero', getCarteByNumero)
 router.post('/cartes', createCarte)
 router.put('/cartes/:id', updateCarte)
+router.post('/cartes/:id/generate-pdf', generateCartePDF)
+router.post('/cartes/generate-missing-pdfs', generateMissingPDFs)
+router.post('/cartes/numero/:numero/update-pdf-link', updateCartePDFLink)
 
 // Routes pour l'historique
 router.get('/historique', listHistorique)

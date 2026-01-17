@@ -9,16 +9,29 @@ export const MODULES = {
   SECRETARIAT: 'secretariat',
   MENTORAT: 'mentorat',
   RECRUTEMENT: 'recrutement',
+  CONTACT: 'contact',
+  AUDIT: 'audit',
+  CALENDAR: 'calendar',
+  PROJETS: 'projets',
 }
 
 // Liste de tous les modules (pour validation)
 export const ALL_MODULES = Object.values(MODULES)
 
-// Rôles globaux
-export const ROLES = {
-  MASTER: 'master',
+export const ROLE_TYPES = {
+  SUPERADMIN: 'superadmin',
   ADMIN: 'admin',
-  MODERATOR: 'moderator',
+}
+
+export const MODULE_DROITS = {
+  LECTURE: 'lecture',
+  GESTION: 'gestion',
+  FULL: 'full',
+}
+
+export const ADMIN_STATUS = {
+  ACTIVE: 'active',
+  DISABLED: 'disabled',
 }
 
 // Statuts génériques

@@ -1,0 +1,298 @@
+/* Responsive Design - css/responsive.css */
+
+/* Tablettes et petits écrans */
+@media (max-width: 1024px) {
+    .container {
+        padding: 0 15px;
+    }
+    
+    .hero h1 {
+        font-size: 3rem;
+    }
+    
+    .section-title {
+        font-size: 2.2rem;
+    }
+    
+    .missions-grid,
+    .activities-grid,
+    .partners-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.5rem;
+    }
+    
+    /* Navigation tablette */
+    .nav-links {
+        gap: 0.8rem;
+    }
+    
+    .nav-links a {
+        font-size: 0.9rem;
+        padding: 0.5rem 0.6rem;
+    }
+}
+
+/* Écrans moyens - Menu hamburger */
+@media (max-width: 900px) {
+    .nav-links {
+        display: none;
+    }
+    
+    .mobile-menu {
+        display: flex !important;
+    }
+}
+
+/* Grands écrans - Cacher le menu hamburger */
+@media (min-width: 901px) {
+    .mobile-menu {
+        display: none !important;
+    }
+    
+    .nav-links {
+        display: flex !important;
+    }
+}
+
+/* Mobiles */
+@media (max-width: 768px) {
+    /* Navigation mobile */
+    header {
+        padding: 0.8rem 0;
+    }
+    
+    nav {
+        gap: 1rem;
+        position: relative;
+    }
+    
+    .logo {
+        flex-shrink: 0;
+        max-width: 150px;
+    }
+    
+    .logo img {
+        height: 40px;
+    }
+    
+    .logo span {
+        font-size: 1.2rem;
+    }
+    
+    .nav-links {
+        display: none;
+        position: fixed;
+        top: 70px;
+        left: 0;
+        width: 100%;
+        background: var(--primary-color);
+        flex-direction: column;
+        padding: 1rem 0;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        gap: 0;
+        max-height: calc(100vh - 70px);
+        overflow-y: auto;
+        z-index: 999;
+    }
+
+    .nav-links.active {
+        display: flex;
+    }
+
+    .nav-links li {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+    }
+
+    .nav-links a {
+        display: block;
+        padding: 1rem 1.5rem;
+        border-radius: 0;
+        width: 100%;
+        font-size: 1rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .nav-links a:hover,
+    .nav-links a.active {
+        background: rgba(255, 255, 255, 0.15);
+        transform: none;
+        padding-left: 2rem;
+    }
+
+    .mobile-menu {
+        display: flex !important;
+        order: 3;
+    }
+
+    /* Hero section mobile */
+    .hero {
+        min-height: 100vh;
+        padding-top: 120px;
+        padding-bottom: 2rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+
+    .hero-content {
+        padding: 0 1rem;
+        margin-top: 2rem;
+    }
+
+    .hero h1 {
+        font-size: 1.8rem;
+        line-height: 1.3;
+        margin-bottom: 1rem;
+        padding-top: 1rem;
+    }
+
+    .hero p {
+        font-size: 0.95rem;
+        margin-bottom: 0.8rem;
+    }
+
+    /* About section mobile */
+    .about-content {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+    }
+
+    .about-image {
+        font-size: 5rem;
+    }
+
+    /* Grilles mobile */
+    .missions-grid,
+    .activities-grid,
+    .partners-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* Contact mobile */
+    .contact-content {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+    }
+
+    /* Titres mobile */
+    .section-title {
+        font-size: 1.8rem;
+    }
+
+    /* Boutons mobile */
+    .cta-button,
+    .submit-btn {
+        width: 100%;
+        text-align: center;
+    }
+
+    /* Footer mobile */
+    .social-links a {
+        margin: 0 0.5rem;
+        font-size: 1.3rem;
+    }
+}
+
+/* Petits mobiles */
+@media (max-width: 480px) {
+    header {
+        padding: 0.6rem 0;
+    }
+    
+    nav {
+        gap: 0.5rem;
+    }
+    
+    .logo {
+        max-width: 120px;
+    }
+    
+    .logo img {
+        height: 35px;
+    }
+    
+    .logo span {
+        font-size: 1rem;
+        margin-left: 5px !important;
+    }
+
+    .hero h1 {
+        font-size: 1.8rem;
+    }
+
+    .section-title {
+        font-size: 1.5rem;
+    }
+
+    .mission-card,
+    .activity-card,
+    .partner-card {
+        padding: 1.5rem;
+    }
+
+    .mission-card i,
+    .partner-card i {
+        font-size: 2.5rem;
+    }
+
+    .activity-header i {
+        font-size: 2rem;
+    }
+
+    .contact-form {
+        padding: 1.5rem;
+    }
+    
+    .mobile-menu {
+        width: 35px;
+        height: 35px;
+        font-size: 1.3rem;
+    }
+    
+    .nav-links {
+        top: 60px;
+    }
+}
+
+/* Grands écrans */
+@media (min-width: 1400px) {
+    .container {
+        max-width: 1400px;
+    }
+
+    .hero h1 {
+        font-size: 4rem;
+    }
+
+    .missions-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .activities-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .partners-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+/* Optimisation pour l'impression */
+@media print {
+    header,
+    footer,
+    .mobile-menu,
+    .cta-button,
+    .contact-form {
+        display: none;
+    }
+
+    body {
+        color: #000;
+    }
+
+    section {
+        page-break-inside: avoid;
+    }
+}

@@ -6,3 +6,16 @@ ALTER TABLE tresorerie.paiements
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+

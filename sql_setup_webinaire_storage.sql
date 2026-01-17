@@ -65,3 +65,14 @@
 -- 5. Les URLs publiques seront générées automatiquement par Supabase
 
 
+
+
+
+
+
+
+
+
+
+
+

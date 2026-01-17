@@ -836,7 +836,20 @@ export async function createInscription(inscriptionData) {
 
     if (error) {
       logError('createInscription error', error)
-      throw new Error('Erreur lors de la création de l\'inscription')
+
+      // Contrainte d'unicité sur (formation_id, email)
+      const message = error.message || ''
+      if (
+        error.code === '23505' ||
+        message.includes('inscriptions_formation_email_unique') ||
+        message.toLowerCase().includes('duplicate key value')
+      ) {
+        throw new Error(
+          "Cet email est déjà inscrit à cette formation. Utilisez une autre adresse ou contactez l'ASGF."
+        )
+      }
+
+      throw new Error(message || "Erreur lors de la création de l'inscription")
     }
 
     logInfo('Inscription créée', { id: inscription.id, email })
